@@ -1,0 +1,6 @@
+{
+  "checks": [
+    {"name": "install", "argv": ["node", "-e", "require('node:child_process').execSync('npm ci --no-audit --no-fund', { stdio: 'inherit' })"], "timeout_seconds": 600},
+    {"name": "test", "argv": ["node", "-e", "require('node:child_process').execSync('npm test', { stdio: 'inherit' })"], "timeout_seconds": 900}
+  ]
+}

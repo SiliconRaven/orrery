@@ -1,0 +1,10 @@
+{
+  "id": "message-counter",
+  "version": "0.10.0-beta.1",
+  "name": "消息计数示例",
+  "description": "Beta 测试版。统计指定群最近最多 100 条消息的发送者分布，不调用模型。",
+  "apiVersion": 1,
+  "entry": "main.mjs",
+  "permissions": ["clusters.read", "messages.read"],
+  "commands": [{ "id": "count", "title": "统计最近消息" }]
+}

@@ -1,0 +1,550 @@
+/* Collaboration workbench: its own workspace surface inside the chat app, on the app's colours and controls.
+   Members and business roles keep a stable colour derived from their id (workbench.js toneIndex), so the same
+   subject reads the same in the task list, the graph, the settings and the members view. */
+.workbench {   /* the dialog frame is style.css's */
+  width: min(1080px, calc(100vw - 32px)); height: min(760px, calc(100dvh - 48px)); max-height: none; background: var(--bg);
+  --wb-review: light-dark(#7c3aed, #c9a2ff);
+}
+.workbench-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.workbench-head { background-image: var(--orbit-rings), linear-gradient(105deg, var(--accent-soft), var(--surface) 72%); }   /* the orbit: style.css */
+.workbench-title { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.workbench-title h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workbench-badge { font-weight: 600; letter-spacing: .08em; }
+/* No top padding: Chromium offsets a sticky child from inside the scroller's padding, which would leave a strip above the tabs. */
+.workbench-content { flex: 1; min-height: 0; overflow: auto; padding: 0 var(--s-4) var(--s-4); background: var(--bg); scroll-padding-top: 60px; }
+.wb-overview { padding-top: var(--s-4); }
+
+/* ---- tabs and section headings ---- */
+/* Stays under the title bar while the content scrolls. Full-bleed and opaque so nothing shows through or beside it: the
+   negative margin cancels .workbench-content's side padding, and its scroll-padding-top keeps jump targets clear of the bar. */
+.workbench-tabs { position: sticky; top: 0; z-index: 3; display: flex; gap: 4px; overflow-x: auto; margin: 0 calc(-1 * var(--s-4)) var(--s-4); padding: var(--s-2) var(--s-4) var(--s-1);
+  border-bottom: 1px solid var(--line); background: var(--bg); }
+.workbench-tabs button { flex: none; border: 0; background: transparent; color: var(--muted); border-radius: var(--r-md) var(--r-md) 0 0; }
+.workbench-tabs button:not([aria-current="true"]):hover { background: var(--surface-2); color: var(--text); }
+.workbench-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 16px; }
+.workbench-bar h3, .wb-panel-title { display: flex; align-items: center; gap: 8px; margin: 0; }
+.wb-panel-title::before { content: ""; width: 4px; height: 16px; border-radius: var(--r-pill); background: var(--accent); }
+
+/* ---- tasks ---- */
+.workbench-tasks { display: grid; grid-template-columns: minmax(220px, .85fr) minmax(0, 1.4fr); gap: 16px; }
+.workbench-list { display: grid; align-content: start; gap: 8px; }
+/* Task tab: one collapsible section per status family. The head is a real button, so Enter/Space work. */
+.workbench-groups { display: grid; align-content: start; gap: 10px; min-width: 0; }
+.workbench-group { display: grid; gap: 6px; min-width: 0; }
+.workbench-group-head { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 34px; padding: 6px 10px;
+  border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: var(--r-md); background: var(--surface-2);
+  color: var(--muted); font-size: var(--f-sm); font-weight: 600; text-align: left; cursor: pointer; }
+.workbench-group-head:hover { color: var(--text); }
+.workbench-group-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wb-group-caret { width: 12px; height: 12px; transition: transform .15s; }
+.workbench-group-head[aria-expanded="false"] .wb-group-caret { transform: rotate(-90deg); }
+.wb-group-count { margin-left: auto; background: var(--surface); }
+.workbench-group .workbench-list { padding-left: 4px; }
+.wb-group-approval .workbench-group-head { border-left-color: var(--accent); }
+.wb-group-active .workbench-group-head { border-left-color: var(--accent); }
+.wb-group-review .workbench-group-head { border-left-color: var(--running); }
+.wb-group-pending .workbench-group-head { border-left-color: var(--muted); }
+.wb-group-completed .workbench-group-head { border-left-color: var(--done); }
+.wb-group-merged .workbench-group-head { border-left-color: var(--done); }
+.wb-group-cancelled .workbench-group-head { border-left-color: var(--failed); }
+.workbench-task { display: grid; gap: 7px; width: 100%; text-align: left; padding: 10px 12px; border: 1px solid var(--line);
+  border-left: 4px solid var(--wb-status, var(--line)); border-radius: var(--r-lg); background: var(--surface); color: var(--text); }
+.workbench-task:hover { background: var(--surface-2); }
+.workbench-task[aria-current="true"] { border-color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
+.wb-task-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.wb-task-title { font-size: var(--f-base); overflow-wrap: anywhere; }
+.wb-task-badges { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.wb-task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: var(--f-sm); }
+/* Task labels: coloured by name, clickable to filter the task list. */
+.wb-task-labels { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.wb-task-label { cursor: pointer; }
+.wb-task-label:hover, .wb-task-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wb-task-label-detail { font-size: var(--f-sm); }
+/* More labels than fit: the rest collapse into +N (title lists them). */
+.wb-task-label-more { border-style: dashed; cursor: help; }
+/* ---- task filter and sort bar (workbench.js taskBar) ---- */
+/* Full-bleed and opaque like the tabs, and sticky right under them while the whole content scrolls: render() sets
+   --wb-tabs-height, because the tabs grow when they wrap. When a pane scrolls on its own, the bar simply stays put. */
+.wb-filterbar { position: sticky; top: var(--wb-tabs-height, 0px); z-index: 2; display: grid; gap: 8px;
+  margin: -6px calc(-1 * var(--s-4)) 14px; padding: 6px var(--s-4) var(--s-2); border-bottom: 1px solid var(--line); background: var(--bg); }
+.wb-fb-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.wb-filterbar .wb-fb-control { height: 34px; margin: 0; border: 1px solid var(--line); border-radius: var(--r-md); background-color: var(--surface);
+  color: var(--text); font-size: var(--f-md); line-height: 1; }
+.wb-filterbar .wb-fb-control:hover:not(:disabled):not(.wb-fb-on) { border-color: color-mix(in srgb, var(--text) 28%, var(--line)); }
+.wb-filterbar .wb-fb-control:focus-visible, .wb-filterbar .wb-fb-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.wb-filterbar .wb-fb-control:disabled { opacity: .55; cursor: default; }
+/* A set filter reads as set at a glance, before the chips below. */
+.wb-filterbar .wb-fb-on, .workbench-actions button[aria-pressed="true"] { border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent); }
+.wb-fb-search { position: relative; flex: 1 1 220px; min-width: 0; }
+/* Magnifier drawn with a mask, so it takes the text colour in both schemes without an icon font. */
+.wb-fb-search::before { content: ""; position: absolute; left: 11px; top: 50%; width: 14px; height: 14px; margin-top: -7px;
+  background: var(--muted); pointer-events: none;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round'%3E%3Ccircle cx='10.5' cy='10.5' r='6.5'/%3E%3Cpath d='M15.5 15.5 21 21'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round'%3E%3Ccircle cx='10.5' cy='10.5' r='6.5'/%3E%3Cpath d='M15.5 15.5 21 21'/%3E%3C/svg%3E") center / contain no-repeat; }
+.wb-filterbar .wb-fb-input { width: 100%; padding: 0 8px 0 32px; }
+.wb-filterbar .wb-fb-input::placeholder { color: var(--muted); }
+/* Selects and the label button share one look: no native arrow, a drawn chevron in the muted colour. */
+.wb-filterbar .wb-fb-select { flex: none; width: auto; max-width: 100%; padding: 0 28px 0 11px; appearance: none; cursor: pointer; text-align: left;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
+.wb-filterbar .wb-fb-trigger { display: inline-flex; align-items: center; gap: 6px; }
+.wb-filterbar .wb-fb-trigger[aria-expanded="true"] { border-color: var(--accent); }
+/* Quick views: toggles with their count; a pressed one uses the set-filter look, a view with nothing in it fades. */
+.wb-fb-quick { display: inline-flex; flex: none; gap: 6px; }
+.wb-filterbar .wb-fb-quick-btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; white-space: nowrap; cursor: pointer; }
+.wb-fb-quick-btn.wb-fb-on .wb-fb-qcount { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.wb-fb-quick-btn.wb-fb-zero:not(.wb-fb-on) { color: var(--muted); }
+.wb-fb-sortbox { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.wb-fb-sortcap { flex: none; color: var(--muted); font-size: var(--f-sm); white-space: nowrap; }
+/* The label list: a checkable dropdown under its button. */
+.wb-fb-labels { position: relative; flex: none; }
+.wb-fb-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 5; display: grid; gap: 1px; width: max-content; min-width: 220px;
+  max-width: min(320px, calc(100vw - 32px)); max-height: 300px; overflow: auto; padding: 6px; border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--surface); box-shadow: var(--shadow-popover); }
+.wb-fb-menu-note { margin: 2px 6px 5px; color: var(--muted); font-size: var(--f-xs); }
+.wb-fb-option { display: flex; align-items: center; gap: 9px; min-height: 32px; padding: 4px 8px; border-radius: var(--r-md); cursor: pointer; }
+.wb-fb-option:hover { background: var(--surface-2); }
+.wb-fb-option:focus { outline: none; }
+.wb-fb-option:focus-visible { background: var(--surface-2); box-shadow: inset 0 0 0 2px var(--accent); }
+.wb-fb-option .wb-tag { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wb-fb-check { display: grid; flex: none; place-items: center; width: 16px; height: 16px; border: 1.5px solid var(--muted); border-radius: var(--r-xs); }
+.wb-fb-option[aria-selected="true"] .wb-fb-check { border-color: var(--accent); background: var(--accent); }
+.wb-fb-option[aria-selected="true"] .wb-fb-check::after { content: ""; width: 4px; height: 8px; margin-top: -2px;
+  border: solid var(--on-accent); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+/* Active filters and the count share one line of fixed height, so chips appearing never move the list. */
+.wb-fb-summary { display: flex; align-items: center; gap: 10px; min-height: 26px; }
+.wb-active-filters { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.wb-fb-total { flex: none; margin-left: auto; color: var(--muted); font-size: var(--f-sm); font-variant-numeric: tabular-nums; }
+.wb-fb-total.wb-fb-loading { color: var(--accent); }
+.wb-filter-chip { background: var(--surface); color: var(--text); cursor: pointer; }
+.wb-filter-chip:hover { border-color: var(--accent); background: var(--surface); }
+.wb-filter-chip:focus-visible, .wb-filter-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wb-tag-chip .wb-role-dot { color: hsl(var(--wb-h, 232) 62% 52%); }
+.wb-filter-key { color: var(--muted); }
+.wb-filter-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-filter-x { display: inline-grid; flex: none; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: var(--muted);
+  font-size: var(--f-base); line-height: 1; }
+.wb-filter-chip:hover .wb-filter-x { background: var(--surface-2); color: var(--text); }
+.wb-filter-clear { height: 26px; padding: 0 6px; border: 0; background: transparent; color: var(--accent); font-size: var(--f-sm); }
+.wb-filter-clear:hover { background: var(--accent-soft); }
+.wb-task-reviewer { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+
+/* Status line of a task card / graph node. */
+.wb-task-pending { --wb-status: var(--queued); }
+.wb-task-working { --wb-status: var(--running); }
+.wb-task-review { --wb-status: var(--wb-review); }
+.wb-task-completed { --wb-status: var(--done); }
+.wb-task-merged { --wb-status: var(--done); }
+.wb-task-cancelled { --wb-status: var(--muted); }
+
+/* ---- pills ---- */
+.wb-status { --tone: var(--wb-status, var(--muted)); }
+.wb-status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.wb-status-pending { --wb-status: var(--queued); }
+.wb-status-working { --wb-status: var(--running); }
+.wb-status-review { --wb-status: var(--wb-review); }
+.wb-status-completed { --wb-status: var(--done); }
+.wb-status-merged { --wb-status: var(--done); }
+.wb-status-cancelled { --wb-status: var(--muted); }
+/* Priority is a word chip, not only a colour: make it read at a glance. */
+.wb-priority { font-weight: 700; letter-spacing: .01em; border-color: color-mix(in srgb, currentColor 40%, transparent); }
+.wb-priority-low { color: var(--queued); }
+.wb-priority-normal { color: var(--text); background: var(--surface-2); }
+.wb-mode { --tone: var(--accent); }
+.wb-mode-suggest { --tone: var(--running); }
+
+/* ---- members and business roles: one stable tone per id ---- */
+/* Eight hues 45° apart, so a small board keeps its subjects visually apart in practice. */
+.wb-tone-0 { --wb-h: 210; } .wb-tone-1 { --wb-h: 165; } .wb-tone-2 { --wb-h: 120; } .wb-tone-3 { --wb-h: 75; }
+.wb-tone-4 { --wb-h: 30; } .wb-tone-5 { --wb-h: 345; } .wb-tone-6 { --wb-h: 300; } .wb-tone-7 { --wb-h: 255; }
+.wb-member { display: inline-flex; align-items: center; gap: 5px; font-size: var(--f-sm); font-weight: 600;
+  color: light-dark(hsl(var(--wb-h, 232) 58% 40%), hsl(var(--wb-h, 232) 72% 72%)); }
+.wb-avatar { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; font-size: var(--f-xs);
+  font-weight: 700; color: light-dark(hsl(var(--wb-h, 232) 62% 34%), hsl(var(--wb-h, 232) 80% 84%));
+  background: light-dark(hsl(var(--wb-h, 232) 60% 50% / .18), hsl(var(--wb-h, 232) 62% 60% / .22));
+  border: 1px solid light-dark(hsl(var(--wb-h, 232) 60% 50% / .42), hsl(var(--wb-h, 232) 62% 60% / .5)); }
+.wb-role { color: light-dark(hsl(var(--wb-h, 232) 56% 36%), hsl(var(--wb-h, 232) 80% 78%));
+  background: light-dark(hsl(var(--wb-h, 232) 62% 50% / .14), hsl(var(--wb-h, 232) 60% 60% / .16));
+  border-color: light-dark(hsl(var(--wb-h, 232) 62% 50% / .38), hsl(var(--wb-h, 232) 60% 60% / .42)); }
+.wb-role-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+/* ---- detail panel ---- */
+.workbench-detail { min-width: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.workbench-detail h3, .workbench-detail h4 { margin: 0 0 8px; }
+.workbench-detail h4 { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--f-sm); font-weight: 600; }
+.workbench-detail h4::before { content: ""; flex: none; width: 3px; height: 12px; border-radius: var(--r-pill); background: var(--accent); }
+.workbench-detail section + section { margin-top: 16px; }
+.workbench-detail p { margin: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wb-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.wb-detail-head h3 { margin: 0; }
+.wb-detail-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.workbench-detail .wb-close-reason { margin: 0 0 6px; color: var(--muted); font-size: var(--f-md); }
+.wb-close-link { padding: 0; border: 0; background: none; font: inherit; }
+.wb-rows { display: grid; gap: 8px; }
+.wb-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.wb-row-key { flex: none; min-width: 48px; color: var(--muted); font-size: var(--f-sm); }
+.wb-git-branch-value { min-width: 0; overflow-wrap: anywhere; }
+/* A real button (keyboard) that reads like the chat's clickable @member. */
+.wb-creator { padding: 0; border: 0; background: none; font: inherit; }
+.wb-dep { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: var(--r-md); border: 1px solid var(--line);
+  background: var(--surface-2); font-size: var(--f-sm); }
+/* A watcher and its own note (plain text), one box each: the note stays next to whoever wrote it when the row wraps. */
+.wb-watch { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 2px 8px; border-radius: var(--r-md);
+  border: 1px solid var(--line); background: var(--surface-2); font-size: var(--f-sm); }
+.wb-watch-note { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+/* Fixed boxes: a lazy image cannot move the layout when it arrives, and many images wrap instead of stretching the detail. */
+.workbench .thumb, .workbench .thumb-missing { flex: none; width: 132px; height: 100px; }
+.workbench .thumb img { width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; }
+.workbench .attachments { margin: 8px 0; }
+.workbench .file-chip .file-name { min-width: 0; }
+.workbench .file-chip .muted { flex: none; }
+.workbench-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+
+/* Task detail actions: the state's one primary (+ its negative) on the left; message, question and 更多 on the right. */
+.wb-detail-actions { align-items: center; justify-content: space-between; margin: 12px 0 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.wb-actions-main, .wb-actions-side { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.wb-actions-side { margin-left: auto; }
+.wb-detail-actions button.primary:disabled { filter: none; }
+.wb-icon-button { display: inline-flex; align-items: center; gap: 6px; }
+.wb-icon-button .ico { width: 16px; height: 16px; color: var(--muted); }
+.wb-icon-button:hover .ico, .wb-icon-button[aria-expanded="true"] .ico { color: var(--text); }
+.wb-icon-button[aria-expanded="true"] { background: var(--surface-2); }
+.wb-detail-hint { margin: 8px 0 0; }
+.wb-task-detail > section:first-of-type { margin-top: 16px; }
+/* The 更多 menu: the composer "+" menu's look, opening below and right-aligned to its button. Absolute, so opening it moves nothing. */
+.wb-more { position: relative; }
+.wb-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 150px; max-width: calc(100vw - 32px); padding: 4px;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow-popover); }
+.wb-menu button { display: flex; align-items: center; width: 100%; padding: 7px 10px; border: 0; text-align: left; background: transparent; white-space: nowrap; }
+.wb-menu button:hover, .wb-menu button:focus-visible { background: var(--accent-soft); }
+.wb-menu button.danger:hover, .wb-menu button.danger:focus-visible { background: color-mix(in srgb, var(--failed) 14%, transparent); }
+.wb-menu button:focus-visible { outline-offset: -2px; }
+.wb-menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+
+/* Folded record sections: the summary reads like a section heading, with a caret and the record count. */
+.wb-history > summary { display: flex; align-items: center; gap: 6px; width: fit-content; padding: 2px 6px 2px 0; border-radius: var(--r-sm);
+  color: var(--muted); font-size: var(--f-sm); font-weight: 600; cursor: pointer; list-style: none; }
+.wb-history > summary::-webkit-details-marker { display: none; }
+.wb-history > summary::before { width: 10px; height: 10px; color: var(--accent); }   /* the chevron: style.css */
+.wb-history > summary:hover { color: var(--text); }
+.wb-history > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wb-history[open] > summary { margin-bottom: 6px; }
+
+/* Markdown in the detail keeps the chat's spacing; long text folds at about 12 lines (style.css .msg-body: line-height 1.5). */
+.workbench .msg-body :where(p) { margin: 0; }
+.workbench .msg-body > * + * { margin-top: .6em; }
+.workbench .msg-body li > * + * { margin-top: .3em; }
+.wb-long-body { max-height: 18em; overflow: hidden; }
+.wb-long-open > .wb-long-body { max-height: none; }
+.wb-long-cut:not(.wb-long-open) > .wb-long-body { mask-image: linear-gradient(#000 calc(100% - 3em), transparent); }
+.wb-long-toggle { margin: 4px 0 0 -6px; padding: 2px 6px; border: 0; background: transparent; color: var(--accent); font-size: var(--f-sm); }
+.wb-long-toggle:hover { background: var(--accent-soft); }
+
+/* ---- 角色与协调: a section rail beside one column of same-shaped cards (workbench.js settingsView) ----
+   One scale here: 4/8/12/16/24 px spacing, 12/13/14 px text, var(--radius) for cards and 6px inside them. */
+.wb-rp { display: grid; grid-template-columns: 168px minmax(0, 860px); gap: 24px; align-items: start; }
+.wb-rp-rail { position: sticky; top: calc(var(--wb-tabs-height, 0px) + 16px); z-index: 1; display: flex; flex-direction: column; gap: 4px; }
+.wb-rp-rail button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--muted); font-size: var(--f-md); line-height: 20px; text-align: left; white-space: nowrap; }
+.wb-rp-rail button::before { content: ""; flex: none; width: 7px; height: 7px; border: 1.5px solid currentColor; border-radius: 50%; }
+.wb-rp-rail button:not([aria-current="true"]):hover { background: var(--surface-2); color: var(--text); }
+.wb-rp-rail button[aria-current="true"] { font-weight: 600; }   /* the current-row look: style.css */
+.wb-rp-rail button[aria-current="true"]::before { border-color: var(--accent); background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.wb-rp-rail button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.wb-rp-stack { display: grid; gap: 16px; min-width: 0; }
+.wb-rp-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.wb-rp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 28px; }
+.wb-rp-head h3 { margin: 0; font-size: var(--f-base); font-weight: 600; line-height: 20px; }
+.wb-rp-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; }
+.wb-rp-hint { color: var(--muted); font-size: var(--f-sm); }
+.wb-rp-sub { margin: 4px 0 12px; color: var(--muted); font-size: var(--f-md); line-height: 20px; }
+/* Rows: what it is on the left, its actions on the right of the same line, hairlines between rows. */
+.wb-rp-row { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 0; border-top: 1px solid var(--line); }
+.wb-rp-main { display: grid; flex: 1; gap: 4px; min-width: 0; font-size: var(--f-md); line-height: 20px; overflow-wrap: anywhere; }
+.wb-rp-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-weight: 600; }
+.wb-rp-instruction .wb-rp-title { font-weight: 400; }
+.wb-rp-desc { color: var(--muted); font-size: var(--f-sm); line-height: 18px; white-space: pre-wrap; }
+.wb-rp-row-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.wb-rp button.small { white-space: nowrap; }
+.wb-rp .plugin-switch { margin: 0; }
+/* An empty section of a card: the compact empty state (style.css) under the card's head line. */
+.wb-rp .empty-state.compact { padding-top: var(--s-3); border-top: 1px solid var(--line); }
+/* 业务角色: the role's own tone as a dot before its name (the same hue as its chips elsewhere). */
+.wb-rp-role { display: inline-flex; align-items: center; gap: 8px; color: var(--text); }
+.wb-rp-role .wb-role-dot { width: 9px; height: 9px; background: light-dark(hsl(var(--wb-h, 232) 58% 40%), hsl(var(--wb-h, 232) 72% 72%));
+  box-shadow: 0 0 0 3px light-dark(hsl(var(--wb-h, 232) 60% 50% / .18), hsl(var(--wb-h, 232) 62% 60% / .22)); }
+/* 协调员: who, its permissions (granted ones accented, with a tick), and the rules text folded. */
+.wb-rp-who { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); font-size: var(--f-base); }
+.wb-rp-perms { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0 0 12px; list-style: none; }
+.wb-rp-perm-on { border-color: transparent; background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.wb-rp-rules { border-top: 1px solid var(--line); }
+.wb-rp-rules > summary { display: flex; align-items: center; gap: 8px; width: fit-content; margin-top: 12px; padding: 4px 8px 4px 0; border-radius: var(--r-sm);
+  color: var(--text); font-size: var(--f-md); line-height: 20px; cursor: pointer; list-style: none; }
+.wb-rp-rules > summary::-webkit-details-marker { display: none; }
+.wb-rp-rules > summary::before { color: var(--accent); }   /* the chevron: style.css */
+.wb-rp-rules-toggle { color: var(--accent); }
+.wb-rp-rules-toggle::after { content: '查看全文'; }
+.wb-rp-rules[open] .wb-rp-rules-toggle::after { content: '收起'; }
+.wb-rp-rules > summary:focus-visible, .wb-rp-rules-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wb-rp-rules-text { max-height: 320px; margin-top: 8px; padding: 12px; overflow: auto; border-radius: var(--r-sm); background: var(--surface-2);
+  color: var(--text); font-size: var(--f-md); line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  /* Narrow: the rail is one horizontally scrolling row, pinned under the tabs above the single column. */
+  .wb-rp { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .wb-rp-rail { top: var(--wb-tabs-height, 0px); flex-direction: row; gap: 4px; padding: 4px 0 8px; overflow-x: auto; background: var(--bg);
+    scrollbar-width: none; }
+  .wb-rp-rail button { flex: none; width: auto; min-height: 36px; padding: 8px 12px; }
+  .wb-rp-rail button[aria-current="true"] { box-shadow: var(--edge-tab); color: var(--accent); }   /* a row of tabs now */
+  .wb-rp-card { padding: 12px; scroll-margin-top: 48px; }
+  .wb-rp button.small { min-height: 36px; }
+  .wb-rp-row { gap: 8px; }
+  /* A disabled button's reason: its own line under the title, the reason on the left and the button on the right. */
+  .wb-rp-actions:has(.wb-rp-hint) { flex-basis: 100%; flex-wrap: nowrap; justify-content: space-between; }
+  .wb-rp-hint { flex: 1 1 0; min-width: 0; }
+}
+.wb-role-description { color: var(--muted); font-size: var(--f-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
+.wb-member-roles { display: flex; flex-wrap: wrap; gap: 4px; }
+.workbench-setting-actions { display: flex; gap: 6px; flex: none; }
+/* Kept for the shared app.js recycle-bin dialog; the workbench itself now uses wb-role-row/wb-role-info. */
+.workbench-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; }
+
+/* ---- graph ---- */
+.workbench-graph-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-bottom: 8px; }
+.workbench-graph-toggle { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; font-size: var(--f-sm); color: var(--muted); cursor: pointer; user-select: none; }
+.workbench-graph-toggle input { width: auto; margin: 0; accent-color: var(--accent); }
+/* The viewport clips instead of scrolling: focus must never scroll it, because panning belongs to the view transform. */
+.workbench-graph { position: relative; height: max(300px, min(540px, calc(88dvh - 355px))); overflow: clip; border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--surface-2); cursor: grab; touch-action: none; user-select: none; }
+.workbench-graph.wb-graph-grabbing { cursor: grabbing; }
+.workbench-graph-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.workbench-graph-sections { position: absolute; left: 0; top: 0; pointer-events: none; }
+.workbench-graph-section { position: absolute; display: flex; align-items: center; gap: 7px; height: 24px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--line); font-size: var(--f-sm); font-weight: 600; color: var(--muted); white-space: nowrap; }
+.workbench-graph-section::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: var(--r-pill); background: var(--wb-sec, var(--muted)); }
+.workbench-graph-section.sec-working { --wb-sec: var(--accent); color: var(--text); }
+.workbench-graph-section.sec-review { --wb-sec: var(--wb-review, var(--running)); color: var(--text); }
+.workbench-graph-section.sec-pending { --wb-sec: var(--muted); }
+.workbench-graph-section.sec-closed { --wb-sec: var(--done); }
+.workbench-graph-node { position: absolute; display: grid; gap: 6px; width: 210px; min-width: 0; padding: 12px; text-align: left; background: var(--surface);
+  border: 1px solid var(--line); border-left: 4px solid var(--wb-status, var(--line)); border-radius: var(--r-lg); overflow-wrap: anywhere; }
+.workbench-graph-node.missing { border: 1px dashed var(--line); color: var(--muted); }
+.workbench-graph-node.wb-graph-grabbing { z-index: 1; cursor: grabbing; box-shadow: var(--shadow-popover); }
+.workbench-edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+.workbench-edges .wb-edge { fill: none; stroke: var(--accent); stroke-width: 2; opacity: .55; }
+.workbench-edges marker path { fill: var(--accent); stroke: none; }
+
+/* ---- members view ---- */
+.workbench-members { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.wb-member-card { min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-top: 3px solid hsl(var(--wb-h, 232) 62% 55% / .8);
+  border-radius: var(--r-lg); background: var(--surface); background-image: linear-gradient(180deg, hsl(var(--wb-h, 232) 60% 50% / .09), transparent 46%); }
+.wb-member-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.wb-presence-observing { --tone: var(--done); }
+.wb-presence-busy, .wb-presence-running { --tone: var(--running); }
+.workbench-member-task { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; width: 100%; margin-top: 6px; text-align: left;
+  padding: 6px 10px; border-left: 3px solid var(--wb-status, var(--line)); border-radius: var(--r-md); overflow-wrap: anywhere;
+  background: var(--surface-2); }
+.workbench-meta { color: var(--muted); font-size: var(--f-sm); }
+
+/* ---- collections, results and history ---- */
+.wb-item { border-left: 3px solid hsl(var(--wb-h, 232) 60% 55% / .7); }
+.wb-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.wb-author { font-size: var(--f-sm); font-weight: 600; color: var(--muted); }
+.wb-tag { color: light-dark(hsl(var(--wb-h, 232) 56% 36%), hsl(var(--wb-h, 232) 80% 78%));
+  background: light-dark(hsl(var(--wb-h, 232) 62% 50% / .14), hsl(var(--wb-h, 232) 60% 60% / .16));
+  border-color: light-dark(hsl(var(--wb-h, 232) 62% 50% / .38), hsl(var(--wb-h, 232) 60% 60% / .42)); }
+.workbench-bin h3 { display: flex; align-items: center; gap: 8px; }
+.wb-submission { border-left: 3px solid var(--done); }
+.wb-attention { border: 1px solid var(--line); border-left: 3px solid var(--running); border-radius: var(--r-md); padding: 6px 10px;
+  margin: 6px 0; background: var(--surface-2); }
+.wb-attention p { margin: 2px 0; }
+/* Stalled-member hints (stalled.js): one block per member above the list, a chip on each of its tasks. */
+.wb-stalled-banner { display: grid; gap: 6px; margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--warn-text);
+  border-left-width: 3px; border-radius: var(--r-md); background: var(--warn-bg); color: var(--warn-text); font-size: var(--f-md); overflow-wrap: anywhere; }
+.wb-stalled-hint { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; align-items: start; }
+.wb-stalled-banner > * + .wb-stalled-hint { border-top: 1px solid color-mix(in srgb, var(--warn-text) 30%, transparent); padding-top: 6px; }
+.wb-stalled-hint p { grid-column: 1; margin: 1px 0; }
+.wb-stalled-dismiss { grid-column: 2; grid-row: 1 / span 3; align-self: center; }
+.wb-stalled-tasks { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.wb-stalled-task { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
+.wb-stalled-caveat { margin: 0; opacity: .85; font-size: var(--f-sm); }
+/* In the split layout the task list must keep its room: a long banner scrolls on its own. */
+.wb-split > .wb-stalled-banner { flex: none; max-height: 34%; overflow-y: auto; }
+.wb-split > .workbench-tabs { flex-shrink: 0; }
+.wb-verdict { --tone: var(--muted); }
+.wb-verdict-approve { --tone: var(--done); }
+.wb-verdict-reject { --tone: var(--failed); }
+.wb-review-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--muted); font-size: var(--f-sm); }
+.wb-review-head b { color: var(--text); }
+
+/* ---- cards and bins ---- */
+.workbench-card { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 10px 12px; margin: 8px 0; background: var(--surface-2); }
+.workbench-card p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 5px 0; }
+.workbench-bin { margin: 16px 0; }
+.workbench-bin h3 { margin-bottom: 6px; }
+.workbench-overview-group { margin: 12px 0; background: var(--surface); }
+
+/* ---- forms ---- */
+.workbench-form { display: grid; gap: 12px; }
+.workbench-form h2 { margin: 0; }
+.workbench-form label { display: grid; gap: 4px; }
+.workbench-form .workbench-check { display: flex; align-items: flex-start; gap: 8px; }
+.workbench-form .workbench-check input { width: auto; margin: 3px 0 0; flex: none; }
+.workbench-form .workbench-check span { flex: 1; color: var(--text); }
+.workbench-form .workbench-check .wb-role-description { flex: none; }
+.wb-check-text { display: grid; gap: 3px; justify-items: start; }
+.workbench-form select[multiple] { min-height: 70px; }
+.workbench-form textarea { min-height: 72px; resize: vertical; }
+.wb-files-field { display: grid; gap: 6px; }
+.wb-files-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.wb-files-head > span:first-child { color: var(--muted); font-size: var(--f-md); }
+.wb-files-head .muted { font-size: var(--f-sm); }
+.wb-file-thumb { width: 28px; height: 28px; border-radius: var(--r-xs); object-fit: cover; }
+.wb-close-related:not([hidden]) { display: grid; gap: 6px; justify-items: stretch; }
+.wb-close-related > label { justify-self: stretch; }
+.wb-task-num { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; color: var(--muted); font-weight: 600; flex: none; }
+.wb-close-picker { display: grid; gap: 6px; }
+.wb-close-picked { margin: 0; font-size: var(--f-sm); color: var(--accent); font-weight: 500; }
+.wb-close-options { display: grid; gap: 4px; max-height: 190px; overflow-y: auto; padding: 4px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); }
+.wb-close-option { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 6px 8px; border-radius: var(--r-sm); border: 1px solid transparent; background: transparent; color: var(--text); font-size: var(--f-md); cursor: pointer; }
+.wb-close-option:not([aria-selected="true"]):hover { background: var(--surface-2); }
+.wb-close-opt-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-close-opt-status { flex: none; font-size: var(--f-xs); color: var(--muted); }
+.wb-close-loading { margin: 2px 0 0; font-size: var(--f-sm); }
+.workbench-form > .row.end { position: sticky; bottom: 0; z-index: 2; padding: 10px 0; background: var(--surface); }
+/* The task form's repository and branch fields (workbench-combobox.js). The list is fixed to the viewport, so the
+   dialog's scrolling never clips it; its script sets its place and height. */
+.wb-combo-field { display: grid; gap: 4px; }
+.wb-combo { position: relative; }
+.wb-combo > input { padding-right: 36px; color: var(--text); }
+.wb-combo-toggle { position: absolute; top: 1px; right: 1px; bottom: 1px; width: 34px; display: grid; place-items: center; padding: 0;
+  border: 0; border-radius: 0 var(--r-md) var(--r-md) 0; background: transparent; color: var(--muted); }
+.wb-combo-toggle:hover { background: var(--surface-2); color: var(--text); }
+.wb-combo-chevron { width: 7px; height: 7px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: translateY(-2px) rotate(45deg); }
+.wb-combo > input[aria-expanded="true"] ~ .wb-combo-toggle .wb-combo-chevron { transform: translateY(2px) rotate(-135deg); }
+.wb-combo-popup { position: fixed; z-index: 10; display: flex; flex-direction: column; padding: 4px; border: 1px solid var(--line);
+  border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow-popover); }
+.wb-combo-list { flex: 0 1 auto; min-height: 0; margin: 0; padding: 0; list-style: none; overflow-y: auto; overscroll-behavior: contain; }
+.wb-combo-option { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; min-height: 32px; padding: 5px 8px; border-radius: var(--r-sm);
+  cursor: pointer; color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--f-sm); overflow-wrap: anywhere; }
+.wb-combo-option:not([aria-selected="true"]):hover { background: var(--surface-2); }
+.wb-combo-option mark { padding: 0 1px; border-radius: var(--r-xs); background: color-mix(in srgb, var(--accent) 26%, transparent); color: inherit; font-weight: 700; }
+.wb-combo-label { color: var(--muted); font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: var(--f-sm); }
+.wb-combo-status { flex: none; margin: 4px 0 0; padding: 6px 8px 2px; border-top: 1px solid var(--line); color: var(--muted); font-size: var(--f-sm); }
+@media (pointer: coarse) {
+  .wb-combo-option { min-height: 44px; }
+  .wb-combo > input { padding-right: 46px; }
+  .wb-combo-toggle { width: 44px; }
+}
+/* ---- message collaboration badges in the chat (app.js) ---- */
+.task-diff { min-width: 0; max-width: 680px; margin: 6px 0; }
+.task-diff > summary { cursor: pointer; color: var(--accent); font-size: var(--f-sm); padding: 4px 0; }
+.task-diff > summary:focus-visible, .task-diff-retry:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.task-diff-content { display: grid; gap: 8px; margin-top: 5px; }
+.task-diff-field { min-width: 0; border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px; background: var(--surface); }
+.task-diff-field h4 { margin: 0 0 6px; font-size: var(--f-sm); }
+.task-diff-field p { margin: 4px 0; }
+.task-diff-add, .task-diff-remove, .task-diff-equal { white-space: pre-wrap; overflow-wrap: anywhere; padding: 3px 6px; }
+.task-diff-add { color: var(--text); background: color-mix(in srgb, var(--done) 24%, var(--surface)); border-left: 3px solid var(--done); }
+.task-diff-remove { color: var(--text); background: color-mix(in srgb, var(--failed) 24%, var(--surface)); border-left: 3px solid var(--failed); }
+.task-diff-add > .ico, .task-diff-remove > .ico { margin-right: 2px; }
+.task-diff-slot { display: inline-block; width: 14px; }   /* an unchanged line: the room of the sign */
+.task-diff-warning { color: var(--warn-text); background: var(--warn-bg); border-radius: var(--r-sm); padding: 5px 7px; }
+.task-diff-before, .task-diff-after { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; margin: 4px 0; padding: 8px; background: var(--bg); }
+.task-diff-state { color: var(--muted); }
+.task-event-row + .task-event-row { margin-top: 8px; }
+.message-collaboration { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px; margin-top: 5px; }
+.message-stars { font-size: var(--f-sm); color: var(--muted); }
+.message-stars summary { display: inline-block; cursor: pointer; padding: 4px 8px; border-radius: var(--r-md); background: var(--surface-2); }
+.message-stars p { margin: 5px 0; overflow-wrap: anywhere; }
+/* Related tasks under a message: one collapsed row; the list is the details body. */
+.message-task-links { flex: none; }
+.message-task-links > summary { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; padding: 4px 8px;
+  border-radius: var(--r-md); background: var(--surface-2); font-size: var(--f-sm); color: var(--muted); list-style: none; }
+.message-task-links > summary::-webkit-details-marker { display: none; }
+.message-task-links > summary:hover { color: var(--text); }
+.message-task-links > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.message-task-links[open] > summary { color: var(--text); }
+.message-task-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+
+/* Task tab above the narrow breakpoint: the list and the detail are two panes that scroll on their own under the tab bar,
+   so picking a task far down the list shows its detail without scrolling back up. Below it, one column scrolls as before. */
+@media (min-width: 701px) {
+  .workbench-content.wb-split { display: flex; flex-direction: column; padding-bottom: 0; }
+  .wb-split > .workbench-tasks { flex: 1 0 260px; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+  .wb-split .workbench-groups, .wb-split .wb-task-detail { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+  /* Room for the cards' focus rings inside the scroller, without moving the cards. */
+  .wb-split .workbench-groups { margin: -3px -6px var(--s-4) -3px; padding: 3px 6px 3px 3px; }
+  .wb-split .wb-task-detail { margin-bottom: var(--s-4); }
+  .wb-split > button.small { align-self: flex-start; margin-bottom: 14px; }
+}
+@media (max-width: 700px) {
+  .workbench { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; }   /* full screen: square */
+  .workbench-content { padding: 0 12px 14px; scroll-padding-top: 112px; }
+  .wb-overview { padding-top: 14px; }
+  .workbench-tasks { grid-template-columns: minmax(0, 1fr); }
+  .workbench-task, .workbench-actions button, .wb-menu button { min-height: 44px; }
+  /* Phone: each action group is one full-width row, so 更多 always ends a row and its right-aligned menu stays on screen. */
+  .wb-actions-main, .wb-actions-side { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; width: 100%; margin-left: 0; }
+  .wb-actions-side { grid-template-columns: 1fr 1fr; grid-auto-columns: auto; }
+  .wb-detail-actions .wb-icon-button { justify-content: center; padding-inline: 10px; }
+  .workbench-tabs { flex-wrap: wrap; overflow-x: visible; margin: 0 -12px 12px; padding: 6px 12px 4px; }
+  .workbench-tabs button { min-height: 44px; }
+  /* Narrow: the bar takes four rows, too much to keep pinned; the controls pair up two per row. */
+  .wb-filterbar { position: static; margin: -4px -12px 12px; padding: 4px 12px 8px; }
+  .wb-filterbar .wb-fb-control { height: 40px; }
+  .wb-fb-search { flex-basis: 100%; }
+  .wb-fb-quick { flex-basis: 100%; }
+  .wb-filterbar .wb-fb-quick-btn { flex: 1 1 0; justify-content: center; min-width: 0; padding: 0 6px; }
+  .wb-fb-controls > .wb-fb-select, .wb-fb-labels, .wb-fb-sortbox { flex: 1 1 calc(50% - 4px); min-width: 0; margin-left: 0; }
+  .wb-fb-labels .wb-fb-trigger, .wb-fb-sortbox .wb-fb-select { width: 100%; flex: 1 1 auto; min-width: 0; }
+  .wb-fb-sortcap { display: none; }   /* the options name the order; the column is too narrow for both */
+  /* The label button sits in the right column here: open the list leftwards so it never widens the page. */
+  .wb-fb-menu { left: auto; right: 0; }
+}
+
+/* ---- label library (workbench-labels.js): the task form's grouped picker, filter group headings, the manager ---- */
+.wb-form-field { display: grid; gap: 4px; font-size: var(--f-md); color: var(--muted); }   /* a <label> would click the first chip */
+.wb-label-picker { display: grid; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.wb-lp-sections { display: grid; gap: 8px; }
+.wb-lp-group { display: grid; gap: 5px; }
+.wb-lp-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: var(--f-sm); }
+.wb-lp-title { font-weight: 600; color: var(--muted); }
+.wb-lp-desc { color: var(--muted); }
+.wb-lp-required { font-weight: 600; }
+.wb-lp-missing .wb-lp-title { color: var(--accent); }
+.wb-lp-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.wb-lp-chip { cursor: pointer; }
+.wb-lp-chip .wb-lp-tick { width: 10px; height: 10px; border: 1.5px solid currentColor; border-radius: var(--r-xs); opacity: .6; }
+.wb-lp-chip[aria-pressed="true"] { border-width: 2px; font-weight: 600; }
+.wb-lp-chip[aria-pressed="true"] .wb-lp-tick { background: currentColor; opacity: 1; }
+.wb-lp-archived { text-decoration: line-through; opacity: .75; }
+.wb-lp-input { width: 100%; }
+.wb-lp-note { margin: 0; padding: 6px 8px; border-radius: var(--r-md); font-size: var(--f-sm); color: var(--text); background: var(--accent-soft); border-left: 3px solid var(--accent); }
+.wb-fb-group { margin: 6px 8px 2px; font-size: var(--f-xs); font-weight: 600; color: var(--muted); }
+/* 交给验收者 (reviewer takeover): the three review modes. */
+.wb-takeover-modes { display: grid; gap: 6px; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-lg); }
+.wb-takeover-modes legend { padding: 0 4px; font-weight: 600; color: var(--text); }
+.wb-takeover-option .wb-check-text { display: grid; gap: 2px; }
+.wb-takeover-member { margin-left: 26px; }
+.wb-takeover-member select:disabled { opacity: .55; }
+.wb-label-manager { width: min(760px, calc(100vw - 32px)); height: min(720px, calc(100dvh - 48px)); max-height: none; background: var(--bg); }
+.wb-lm-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.wb-lm-head { justify-content: space-between; background: var(--surface); }
+.wb-lm-head h2 { margin: 0; }
+.wb-lm-content { flex: 1; min-height: 0; overflow: auto; padding: var(--s-3) var(--s-4) var(--s-4); display: grid; align-content: start; gap: 12px; }
+.wb-lm-content > p { margin: 0; }
+.wb-lm-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.wb-lm-group h3 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
+.wb-lm-group-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.wb-lm-label { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); }
+.wb-lm-label-main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.wb-lm-usage { font-size: var(--f-sm); color: var(--muted); }
+.wb-lm-ungrouped-row { display: grid; gap: 2px; }
+.wb-lm-move { display: flex; align-items: center; gap: 6px; font-size: var(--f-sm); color: var(--muted); justify-self: end; }
+.wb-lm-move select { width: auto; }
+@media (max-width: 700px) {
+  .wb-label-manager { width: 100vw; height: 100dvh; max-width: 100vw; border-radius: 0; }
+  .wb-lm-content { padding: 10px 12px 16px; }
+  .wb-lm-label .workbench-setting-actions { width: 100%; justify-content: flex-start; }
+}

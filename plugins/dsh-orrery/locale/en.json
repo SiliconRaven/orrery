@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "orrery",
+    "description": "Connects your sessions to a local orrery Hub: group-chat messages arrive as queued user messages, and sessions reply with the orrery tools."
+  }
+}

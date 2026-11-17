@@ -1,0 +1,31 @@
+{
+  "version": 7,
+  "record": {
+    "identity": {
+      "formatVersion": 4,
+      "createdAt": 1767500000000,
+      "isSeeded": false,
+      "inheritedEventCount": 0
+    },
+    "rows": {
+      "title": {
+        "ver": 1,
+        "seq": 5,
+        "val": "no working directory"
+      },
+      "sessionListMetadata": {
+        "ver": 1,
+        "seq": 5,
+        "val": {
+          "blank": true,
+          "lastPromptAt": null
+        }
+      },
+      "subagent": {
+        "ver": 2,
+        "seq": 5,
+        "val": {}
+      }
+    }
+  }
+}

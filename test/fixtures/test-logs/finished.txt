@@ -1,0 +1,39 @@
+✔ passes (0.739ms)
+✖ fails plainly (0.8362ms)
+▶ outer
+  ✖ inner fails (0.165ms)
+✖ outer (0.4506ms)
+✔ b ok (0.6271ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 2
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 115.7768
+
+✖ failing tests:
+
+test at a.test.mjs:4:1
+✖ fails plainly (0.8362ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 2
+
+      at TestContext.<anonymous> (file:///example/a.test.mjs:4:38)
+      at Test.runInAsyncScope (node:async_hooks:227:14) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at a.test.mjs:5:38
+✖ inner fails (0.165ms)
+  Error: boom
+  second line
+      at TestContext.<anonymous> (file:///example/a.test.mjs:5:72)
+      at Test.runInAsyncScope (node:async_hooks:227:14)

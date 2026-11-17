@@ -1,0 +1,90 @@
+/*
+ * The "+" panel: a small window of its own under +, above the docked windows (docs/desktop.md). One 44px cell per
+ * supported app with its 32px icon, 4px apart, 7px from the edge (1px border + 6px padding); lib/strip.mjs PANEL and
+ * panelBounds size the window from the same numbers, so the cells fill it in balanced rows.
+ */
+:root {
+  --bg: #232428;
+  --hover: #33343a;
+  --press: #3b3c43;
+  --line: #3a3b42;
+  --ink: #e6e4e0;
+  --muted: #9a978f;
+  --accent: #8f88f0;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+html { border: 1px solid var(--line); background: var(--bg); }
+body {
+  padding: 6px;
+  display: grid;
+  align-content: center;   /* a window a pixel or two taller than asked (display scaling) keeps the rows centred */
+  overflow: hidden;
+  color: var(--ink);
+  font: 13px/1.4 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  user-select: none;
+}
+#apps { display: grid; grid-template-columns: repeat(var(--cols, 1), 44px); gap: 4px; outline: none; }
+.app {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  cursor: default;
+}
+.app:hover:not([aria-disabled="true"]) { background: var(--hover); }
+.app:active:not([aria-disabled="true"]) { background: var(--press); }
+.app:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.glyph { position: relative; display: block; width: 32px; height: 32px; }
+.glyph .icon { display: block; width: 32px; height: 32px; object-fit: contain; pointer-events: none; }
+.glyph .letter {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #3f4048;
+  color: var(--ink);
+  font: 600 16px/1 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+}
+.glyph [hidden] { display: none; }
+.app[aria-disabled="true"] .icon, .app[aria-disabled="true"] .letter { opacity: 0.32; filter: grayscale(1); }
+/* Running apps carry a short line under the icon, like the taskbar: accent when it has windows to add. An app that is
+   not running has none (a click starts it); one being started pulses until its window appears or the watch ends. */
+.app[data-status="add"]::after, .app[data-status="docked"]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 12px;
+  height: 3px;
+  margin-left: -6px;
+  border-radius: 2px;
+  background: var(--muted);
+}
+.app[data-status="add"]::after { background: var(--accent); }
+.app[data-status="starting"] .glyph { animation: starting 1.2s ease-in-out infinite; }
+.app[data-status="starting"] .icon, .app[data-status="starting"] .letter { opacity: 1; filter: none; }
+@keyframes starting { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .app[data-status="starting"] .glyph { animation: none; opacity: 0.6; } }
+.count {
+  position: absolute;
+  right: -6px;
+  bottom: -5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg);
+  color: #15141c;
+  font: 700 10px/16px "Segoe UI", system-ui, sans-serif;
+  text-align: center;
+}
+.app:hover .count { box-shadow: 0 0 0 2px var(--hover); }

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "orrery",
+    "description": "把会话接到本机的 orrery Hub：群聊消息作为排队的用户消息进入会话，会话用 orrery 工具回到群里。"
+  }
+}

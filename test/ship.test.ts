@@ -1,0 +1,635 @@
+// ship: the merge script, its signed ticket, and the Hub's read-only check of the result (docs/collaboration.md).
+// Every git action happens in temporary repositories under the system temp directory.
+import assert from 'node:assert/strict';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { dirname, join, resolve } from 'node:path';
+import { test, type TestContext } from 'node:test';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { acquireLock, docsOnly, parseCommandLine, ship, ShipRefused as ScriptRefused, type ShipOptions, type ShipReport, type Verified } from '../scripts/ship.ts';
+import type { CollaborationActor, CollaborationCommand, Task, TaskResult } from '../src/core/collaboration-types.ts';
+import { Hub } from '../src/core/hub.ts';
+import { Store } from '../src/core/store.ts';
+import { shipState } from '../src/plugins/tasks/model.ts';
+import { readShipTicket, reportShip, SHIP_SCRIPT, shipCommand, shipFor, shipForRunner, ShipRefused, shipTicket, verifyShip } from '../src/plugins/tasks/ship.ts';
+import { ticketFor } from '../src/mcp/wait-core.ts';
+import { ZCODE_WAIT } from '../src/core/types.ts';
+import { nativeHeaders, holdScript, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { collaborationRecords, saveCollaborationRecord } from '../src/plugins/tasks/store.ts';
+import { PluginHost } from '../src/core/plugin.ts';
+import { officialPlugins } from '../src/plugins/index.ts';
+
+const SECRET = 'a'.repeat(64);
+const SCRIPT = resolve(import.meta.dirname, '../scripts/ship.ts');
+
+/** A repository with main checked out, a clean tree and the given check list on main. */
+function repo(t: TestContext, code = 'require("fs").appendFileSync(process.argv[1], "x")', arg?: string) {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5 }));
+  const root = join(dir, 'repo');
+  mkdirSync(root);
+  const log = join(dir, 'runs.txt');
+  const g = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
+  const write = (file: string, content: string) => { mkdirSync(dirname(join(root, file)), { recursive: true }); writeFileSync(join(root, file), content); };
+  const commit = (message: string) => { g('add', '-A'); g('commit', '-qm', message); return g('rev-parse', 'HEAD'); };
+  const checks = (body: string, argument: string) => JSON.stringify({ checks: [{ name: 'probe', argv: ['node', '-e', body, argument], timeout_seconds: 60 }] });
+  g('init', '-q', '-b', 'main');
+  g('config', 'user.name', 'tester');
+  g('config', 'user.email', 'tester@example.invalid');
+  g('config', 'core.autocrlf', 'false');
+  write('README.md', 'hello\n');
+  write('.premerge/checks.json', checks(code, arg ?? log));
+  commit('base');
+  /** A branch with `files`, left unmerged; main stays checked out. */
+  const branch = (name: string, files: Record<string, string>) => {
+    g('checkout', '-q', '-b', name);
+    for (const [file, content] of Object.entries(files)) write(file, content);
+    const sha = commit(`work on ${name}`);
+    g('checkout', '-q', 'main');
+    return sha;
+  };
+  const runs = () => existsSync(log) ? readFileSync(log, 'utf8').length : 0;
+  return { dir, root, log, g, write, commit, branch, checks, runs };
+}
+
+function fakeHub(commitSha: string, extra: Partial<Verified> = {}) {
+  const reports: ShipReport[] = [];
+  return { reports, verify: async (): Promise<Verified> => ({ taskId: 'task-id', shortId: 'abcd1234', commitSha, reviewer: 'kimi', round: 2, verdict: 'pass', ...extra }),
+    report: async (r: ShipReport) => { reports.push(r); } };
+}
+
+const options = (root: string, hub: ShipOptions['hub'], extra: Partial<ShipOptions> = {}): ShipOptions => ({
+  agent: 'claude-code', type: 'fix', summary: 'Fix the thing', trailers: ['Co-Authored-By: Someone <someone@example.invalid>'], cwd: root, lockWaitMs: 5000, hub, ...extra,
+});
+const refused = (pattern: RegExp) => (e: unknown) => e instanceof ScriptRefused && pattern.test(e.message);
+const noLeftovers = (r: ReturnType<typeof repo>) => {
+  assert.equal(existsSync(join(r.root, '.git', 'ship.lock')), false, 'lock released');
+  assert.equal(r.g('worktree', 'list', '--porcelain').match(/^worktree /gm)?.length, 1, 'temporary worktree removed');
+};
+
+test('ship merges with --no-ff, the Reviewed-by line and trailers, and lands the checked commit on main', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  const before = r.g('rev-parse', 'main');
+  const hub = fakeHub(sha);
+  const out = await ship(options(r.root, hub));
+  assert.equal(out.merged, true);
+  assert.ok(out.merged);
+  assert.equal(r.g('rev-parse', 'main'), out.mergeCommit);
+  assert.equal(r.g('rev-parse', 'main^1'), before);
+  assert.equal(r.g('rev-parse', 'main^2'), sha);
+  assert.equal(r.g('log', '-1', '--format=%B', 'main'), `[claude-code] fix: Fix the thing\n\nReviewed-by: kimi (task abcd1234, r2, pass, ${sha.slice(0, 7)})\nCo-Authored-By: Someone <someone@example.invalid>`);
+  assert.equal(r.runs(), 1, 'checks ran once');
+  assert.deepEqual(hub.reports, [{ mergeCommit: out.mergeCommit, pushed: false, retried: [] }], 'no origin: pushed is false');
+  assert.equal(out.pushError, undefined, 'no origin is not a push failure');
+  noLeftovers(r);
+});
+
+test('ship writes "self" for a self-reviewed task', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  await ship(options(r.root, fakeHub(sha, { verdict: 'self', reviewer: 'codex' })));
+  assert.match(r.g('log', '-1', '--format=%B', 'main'), /Reviewed-by: codex \(task abcd1234, r2, self, /);
+});
+
+test('ship refuses when the branch moved after review, and no longer needs the old commit to be a branch head to say so', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  r.g('checkout', '-q', 'feature');
+  r.write('src.txt', 'changed after review\n');
+  r.commit('later commit');
+  r.g('checkout', '-q', 'main');
+  const hub = fakeHub(sha);
+  await assert.rejects(ship(options(r.root, hub)), refused(/no local branch points at/));
+  assert.deepEqual(hub.reports, [], 'a refusal is not reported');
+  noLeftovers(r);
+});
+
+test('ship refuses a main worktree with uncommitted changes, tracked or untracked', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  const before = r.g('rev-parse', 'main');
+  r.write('stray.txt', 'not committed\n');
+  await assert.rejects(ship(options(r.root, fakeHub(sha))), refused(/uncommitted changes/));
+  assert.equal(r.g('rev-parse', 'main'), before);
+  noLeftovers(r);
+});
+
+test('a merge conflict is reported, not resolved, and leaves main alone', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'README.md': 'branch version\n' });
+  r.write('README.md', 'main version\n');
+  const before = r.commit('main moves on');
+  const hub = fakeHub(sha);
+  const out = await ship(options(r.root, hub));
+  assert.equal(out.merged, false);
+  assert.ok(!out.merged);
+  assert.equal(out.kind, 'conflict');
+  assert.match(out.detail, /README\.md/);
+  assert.deepEqual(hub.reports, [{ failed: { kind: 'conflict', detail: out.detail } }]);
+  assert.equal(r.g('rev-parse', 'main'), before);
+  assert.equal(r.runs(), 0, 'no checks on a conflict');
+  noLeftovers(r);
+});
+
+test('only docs and markdown changed: the checks do not run', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'docs/guide.md': 'guide\n', 'notes.md': 'notes\n' });
+  const out = await ship(options(r.root, fakeHub(sha)));
+  assert.equal(out.merged, true);
+  assert.equal(r.runs(), 0);
+  assert.equal(docsOnly(['docs/a.md', 'b.md']), true);
+  assert.equal(docsOnly(['docs/a.md', 'src/a.ts']), false);
+  assert.equal(docsOnly([]), false);
+});
+
+test('a check that fails twice goes back to the executor; main\'s check list is the one that counts', async (t) => {
+  const r = repo(t, 'require("fs").appendFileSync(process.argv[1], "x"); process.exit(1)');
+  const sha = r.branch('feature', { '.premerge/checks.json': r.checks('process.exit(0)', 'ignored'), 'src.txt': 'code\n' });
+  const before = r.g('rev-parse', 'main');
+  const hub = fakeHub(sha);
+  const out = await ship(options(r.root, hub));
+  assert.equal(out.merged, false);
+  assert.ok(!out.merged);
+  assert.equal(out.kind, 'checks');
+  assert.equal(r.runs(), 2, 'one automatic rerun, then stop');
+  assert.deepEqual(hub.reports, [{ failed: { kind: 'checks', detail: out.detail } }]);
+  assert.equal(r.g('rev-parse', 'main'), before);
+  noLeftovers(r);
+});
+
+test('a check that fails once and passes on the rerun merges, and the rerun is recorded', async (t) => {
+  const r = repo(t, 'const fs = require("fs"), p = process.argv[1]; fs.appendFileSync(p, "x"); process.exit(fs.readFileSync(p, "utf8").length > 1 ? 0 : 1)');
+  const hub = fakeHub(r.branch('feature', { 'src.txt': 'code\n' }));
+  const out = await ship(options(r.root, hub));
+  assert.equal(out.merged, true);
+  assert.equal(r.runs(), 2);
+  assert.deepEqual((hub.reports[0] as { retried: string[] }).retried, ['probe']);
+});
+
+test('main moving during the checks refuses the landing', async (t) => {
+  const r = repo(t, 'require("child_process").execFileSync("git", ["-C", process.argv[1], "commit", "--allow-empty", "-qm", "moved"])', '.');
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  r.write('.premerge/checks.json', r.checks('require("child_process").execFileSync("git", ["-C", process.argv[1], "commit", "--allow-empty", "-qm", "moved"])', r.root));
+  r.commit('checks that move main');
+  const hub = fakeHub(sha);
+  await assert.rejects(ship(options(r.root, hub)), refused(/main moved/));
+  assert.notEqual(r.g('log', '-1', '--format=%s', 'main'), `[claude-code] fix: Fix the thing`);
+  assert.deepEqual(hub.reports, []);
+  noLeftovers(r);
+});
+
+test('a task that changes during the checks is not landed', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  const before = r.g('rev-parse', 'main');
+  const hub = fakeHub(sha), verify = hub.verify;
+  let calls = 0;
+  hub.verify = async () => { if (++calls === 3) throw new ScriptRefused('the Hub refused: reopened'); return verify(); };
+  await assert.rejects(ship(options(r.root, hub)), refused(/reopened/));
+  assert.equal(r.runs(), 1, 'the checks had run');
+  assert.equal(r.g('rev-parse', 'main'), before);
+  assert.deepEqual(hub.reports, []);
+  noLeftovers(r);
+});
+
+test('the main worktree switching branch during the checks refuses the landing', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  r.write('.premerge/checks.json', r.checks('require("child_process").execFileSync("git", ["-C", process.argv[1], "checkout", "-q", "-b", "elsewhere"])', r.root));
+  const before = r.commit('checks that switch the branch');
+  await assert.rejects(ship(options(r.root, fakeHub(sha))), refused(/no longer has main checked out/));
+  assert.equal(r.g('rev-parse', 'main'), before);
+  assert.equal(r.g('rev-parse', 'elsewhere'), before, 'the other branch did not move');
+});
+
+test('a failed push keeps the local merge, reports pushed:false, and the next ship pushes both', async (t) => {
+  const r = repo(t);
+  const bare = join(r.dir, 'origin.git');
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare], { windowsHide: true });
+  r.g('remote', 'add', 'origin', join(r.dir, 'no-such-remote.git'));
+  const first = r.branch('one', { 'one.txt': '1\n' });
+  const hub = fakeHub(first);
+  const failed = await ship(options(r.root, hub));
+  assert.ok(failed.merged);
+  assert.equal(failed.pushed, false);
+  assert.ok(failed.pushError, 'the push failure is surfaced');
+  assert.equal(r.g('rev-parse', 'main'), failed.mergeCommit, 'local merge stays');
+  assert.deepEqual(hub.reports, [{ mergeCommit: failed.mergeCommit, pushed: false, retried: [] }]);
+
+  r.g('remote', 'set-url', 'origin', bare);
+  const second = await ship(options(r.root, fakeHub(r.branch('two', { 'two.txt': '2\n' }))));
+  assert.ok(second.merged);
+  assert.equal(second.pushed, true);
+  assert.equal(execFileSync('git', ['-C', bare, 'rev-parse', 'main'], { encoding: 'utf8', windowsHide: true }).trim(), second.mergeCommit);
+  assert.equal(execFileSync('git', ['-C', bare, 'merge-base', '--is-ancestor', failed.mergeCommit, 'main'], { windowsHide: true }).length, 0, 'the earlier merge went up too');
+});
+
+test('lock: waits out a live holder and names it, takes over from a dead one', async (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5 }));
+  const path = join(dir, 'ship.lock');
+  const holder = (pid: number) => JSON.stringify({ pid, cwd: 'elsewhere', startedAt: 1000, token: 'earlier' });
+  writeFileSync(path, holder(process.pid));
+  await assert.rejects(acquireLock(path, 100), refused(new RegExp(`held by pid ${process.pid} since 1970`)));
+  const gone = spawnSync(process.execPath, ['-e', ''], { windowsHide: true }).pid;
+  writeFileSync(path, holder(gone));
+  const release = await acquireLock(path, 100);
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).pid, process.pid);
+  release();
+  assert.equal(existsSync(path), false);
+  assert.deepEqual(readdirSync(dir), [], 'no stale file left');
+});
+
+test('two ship processes run one at a time and both land', async (t) => {
+  const r = repo(t, 'const fs = require("fs"), p = process.argv[1]; fs.appendFileSync(p, "s"); setTimeout(() => fs.appendFileSync(p, "e"), 400)');
+  const shas: Record<string, string> = { one: r.branch('one', { 'one.txt': '1\n' }), two: r.branch('two', { 'two.txt': '2\n' }) };
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const { ticket } = JSON.parse(body);
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(req.url === '/bridge/ship-verify' ? { taskId: ticket, shortId: ticket, commitSha: shas[ticket], reviewer: 'kimi', round: 1, verdict: 'pass' } : {}));
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  t.after(() => server.close());
+  const port = (server.address() as { port: number }).port;
+  const run = (ticket: string) => new Promise<number | null>((done) => {
+    const child = spawn(process.execPath, [SCRIPT, '--ticket', ticket, '--hub', `http://127.0.0.1:${port}`, '--agent', 'claude-code', '--type', 'test', '--summary', `Ship ${ticket}`], { cwd: r.root, stdio: 'ignore', windowsHide: true });
+    child.on('close', done);
+  });
+  assert.deepEqual(await Promise.all([run('one'), run('two')]), [0, 0]);
+  assert.equal(readFileSync(r.log, 'utf8'), 'sese', 'checks never overlapped');
+  assert.equal(r.g('merge-base', '--is-ancestor', shas.one, 'main'), '');
+  assert.equal(r.g('merge-base', '--is-ancestor', shas.two, 'main'), '');
+  noLeftovers(r);
+});
+
+test('the command line rejects placeholders left in and non-English summaries', () => {
+  const base = ['--ticket', 't', '--hub', 'http://127.0.0.1:1', '--agent', 'claude-code/ship', '--type', 'fix', '--summary', 'Fix it'];
+  assert.equal(parseCommandLine(base).summary, 'Fix it');
+  const swap = (flag: string, value: string) => base.map((item, i) => (base[i - 1] === flag ? value : item));
+  assert.throws(() => parseCommandLine(swap('--summary', '<English summary>')), ScriptRefused);
+  assert.throws(() => parseCommandLine(swap('--summary', '修复问题')), ScriptRefused);
+  assert.throws(() => parseCommandLine(swap('--type', '<type>')), ScriptRefused);
+  assert.throws(() => parseCommandLine(swap('--agent', '<name>')), ScriptRefused);
+  assert.throws(() => parseCommandLine([...base, '--trailer', 'no colon here']), ScriptRefused);
+});
+
+// ---- the Hub's side ----
+
+const user: CollaborationActor = { kind: 'user' };
+const member = (memberId: string): CollaborationActor => ({ kind: 'member', memberId });
+const a = member('a'), b = member('b');
+
+/** A Hub with members a (executor) and b, working in `cwd`, driven through the collaboration commands. */
+function hubFixture(t: TestContext, cwd = '/tmp') {
+  const store = new Store(':memory:', new PluginHost(officialPlugins));
+  store.insertCluster({ id: 'c', name: 'c', category: '', createdAt: '2026-01-01' }, ['a', 'b'].map((id) => ({
+    id, clusterId: 'c', name: `name-${id}`, avatar: null, harness: 'mock', model: null, effort: null, mode: 'native' as const,
+    workerSessionId: 'session-' + id, cwd, origin: 'attached' as const, removedAt: null,
+  })));
+  const hub = new Hub({ store, nativeAdapters: {} });
+  t.after(async () => { await hub.close(); store.close(); });
+  let serial = 0;
+  const send = (actor: CollaborationActor, command: Omit<CollaborationCommand, 'operationId'>) => hub.collaboration.command(actor, 'c', { ...command, operationId: 'op-' + ++serial });
+  const read = (id: string) => hub.collaboration.query(user, 'c', { kind: 'task', taskId: id }) as TaskResult;
+  const act = (actor: CollaborationActor, task: Task, command: Partial<CollaborationCommand> & { action: CollaborationCommand['action'] }) =>
+    send(actor, { taskId: task.id, expectedRevision: read(task.id).task.revision, ...command });
+  const evidence = hub.sendFromUser('c', 'proof');
+  /** A task of a, submitted for `reviewer`, with `sha`; returns the task as it stands then. */
+  const submitted = (sha: string, reviewer: CollaborationActor = b, extra: Partial<CollaborationCommand> = {}) => {
+    const task = send(user, { action: 'task.create', title: 'work', scope: 's', acceptance: 'a', reviewer, ...extra }).task!;
+    const claim = act(a, task, { action: 'task.claim' });
+    act(a, task, { action: 'task.start', assignmentId: claim.assignment!.id });
+    return { task, submission: act(a, task, { action: 'task.submit', assignmentId: claim.assignment!.id, summary: 'done', evidenceMessageIds: [evidence.id], commitSha: sha }).submission! };
+  };
+  const approved = (sha: string, extra: Partial<CollaborationCommand> = {}) => {
+    const { task, submission } = submitted(sha, b, extra);
+    act(b, task, { action: 'task.review', submissionId: submission.id, verdict: 'approve', reason: 'ok' });
+    const state = shipState(store, 'c', task.id)!;
+    return { task, submission, ticket: shipTicket(SECRET, { clusterId: 'c', taskId: task.id, submissionId: submission.id, commitSha: state.commitSha, reviewer: state.reviewer }) };
+  };
+  return { store, hub, send, read, act, submitted, approved };
+}
+
+const status = (expected: number) => (e: unknown) => e instanceof ShipRefused && e.status === expected;
+
+test('ticket: forged, rebound or wrong-domain tickets are refused; a good one yields the Reviewed-by fields', (t) => {
+  const f = hubFixture(t), { task, submission, ticket } = f.approved('abcdef0');
+  assert.deepEqual(readShipTicket(SECRET, ticket), { clusterId: 'c', taskId: task.id, submissionId: submission.id, commitSha: 'abcdef0', reviewer: 'b' });
+  const v = verifyShip(f.hub, SECRET, ticket);
+  assert.deepEqual(v, { taskId: task.id, shortId: task.id.slice(0, 8), commitSha: 'abcdef0', reviewer: 'name-b', round: 1, verdict: 'pass' });
+  assert.throws(() => verifyShip(f.hub, 'b'.repeat(64), ticket), status(403), 'signed with another secret');
+  assert.throws(() => verifyShip(f.hub, SECRET, `${ticket.slice(0, -1)}${ticket.endsWith('0') ? '1' : '0'}`), status(403), 'tampered signature');
+  assert.throws(() => verifyShip(f.hub, SECRET, undefined), status(403));
+  assert.throws(() => verifyShip(f.hub, SECRET, ticketFor(ZCODE_WAIT, SECRET, 'abc')), status(403), 'a wait ticket is not a ship ticket');
+  const rebound = (claims: Partial<Parameters<typeof shipTicket>[1]>) => shipTicket(SECRET, { clusterId: 'c', taskId: task.id, submissionId: submission.id, commitSha: 'abcdef0', reviewer: 'b', ...claims });
+  assert.throws(() => verifyShip(f.hub, SECRET, rebound({ commitSha: '1234567' })), status(409), 'another commit');
+  assert.throws(() => verifyShip(f.hub, SECRET, rebound({ submissionId: 'other' })), status(409), 'another submission');
+  assert.throws(() => verifyShip(f.hub, SECRET, rebound({ reviewer: 'a' })), status(409), 'another reviewer');
+  assert.throws(() => verifyShip(f.hub, SECRET, rebound({ taskId: 'other' })), status(409), 'another task');
+  assert.throws(() => verifyShip(f.hub, SECRET, rebound({ clusterId: 'other' })), status(409), 'another cluster');
+});
+
+test('ticket: a reviewer who is also the executor is refused', (t) => {
+  const f = hubFixture(t), { task, submission } = f.approved('abcdef0');
+  const record = collaborationRecords<any>(f.store, task.id, 'review')[0];
+  saveCollaborationRecord(f.store, task.id, 'review', { ...record, reviewer: a });
+  const ticket = shipTicket(SECRET, { clusterId: 'c', taskId: task.id, submissionId: submission.id, commitSha: 'abcdef0', reviewer: 'a' });
+  assert.throws(() => verifyShip(f.hub, SECRET, ticket), status(403));
+});
+
+test('only a ship report can record task.shipped or task.ship_failed', (t) => {
+  const f = hubFixture(t), { task, submission } = f.approved('abcdef0');
+  for (const action of ['task.shipped', 'task.ship_failed'] as const) {
+    for (const actor of [user, a, b]) {
+      assert.throws(() => f.act(actor, task, { action, submissionId: submission.id, commitSha: 'abcdef0', reason: 'x' }), (e: any) => e.code === 'FORBIDDEN');
+    }
+  }
+  assert.equal(f.read(task.id).task.status, 'completed');
+});
+
+test('the target branch comes from git config: ship lands there, main stays and nothing is pushed', async (t) => {
+  const r = repo(t);
+  const bare = join(r.dir, 'origin.git');
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare], { windowsHide: true });
+  r.g('remote', 'add', 'origin', bare);
+  const before = r.g('rev-parse', 'main');
+  r.g('branch', 'develop');
+  r.g('worktree', 'add', '-q', join(r.dir, 'develop'), 'develop');
+  r.g('config', 'orrery.shipBranch', 'develop');
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  const out = await ship(options(r.root, fakeHub(sha)));
+  assert.ok(out.merged);
+  assert.equal(out.pushed, false, 'only a landing on main is pushed');
+  assert.equal(r.g('rev-parse', 'develop'), out.mergeCommit);
+  assert.equal(r.g('rev-parse', 'develop^2'), sha);
+  assert.equal(r.g('rev-parse', 'main'), before, 'main stays where it was');
+  assert.equal(execFileSync('git', ['-C', bare, 'for-each-ref'], { encoding: 'utf8', windowsHide: true }), '', 'the remote got nothing');
+});
+
+test('a setting that names no branch refuses instead of falling back to main', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  const before = r.g('rev-parse', 'main');
+  r.g('config', 'orrery.shipBranch', 'not a branch');
+  await assert.rejects(ship(options(r.root, fakeHub(sha))), refused(/does not name a branch/));
+  assert.equal(r.g('rev-parse', 'main'), before);
+});
+
+test('the Hub checks the merge against the configured branch, not main', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  const f = hubFixture(t, r.root);
+  const { task, ticket } = f.approved(sha);
+  r.g('merge', '-q', '--no-ff', '-m', 'merged on main', sha);
+  const onMain = r.g('rev-parse', 'HEAD');
+  r.g('reset', '-q', '--hard', 'HEAD^');
+  r.g('checkout', '-q', '-b', 'develop');
+  r.g('merge', '-q', '--no-ff', '-m', 'merged on develop', sha);
+  const onDevelop = r.g('rev-parse', 'HEAD');
+  r.g('checkout', '-q', 'main');
+  r.g('merge', '-q', '--ff-only', onMain);
+  r.g('config', 'orrery.shipBranch', 'develop');
+  await assert.rejects(reportShip(f.hub, SECRET, { ticket, mergeCommit: onMain, pushed: false }), status(409), 'on main, but main is not the target');
+  assert.deepEqual(await reportShip(f.hub, SECRET, { ticket, mergeCommit: onDevelop, pushed: false }), { status: 'merged' });
+  assert.equal(f.read(task.id).task.status, 'merged');
+});
+
+test('a merge is recorded only once git shows it on main with the reviewed commit as second parent', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  const f = hubFixture(t, r.root);
+  const { task, submission, ticket } = f.approved(sha);
+
+  r.g('checkout', '-q', '-b', 'side');
+  r.g('merge', '-q', '--no-ff', '-m', 'merge on a side branch', sha);
+  const offMain = r.g('rev-parse', 'HEAD');
+  r.g('checkout', '-q', 'main');
+  await assert.rejects(reportShip(f.hub, SECRET, { ticket, mergeCommit: offMain, pushed: true }), status(409), 'not on main');
+
+  const other = r.branch('other', { 'other.txt': 'x\n' });
+  r.g('merge', '-q', '--no-ff', '-m', 'merge of something else', other);
+  await assert.rejects(reportShip(f.hub, SECRET, { ticket, mergeCommit: r.g('rev-parse', 'HEAD'), pushed: true }), status(409), 'second parent is not the reviewed commit');
+  await assert.rejects(reportShip(f.hub, SECRET, { ticket, mergeCommit: '--help', pushed: true }), status(400), 'not a commit id');
+  await assert.rejects(reportShip(f.hub, SECRET, { ticket: 'bad', mergeCommit: offMain, pushed: true }), status(403));
+  assert.equal(f.read(task.id).task.status, 'completed', 'nothing recorded yet');
+
+  // A dependent task, held by the reviewer, becomes ready when this one merges.
+  const dependent = f.send(user, { action: 'task.create', title: 'next', scope: 's', acceptance: 'a', dependencyIds: [task.id], reviewer: a }).task!;
+  f.act(user, dependent, { action: 'task.nominate', memberId: 'b' });
+
+  r.g('merge', '-q', '--no-ff', '-m', 'the real merge', sha);
+  const mergeCommit = r.g('rev-parse', 'HEAD');
+  assert.deepEqual(await reportShip(f.hub, SECRET, { ticket, mergeCommit, pushed: false, retried: ['test'] }), { status: 'merged' });
+  const after = f.read(task.id);
+  assert.equal(after.task.status, 'merged');
+  assert.equal(after.task.mergedCommitSha, mergeCommit);
+  assert.equal(after.task.mergedSubmissionId, submission.id);
+  assert.deepEqual(after.merges[0].recordedBy, { kind: 'system' });
+  assert.match(after.merges[0].reason, /pushed: false; checks retried: test/);
+  assert.ok(f.store.listMessages('c', 100).some((m) => m.mentions.includes('b') && /前置依赖已就绪/.test(m.body)), 'downstream owner told');
+
+  await assert.rejects(reportShip(f.hub, SECRET, { ticket, mergeCommit, pushed: false }), status(409), 'a replayed ticket is refused');
+  assert.throws(() => verifyShip(f.hub, SECRET, ticket), status(409), 'and cannot start another merge');
+});
+
+test('task.merge is only the way out for a ship that landed: git must show the merge', (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  const f = hubFixture(t, r.root);
+  const { task, submission } = f.approved(sha);
+  const merge = (commitSha: string) => f.act(b, task, { action: 'task.merge', commitSha });
+  const refused = (e: any) => e.code === 'MERGE_NOT_VERIFIED';
+
+  assert.throws(() => merge('abcdef1'), refused, 'no such commit');
+  r.g('checkout', '-q', '-b', 'side');
+  r.g('merge', '-q', '--no-ff', '-m', 'merge on a side branch', sha);
+  const offMain = r.g('rev-parse', 'HEAD');
+  r.g('checkout', '-q', 'main');
+  assert.throws(() => merge(offMain), refused, 'not on main');
+  const other = r.branch('other', { 'other.txt': 'x\n' });
+  r.g('merge', '-q', '--no-ff', '-m', 'merge of something else', other);
+  assert.throws(() => merge(r.g('rev-parse', 'HEAD')), refused, 'second parent is not the reviewed commit');
+  assert.equal(f.read(task.id).task.status, 'completed', 'nothing recorded yet');
+
+  r.g('merge', '-q', '--no-ff', '-m', 'the real merge', sha);
+  const mergeCommit = r.g('rev-parse', 'HEAD');
+  const done = merge(mergeCommit.slice(0, 10)).task!;
+  assert.deepEqual([done.status, done.mergedCommitSha, done.mergedSubmissionId], ['merged', mergeCommit.slice(0, 10), submission.id]);
+});
+
+test('an executor recording the merge of its self-reviewed task leaves one record that names nobody', (t) => {
+  const r = repo(t);
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  const f = hubFixture(t, r.root);
+  const { task } = f.submitted(sha, { kind: 'self' });
+  assert.equal(f.read(task.id).task.status, 'completed');
+  r.g('merge', '-q', '--no-ff', '-m', 'the real merge', sha);
+  const recorded = f.act(a, task, { action: 'task.merge', commitSha: r.g('rev-parse', 'HEAD') });
+  const records = f.store.listMessages('c', 100).filter((m) => m.kind === 'system' && m.collabEventId === recorded.eventId);
+  assert.equal(records.length, 1);
+  assert.match(records[0].body, /^任务 #1【work】已合并（提交 [0-9a-f]{7}），事件 \d+。$/);
+  assert.deepEqual(records[0].mentions, []);
+  assert.deepEqual(f.store.withDeliveries([records[0]])[0].deliveries, []);
+});
+
+test('a failed ship goes back to the executor, who is told, and the ticket dies', async (t) => {
+  const f = hubFixture(t), { task, ticket } = f.approved('abcdef0');
+  await assert.rejects(reportShip(f.hub, SECRET, { ticket, failed: { kind: 'other', detail: 'x' } }), status(400));
+  assert.deepEqual(await reportShip(f.hub, SECRET, { ticket, failed: { kind: 'conflict', detail: 'conflicting files:\nREADME.md' } }), { status: 'returned' });
+  const now = f.read(task.id).task;
+  assert.equal(now.status, 'pending');
+  assert.equal(now.assignedMemberId, 'a', 'back with its executor, who can start again');
+  assert.equal(now.approvedSubmissionId, null);
+  const notice = f.store.listMessages('c', 100).at(-1)!;
+  assert.deepEqual(notice.mentions.sort(), ['a', 'b']);
+  assert.equal(notice.body, `任务 #1【work】合并失败：文件有合并冲突，已退回执行者，事件 ${notice.collabEventId}。`);
+  assert.deepEqual(f.store.getEvent(notice.collabEventId!)?.payload, {
+    action: 'task.ship_failed', taskId: task.id, reason: 'conflict: conflicting files:\nREADME.md', eventId: notice.collabEventId,
+  });
+  assert.equal(f.act(a, task, { action: 'task.start' }).task!.status, 'working', 'the executor starts it without claiming');
+  assert.throws(() => verifyShip(f.hub, SECRET, ticket), status(409), 'the old ticket no longer works');
+});
+
+test('ship check notices are short and save the full normal output tail or the bounded end of oversized output', async (t) => {
+  const f = hubFixture(t);
+  const tail = 'x'.repeat(3977) + '\nlast assertion failed.\n';
+  const detail = 'npm test failed twice:\n' + tail;
+  for (const diagnostic of [detail, 'earliest output\n' + 'x'.repeat(5000) + '\n' + detail]) {
+    const { ticket } = f.approved('abcdef0');
+    assert.deepEqual(await reportShip(f.hub, SECRET, { ticket, failed: { kind: 'checks', detail: diagnostic } }), { status: 'returned' });
+    const notice = f.store.listMessages('c', 100).at(-1)!;
+    assert.equal(notice.body, `任务 #${diagnostic === detail ? 1 : 2}【work】合并失败：合并前检查未通过，已退回执行者，事件 ${notice.collabEventId}。`);
+    const payload = f.store.getEvent(notice.collabEventId!)?.payload as { reason: string };
+    const expected = diagnostic === detail ? detail : '…（仅保留末尾）\n' + diagnostic.slice(-4600);
+    assert.equal(payload.reason, 'checks: ' + expected);
+    assert.match(payload.reason, /last assertion failed\.\n$/);
+  }
+});
+
+test('get_task shows ship only to the member who runs it: the approving member, else the executor', (t) => {
+  const f = hubFixture(t);
+  const url = 'http://127.0.0.1:9';
+  const of = (task: Task, member: string) => shipForRunner(f.hub, SECRET, url, 'c', task.id, member);
+
+  const userTask = f.submitted('abcdef0', user);
+  f.act(user, userTask.task, { action: 'task.review', submissionId: userTask.submission.id, verdict: 'approve' });
+  const command = (of(userTask.task, 'a').ship as { command: string }).command;
+  assert.ok(command.includes(`node "${SHIP_SCRIPT}" --ticket s1.`), command);
+  assert.ok(command.includes(`--hub ${url} --agent <name> --type <type> --summary "<English summary>" [--trailer "..."]`), command);
+  assert.deepEqual(of(userTask.task, 'b'), {}, 'not the executor');
+
+  const selfTask = f.submitted('1234567', { kind: 'self' });
+  assert.ok('ship' in of(selfTask.task, 'a'), 'self-reviewed: its executor');
+  assert.equal(verifyShip(f.hub, SECRET, /--ticket (\S+)/.exec((of(selfTask.task, 'a').ship as { command: string }).command)![1]).verdict, 'self');
+
+  const memberTask = f.approved('7654321');
+  assert.deepEqual(of(memberTask.task, 'a'), {}, 'a member review hands the command to the reviewer');
+  assert.ok('command' in (shipFor(f.hub, SECRET, url, 'c', memberTask.task.id).ship ?? {}));
+  assert.ok('ship' in of(memberTask.task, 'b'), 'the approving reviewer can read the command again');
+
+  const approvedByUser = f.submitted('abc1234', b);
+  f.act(user, approvedByUser.task, { action: 'task.review', submissionId: approvedByUser.submission.id, verdict: 'approve' });
+  assert.ok('ship' in of(approvedByUser.task, 'a'), 'the user approved in the member reviewer\'s place: its executor');
+  assert.deepEqual(of(approvedByUser.task, 'b'), {}, 'that reviewer did not approve it');
+
+  const noMerge = f.submitted('abcdef1', b, { mergeRequired: false });
+  f.act(b, noMerge.task, { action: 'task.review', submissionId: noMerge.submission.id, verdict: 'approve', reason: 'ok' });
+  assert.deepEqual(shipFor(f.hub, SECRET, url, 'c', noMerge.task.id), {}, 'nothing to merge');
+});
+
+test('the ship command uses the Hub\'s own checkout and refuses an address or path it cannot put in a shell', () => {
+  assert.ok(SHIP_SCRIPT.endsWith('/scripts/ship.ts') && !SHIP_SCRIPT.includes('\\'));
+  assert.throws(() => shipCommand('s1.x.y', 'http://example.com:80'));
+  assert.throws(() => shipCommand('s1.x.y', 'http://127.0.0.1:1', 'C:/a"b/ship.ts'));
+});
+
+test('the Hub\'s ship code only ever runs read-only git', () => {
+  const code = readFileSync(resolve(import.meta.dirname, '../src/plugins/tasks/ship.ts'), 'utf8');
+  assert.equal(/child_process|execFile|spawn/.test(code), false, 'no way to start a process but the read-only helper');
+  const calls = [...code.matchAll(/\bgitSync\(([^)]*)\)/g)].map((m) => m[1]);
+  assert.ok(calls.length >= 2);
+  for (const call of calls) assert.match(call, /^cwd, ('merge-base'|'rev-parse'|'config', '--get'),/, call);
+});
+
+test('the whole new flow over HTTP, from a linked worktree: create with an executor, start, submit, review, ship', async (t) => {
+  const r = repo(t);
+  const sha = r.branch('agent/one', { 'src.txt': 'code\n' });
+  const linked = join(r.dir, 'reviewer');
+  r.g('worktree', 'add', '-q', '--detach', linked, 'main');
+  const app = await startTestHub();
+  t.after(async () => { await app.close(); rmSync(app.dir, { recursive: true, force: true, maxRetries: 5 }); });
+  app.hub.store.insertCluster({ id: 'c', name: 'c', category: '', createdAt: '2026-01-01' }, ['a', 'b'].map((id) => ({
+    id, clusterId: 'c', name: `name-${id}`, avatar: null, harness: 'mock', model: null, effort: null, mode: 'native' as const,
+    workerSessionId: 'session-' + id, cwd: r.root, origin: 'attached' as const, removedAt: null,
+  })));
+  const secret = JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8')).secret as string;
+  const send = (actor: CollaborationActor, command: Omit<CollaborationCommand, 'operationId'>) => app.hub.collaboration.command(actor, 'c', { ...command, operationId: crypto.randomUUID() });
+  const created = send(user, { action: 'task.create', title: 'work', scope: 's', acceptance: 'a', reviewer: b, memberId: 'a' }).task!;
+  assert.equal(created.assignedMemberId, 'a');
+  const start = send(a, { action: 'task.start', taskId: created.id, expectedRevision: created.revision });
+  const task = () => (app.hub.collaboration.query(user, 'c', { kind: 'task', taskId: created.id }) as TaskResult).task;
+  const submit = send(a, { action: 'task.submit', taskId: created.id, expectedRevision: task().revision, assignmentId: start.assignment!.id, summary: 'done', commitSha: sha });
+  send(b, { action: 'task.review', taskId: created.id, expectedRevision: task().revision, submissionId: submit.submission!.id, verdict: 'approve', reason: 'ok' });
+  const command = (shipFor(app.hub, secret, app.url, 'c', created.id).ship as { command: string }).command;
+  const ticket = /--ticket (\S+)/.exec(command)![1];
+  // Not spawnSync: the Hub answering this script runs in this very process.
+  const run = await new Promise<{ status: number | null; stderr: string }>((done) => {
+    const child = spawn(process.execPath, [SCRIPT, '--ticket', ticket, '--hub', app.url, '--agent', 'claude-code', '--type', 'feat', '--summary', 'Land the work'], { cwd: linked, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+    let stderr = '';
+    child.stderr.on('data', (c) => { stderr += c; });
+    child.on('close', (status) => done({ status, stderr }));
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(r.g('rev-parse', 'main^2'), sha);
+  assert.match(r.g('log', '-1', '--format=%B', 'main'), new RegExp(`^\\[claude-code\\] feat: Land the work\\n\\nReviewed-by: name-b \\(task ${created.id.slice(0, 8)}, r1, pass, ${sha.slice(0, 7)}\\)$`));
+  assert.equal(task().status, 'merged');
+  assert.equal(task().mergedCommitSha, r.g('rev-parse', 'main'));
+  const bad = await fetch(`${app.url}/bridge/ship-verify`, { method: 'POST', body: JSON.stringify({ ticket: 'forged' }) });
+  assert.equal(bad.status, 403, 'a forged ticket gets nowhere');
+});
+
+test('over MCP: an approving reviewer gets ship.command; the executor of a self-reviewed task gets it from get_task', async (t) => {
+  const hold = holdScript();
+  const app = await startTestHub({ mock: { script: hold.script } });
+  t.after(async () => { hold.release(); await app.close(); });
+  const { cluster, members: [m1, m2] } = await app.cluster('ship', ['A', 'B']);
+  const path = `/api/clusters/${cluster.id}`;
+  const cmd = (body: Record<string, unknown>) => app.api('POST', `${path}/collaboration`, body);
+  const { task } = await cmd({ action: 'task.create', operationId: 't1', title: 'one', scope: 's', acceptance: 'a', reviewer: { kind: 'member', memberId: m2.id } });
+  const { task: self } = await cmd({ action: 'task.create', operationId: 't2', title: 'two', scope: 's', acceptance: 'a', reviewer: { kind: 'self' } });
+  const message = await app.api('POST', `${path}/messages`, { body: 'proof' });
+  await app.api('POST', `${path}/messages`, { body: '@A @B hold' });
+  const connect = async (memberId: string) => {
+    const client = new Client({ name: 'test', version: '0' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: nativeHeaders(app, memberId) } }));
+    t.after(() => client.close());
+    return async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args });
+      const text = (result.content as any)[0].text as string;
+      assert.equal(result.isError === true, false, text);
+      return JSON.parse(text);
+    };
+  };
+  const [callA, callB] = [await connect(m1.id), await connect(m2.id)];
+  let serial = 0;
+  const work = async (id: string, sha: string) => {
+    const claim = await callA('task_action', { operationId: `w${++serial}`, action: 'claim', taskId: id, expectedRevision: 1 });
+    const started = await callA('task_action', { operationId: `w${++serial}`, action: 'start', taskId: id, expectedRevision: claim.task.revision, assignmentId: claim.assignment.id });
+    return callA('task_action', { operationId: `w${++serial}`, action: 'submit', taskId: id, expectedRevision: started.task.revision, assignmentId: claim.assignment.id, summary: 'done', evidenceMessageIds: [message.id], commitSha: sha });
+  };
+  const submitted = await work(task.id, 'abcdef0');
+  const reviewed = await callB('task_action', { operationId: 'r1', action: 'review', taskId: task.id, expectedRevision: submitted.task.revision, submissionId: submitted.submission.id, verdict: 'approve', reason: 'fine' });
+  assert.match(reviewed.ship.command, new RegExp(`^node ".+/scripts/ship\\.ts" --ticket s1\\.\\S+ --hub http://127\\.0\\.0\\.1:\\d+ --agent <name>`));
+  assert.equal((await callA('get_task', { taskId: task.id })).ship, undefined, 'the executor of a member-reviewed task is not handed the command');
+
+  await work(self.id, '1234567');
+  assert.match((await callA('get_task', { taskId: self.id })).ship.command, /--ticket s1\./);
+  assert.equal((await callB('get_task', { taskId: self.id })).ship, undefined, 'other members do not see it');
+});

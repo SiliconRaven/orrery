@@ -1,0 +1,7 @@
+{
+  "command": "node",
+  "args": ["sidecar.mjs"],
+  "restart_policy": "always",
+  "display_name": "orrery Beta",
+  "description": "Beta release. Delivers messages from the local orrery Hub into the Antigravity conversations that are members of an orrery cluster (agentapi send-message)."
+}

@@ -1,0 +1,38 @@
+name: Windows Beta installer
+
+on:
+  push:
+    tags: ["v*-beta.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm ci --prefix desktop --no-audit --no-fund
+      - run: npm run dist --prefix desktop -- --publish never
+      - name: Publish installer and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$version") { throw 'Tag and package version differ' }
+          $exe = Get-Item "desktop/dist/Orrery-$version-Setup-x64.exe"
+          $checksum = "$($exe.FullName).sha256"
+          "$((Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower())  $($exe.Name)" | Set-Content $checksum -Encoding utf8
+          gh release create $env:RELEASE_TAG $exe.FullName $checksum --verify-tag --prerelease --title "Orrery $env:RELEASE_TAG" --notes "Windows x64 Beta installer. Includes the runtime; no system Node installation is required."

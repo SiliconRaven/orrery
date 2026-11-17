@@ -1,0 +1,58 @@
+/* The chat's history search sheet (chat-search.js) and the 筛选 control's sender list and hidden-warning count.
+   Colours come from style.css's light-dark() tokens, so both themes follow data-theme. */
+.chat-search {
+  position: fixed; inset: 0 0 0 auto; z-index: 40; display: flex; flex-direction: column; width: min(440px, 100vw);
+  background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow-dialog);
+}
+.search-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 12px 10px 18px; border-bottom: 1px solid var(--line); }
+.search-form { display: grid; gap: 10px; padding: 14px 18px 10px; }
+.search-q-row { position: relative; }
+.search-q-row .ico { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); }
+.search-q-row input { padding-left: 36px; font-size: var(--f-lg); }
+.search-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+.search-grid label { display: grid; gap: 3px; min-width: 0; margin: 0; }
+.search-grid label > span { color: var(--muted); font-size: var(--f-sm); }
+.search-grid select, .search-grid input { min-width: 0; padding: 6px 8px; font-size: var(--f-md); }
+.search-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+.search-check { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: var(--f-md); cursor: pointer; }
+.search-check input { width: auto; margin: 0; }
+.search-row-end { display: inline-flex; gap: 6px; }
+.search-status { margin: 0; padding: 6px 18px 8px; border-bottom: 1px solid var(--line); min-height: 1.5em; }
+.search-status[data-state="invalid"], .search-status[data-state="error"] { color: var(--failed); }
+.search-body { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 8px 16px; overscroll-behavior: contain; }
+.search-results { list-style: none; margin: 0; padding: 0; display: grid; }
+.search-results > li + li { border-top: 1px solid var(--line); }
+.search-results.stale { opacity: .55; }   /* a new search is out: these rows belong to the previous one */
+.search-result {
+  display: block; width: 100%; padding: 10px 10px; border: 0; border-radius: var(--r-md); background: transparent; text-align: left; color: var(--text);
+}
+.search-result:hover { background: var(--surface-2); }
+.search-result-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.search-who { font-weight: 600; overflow-wrap: anywhere; }
+.search-result-head time { margin-left: auto; color: var(--muted); font-size: var(--f-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.search-mark.attention, .search-mark.problem { font-weight: 700; }
+.search-snippet {
+  margin: 4px 0 0; font-size: var(--f-md); line-height: 1.5; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden;
+}
+.search-snippet mark { padding: 0 1px; border-radius: var(--r-xs); background: color-mix(in srgb, var(--accent) 26%, transparent); color: inherit; font-weight: 600; }
+.search-more { display: block; margin: 10px auto 0; }
+.search-foot { margin: 0; padding: 8px 18px 12px; border-top: 1px solid var(--line); }
+
+/* The 筛选 control's additions. */
+.chat-filter-warnings { margin-left: 6px; font-weight: 700; }
+.chat-filter-warnings.new { background: var(--warn-text); color: var(--surface); }
+.chat-filter-sender { display: grid; gap: 4px; margin: 2px 0; }
+.chat-filter-sender select { padding: 5px 8px; font-size: var(--f-md); }
+.chat-filter-panel { min-width: 230px; }
+.chat-filter-hidden { margin: 2px 0 0; color: var(--warn-text); font-size: var(--f-sm); white-space: normal; }
+.chat-filter-search { justify-self: start; }
+.empty-state .search-history { margin-top: var(--s-1); }
+
+@media (max-width: 900px) {
+  .chat-search { width: 100vw; border-left: 0; }
+  .search-result { padding: 12px 10px; }
+}
+@media (max-width: 400px) {
+  .search-form, .search-status, .search-foot { padding-left: 14px; padding-right: 14px; }
+}

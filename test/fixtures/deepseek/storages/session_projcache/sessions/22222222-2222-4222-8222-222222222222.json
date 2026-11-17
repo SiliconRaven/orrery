@@ -1,0 +1,32 @@
+{
+  "version": 7,
+  "record": {
+    "identity": {
+      "formatVersion": 4,
+      "createdAt": 1767398400000,
+      "isSeeded": false,
+      "inheritedEventCount": 0,
+      "cwd": "/work/alpha"
+    },
+    "rows": {
+      "title": {
+        "ver": 1,
+        "seq": 5,
+        "val": null
+      },
+      "sessionListMetadata": {
+        "ver": 1,
+        "seq": 5,
+        "val": {
+          "blank": true,
+          "lastPromptAt": null
+        }
+      },
+      "subagent": {
+        "ver": 2,
+        "seq": 5,
+        "val": {}
+      }
+    }
+  }
+}

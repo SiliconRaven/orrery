@@ -1,0 +1,70 @@
+{
+  "$schema": "https://unpkg.com/knip@6.45.1/schema.json",
+  "ignoreBinaries": [
+    "tasklist",
+    "netstat",
+    "mkfifo"
+  ],
+  "workspaces": {
+    ".": {
+      "entry": [
+        "src/bridge/claude-bridge.ts!",
+        "src/web/public/app.js!",
+        "src/web/public/theme.js!",
+        "src/web/public/official-plugins/bookmarks.js!",
+        "scripts/sync-mcp-tools.ts",
+        "plugins/antigravity-orrery/sidecar.mjs!",
+        "plugins/antigravity-orrery/hook.mjs!",
+        "plugins/antigravity-orrery/hook-dump.mjs!",
+        "plugins/cursor-orrery/mcp.mjs!",
+        "plugins/cursor-orrery/hooks/prompt.mjs!",
+        "plugins/cursor-orrery/hooks/stop.mjs!",
+        "plugins/cursor-orrery/hooks/tool.mjs!",
+        "plugins/qoder-orrery/mcp.mjs!",
+        "plugins/workbuddy-orrery/bridge.mjs!",
+        "plugins/zcode-orrery/wait.mjs!",
+        "plugins/unread-hint/hook.mjs!",
+        "examples/hub-plugins/message-counter/main.mjs!",
+        "examples/hub-plugins/review-reminder/main.mjs!",
+        "test/*.test.ts",
+        "test/live/claude-native.ts",
+        "test/live/claude-usage.ts",
+        "test/fixtures/antigravity/fake-agentapi.mjs"
+      ],
+      "project": [
+        "src/**/*.{ts,js}",
+        "scripts/*.{ts,mjs}",
+        "plugins/**/*.{js,mjs,cjs}",
+        "examples/hub-plugins/**/*.mjs",
+        "test/**/*.{ts,js,mjs,cjs}"
+      ]
+    },
+    "desktop": {
+      "entry": [
+        "preload.cjs!",
+        "strip-preload.cjs!",
+        "settings-preload.cjs!",
+        "ui/tabs.mjs!",
+        "ui/strip.mjs!",
+        "ui/settings.mjs!",
+        "test/electron-check.mjs",
+        "test/strip-check.mjs",
+        "test/win32-check.mjs",
+        "test/launch-check.mjs",
+        "test/win32-host.mjs",
+        "test/temp-reaper.mjs"
+      ],
+      "project": [
+        "**/*.{mjs,cjs}"
+      ]
+    },
+    "plugins/dsh-orrery": {
+      "project": [
+        "lib/**/*.js"
+      ]
+    }
+  },
+  "rules": {
+    "cycles": "error"
+  }
+}

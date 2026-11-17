@@ -1,0 +1,95 @@
+{
+  "name": "orrery-desktop",
+  "version": "0.10.0-beta.1",
+  "private": true,
+  "description": "Beta release. orrery desktop shell: the collaboration page plus one tab per running app window, docked next to it, never embedded.",
+  "license": "MIT",
+  "type": "module",
+  "main": "main.mjs",
+  "engines": {
+    "node": ">=24.2"
+  },
+  "scripts": {
+    "start": "electron .",
+    "shortcut": "node shortcut.mjs",
+    "test:electron": "electron test/electron-check.mjs",
+    "test:strip": "electron test/strip-check.mjs",
+    "test:win32": "electron test/win32-check.mjs",
+    "test:launch": "electron test/launch-check.mjs",
+    "prepare:resources": "node scripts/prepare-resources.mjs",
+    "pack": "npm run prepare:resources && electron-builder --dir --win --x64",
+    "dist": "npm run prepare:resources && electron-builder --win nsis --x64",
+    "test:runtime": "node --test test/runtime.test.mjs"
+  },
+  "dependencies": {
+    "koffi": "3.3.3"
+  },
+  "devDependencies": {
+    "electron": "44.8.0",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "dev.orrery.beta",
+    "productName": "Orrery Beta",
+    "directories": {
+      "output": "dist",
+      "buildResources": "installer"
+    },
+    "files": [
+      "main.mjs",
+      "shell.mjs",
+      "*-preload.cjs",
+      "preload.cjs",
+      "lib/**",
+      "ui/**",
+      "assets/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/koffi/**",
+      "node_modules/@koromix/**"
+    ],
+    "extraResources": [
+      {
+        "from": "build/hub",
+        "to": "hub"
+      },
+      {
+        "from": "build/node",
+        "to": "node"
+      },
+      {
+        "from": "build/hub/node_modules",
+        "to": "hub/node_modules",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/orrery-icon.ico",
+      "artifactName": "Orrery-${version}-Setup-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "runAfterFinish": false,
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "Orrery Beta",
+      "include": "installer/hooks.nsh"
+    },
+    "npmRebuild": false
+  },
+  "productName": "Orrery Beta",
+  "author": "Orrery contributors"
+}

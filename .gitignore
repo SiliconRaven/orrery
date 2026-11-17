@@ -1,0 +1,50 @@
+# 依赖与构建产物
+# 包括 Knip 的 node_modules/.cache/knip 缓存
+node_modules/
+desktop/.cache/
+dist/
+build/
+out/
+bin/
+obj/
+*.tsbuildinfo
+coverage/
+
+# 本地运行数据（Hub 的 SQLite、日志、worker 临时目录）
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+logs/
+*.log
+# 测试日志、临时 Knip JSON 报告等检查产物
+.tmp/
+tmp/
+
+# 密钥与本地配置：绝不提交
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+external-plugins.json
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.vs/
+*.user
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 多 agent 并行用的临时 worktree
+.worktrees/
+
+# 本地架构可视化与检查产物
+.archify/
+
+# Antigravity 真机实验记录（hook-dump.mjs），万一直接在仓库里用这个文件夹
+plugins/antigravity-orrery/hook-payloads.jsonl

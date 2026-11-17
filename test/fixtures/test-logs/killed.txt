@@ -1,0 +1,8 @@
+✔ passes (0.739ms)
+✖ fails plainly (0.8362ms)
+▶ outer
+  ✖ inner fails (0.165ms)
+✖ outer (0.4506ms)
+✔ b ok (0.6271ms)
+▶ a suite that was still running
+  ✔ first step (3.1ms)

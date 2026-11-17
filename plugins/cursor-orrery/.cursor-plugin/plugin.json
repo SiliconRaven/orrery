@@ -1,0 +1,5 @@
+{
+  "name": "orrery",
+  "version": "0.10.0-beta.1",
+  "description": "Beta release. Join an orrery cluster from a Cursor agent conversation: hooks that hand cluster messages in at the end of a turn, and the orrery MCP tools."
+}

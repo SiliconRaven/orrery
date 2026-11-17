@@ -1,0 +1,54 @@
+# Electron 桌面外壳（`desktop/`，`v0.10.0-beta.1`）
+
+语言：**中文** | [English](desktop.en.md)
+
+> **Beta 提示**：桌面外壳处于 **`v0.10.0-beta.1` Beta 测试版**，非正式稳定版，窗口控制与布局细节仍可能调整。
+
+`desktop/` 是围绕 orrery 协作页打造的可选 Electron 桌面壳（使用无角色的轨道项目图标），采用**顶层窗口跟随停靠（Window Docking）**方案，不把第三方桌面端嵌入或改写到同一个容器内。
+
+## 设计核心：只跟随停靠，不侵入宿主窗口
+
+直接往 Electron `BrowserView` 或 Win32 `SetParent` 嵌入第三方应用容易导致焦点抢夺、DPI 错位与越界问题。桌面壳只作外框协调：
+
+- 内置加载经启动器认证的 orrery 协作页；
+- 用户在 `+` 标签栏明确选择当前**正在运行**的受支持应用顶层窗口后，桌面壳经 `koffi` FFI 调用 Win32 接口同步所选窗口的坐标、大小与前置层级；
+- 支持**单栏、左右两栏、四宫格**分屏布局。
+
+## 受支持应用与安全约束
+
+受支持应用白名单固定在 `desktop/lib/apps.mjs`：
+
+1. **每次写入前核验窗口身份**：调整窗口矩形前核对句柄与进程映像一致性；窗口关闭或失效时标签进入待重新绑定状态，须由用户显式重新选择。
+2. **仅由界面 `+` 点击按受支持方式启动**：应用未运行时用户亲自点击启动入口，才会不带附加参数、不经 URL 协议尝试启动：
+   - **商店应用（MSIX 包）**：**只能经其自身执行别名（`AppExecutionAlias`）定位与启动**；`checkProgram` 明确拒绝为 MSIX 应用手动保存 `.exe` 路径（无法通过手填路径绕过别名定位失败）。
+   - **非 MSIX 桌面应用**：优先检查用户在桌面外壳设置页保存并核验过的本地 `.exe` 路径（须存在于本地磁盘、不含 `..`/环境变量占位/链接文件且文件名匹配该应用白名单），否则只读查找“开始菜单”无参快捷方式。
+3. **一次性设置令牌隔离**：桌面设置页校验程序路径（`checkProgram`）使用外壳进程内签发的一次性令牌隔离授权；协作网页及任意 Hub 接口均无 Electron 主进程与 Win32 API 调用权。
+4. **正常退出尽力还原**：正常退出时恢复被管理窗口位置与状态，不结束第三方应用进程。
+
+## 安装与启动
+
+Windows x64 NSIS 安装包内置 Node 和运行依赖，安装后通过 **Orrery Beta** 快捷方式启动。数据位于 `%APPDATA%/Orrery Beta/hub`；关闭窗口后 Hub 继续运行，升级或卸载会先退出该安装实例的 Hub，保留数据库。
+
+配置原生桥和插件时，Node 使用 `<安装目录>/resources/node/node.exe`，插件文件位于 `<安装目录>/resources/hub/plugins` 或 `resources/hub/src/bridge`，并在宿主 MCP 配置中将 `ORRERY_HOME` 指向 `%APPDATA%/Orrery Beta/hub`。MCP JSON 中请填写展开后的实际绝对路径。安装器不会修改宿主设置。
+
+开发启动：
+
+```powershell
+npm ci --prefix desktop
+npm start --prefix desktop
+```
+
+- 无障碍支持默认禁用；需要时设置 `ORRERY_DESKTOP_ACCESSIBILITY=1` 再启动桌面壳。
+- **使用状态**：窗口停靠、标签切换和正常退出还原已通过真实桌面验证。多屏混合 DPI 与不同应用最小窗口尺寸组合的覆盖较少。
+
+## 构建安装包
+
+在 Windows x64 的 Git 检出目录运行：
+
+```powershell
+npm ci
+npm ci --prefix desktop
+npm run dist --prefix desktop
+```
+
+构建会校验固定版本 Node 24.19.0 官方压缩包并附带许可证，产物为 `desktop/dist/Orrery-0.10.0-beta.1-Setup-x64.exe`。构建目录与缓存不进入 Git。

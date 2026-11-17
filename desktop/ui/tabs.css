@@ -1,0 +1,233 @@
+/*
+ * One top row, 44px high (TAB_BAR_HEIGHT in lib/geometry.mjs): the tabs (icons only, the orrery icon first), + and
+ * the layout button. The supported apps that + offers open in a panel below it (ui/strip.html, a window of its own:
+ * this page cannot draw over the docked windows). It is also the title
+ * row: empty space drags the window and double-clicks maximize it (app-region: drag); everything clickable is
+ * no-drag. The system's caption buttons sit at the right (Electron's title bar overlay, coloured --bar); the row ends
+ * where they begin (titlebar-area-* from the Window Controls Overlay), so no width is hard-coded.
+ * Too many tabs: the tab row scrolls sideways (mouse wheel), without a scroll bar; + and the layout button stay in view.
+ *
+ * Below the row, #panel is the dock area, split into panes like lib/geometry.mjs paneRects (single, two columns, 2 × 2
+ * grid, a 6px slit between panes; --x and --y are the divider positions). App windows cover their panes; what is drawn
+ * here shows in empty panes, behind a window that was moved away, and in the slits (dividers, the active-pane mark).
+ */
+:root {
+  --bar: #141518;
+  --tab: #232428;
+  --tab-hover: #2c2d32;
+  --active: #1e1f23;
+  --line: #303136;
+  --ink: #e6e4e0;
+  --muted: #9a978f;
+  --accent: #8f88f0;
+  --warn: #f0a37a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--active);
+  color: var(--ink);
+  font: 13px/1.4 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  overflow: hidden;
+  user-select: none;
+}
+#bar {
+  position: fixed;
+  top: 0;
+  left: env(titlebar-area-x, 0);
+  width: env(titlebar-area-width, 100%);
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px 0 10px;
+  background: var(--bar);
+  border-bottom: 1px solid var(--line);
+  -webkit-app-region: drag;
+}
+html::before {   /* the strip under the caption buttons, in case the overlay leaves a gap */
+  content: "";
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 44px;
+  background: var(--bar);
+}
+#tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 1px;   /* room for the selected tab's 1px outline at the ends */
+  flex: 0 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+#tabs::-webkit-scrollbar { display: none; }
+/* An app's icon (lib/strip.mjs, shell.mjs icons): the program's own icon, or its first letter on a neutral square. */
+.glyph { position: relative; display: block; width: 24px; height: 24px; flex: none; }
+.glyph .icon { display: block; width: 24px; height: 24px; object-fit: contain; pointer-events: none; }
+.glyph .letter {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: #3a3b42;
+  color: var(--ink);
+  font: 600 13px/1 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+}
+.glyph [hidden] { display: none; }
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--tab);
+  -webkit-app-region: no-drag;
+}
+.tab:hover { background: var(--tab-hover); }
+.tab[aria-selected="true"] { background: var(--active); box-shadow: inset 0 -2px 0 var(--accent), 0 0 0 1px var(--line); }
+.tab.in-pane:not([aria-selected="true"]) { box-shadow: inset 0 -2px 0 var(--muted); }
+.tab .pick {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  cursor: default;
+}
+.tab:not(:has(.close)) .pick { width: 44px; }
+/* "需要重新选择": the icon faded, with a small warm dot at its corner; the tooltip says what to do. */
+.tab.lost .glyph .icon, .tab.lost .glyph .letter { opacity: 0.45; filter: grayscale(0.6); }
+.glyph .mark {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 2px var(--tab);
+}
+.tab:hover .glyph .mark { box-shadow: 0 0 0 2px var(--tab-hover); }
+.tab[aria-selected="true"] .glyph .mark { box-shadow: 0 0 0 2px var(--active); }
+.tab .close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 24px;
+  margin: 0 5px 0 -4px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: 15px/1 "Segoe UI", system-ui, sans-serif;
+  opacity: 0.55;
+}
+.tab:hover .close, .tab[aria-selected="true"] .close, .tab .close:focus-visible { opacity: 1; }
+.tab .close:hover { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+#add, #layout, #settings {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  -webkit-app-region: no-drag;
+}
+#add svg { transition: transform 120ms ease; }
+#add[aria-expanded="true"] { background: var(--tab); }
+#add[aria-expanded="true"] svg { transform: rotate(45deg); }
+#layout, #settings { color: var(--muted); }
+#settings[aria-expanded="true"] { background: var(--tab); color: var(--ink); }
+#add:hover:not(:disabled), #layout:hover, #settings:hover { background: var(--tab-hover); color: var(--ink); }
+#add:disabled { color: #55534e; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#panel {
+  position: absolute;
+  inset: 44px 0 0 0;
+  --x: 0.5;
+  --y: 0.5;
+  background: var(--bar);
+}
+.pane {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  overflow: hidden;
+  text-align: center;
+  color: var(--muted);
+  background: var(--active);
+}
+.pane.c0 { left: 0; width: calc((100% - 6px) * var(--x)); }
+.pane.c1 { left: calc((100% - 6px) * var(--x) + 6px); right: 0; }
+.pane.r0 { top: 0; height: calc((100% - 6px) * var(--y)); }
+.pane.r1 { top: calc((100% - 6px) * var(--y) + 6px); bottom: 0; }
+#panel[data-layout="single"] .pane.c0.r0 { width: auto; right: 0; height: auto; bottom: 0; }
+#panel[data-layout="columns"] .pane.r0 { height: auto; bottom: 0; }
+#panel[data-layout="single"] .pane:not(.c0.r0), #panel[data-layout="columns"] .pane.r1 { display: none; }
+.pane.empty { cursor: default; }
+.pane .hint { font-size: 12px; }
+/* The active pane: a mark just above it, in the tab row's bottom edge or the slit, where no app window covers it. */
+#panel:not([data-layout="single"]) .pane.active { overflow: visible; }
+#panel:not([data-layout="single"]) .pane.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -4px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.divider { position: absolute; display: none; z-index: 1; touch-action: none; }
+.divider:hover, .divider.dragging { background: rgba(143, 136, 240, 0.35); }
+#vdiv { top: 0; bottom: 0; width: 6px; left: calc((100% - 6px) * var(--x)); cursor: col-resize; }
+#hdiv { left: 0; right: 0; height: 6px; top: calc((100% - 6px) * var(--y)); cursor: row-resize; }
+#panel:not([data-layout="single"]) #vdiv, #panel[data-layout="grid"] #hdiv { display: block; }
+.pane .message { max-width: 640px; white-space: pre-wrap; user-select: text; color: var(--ink); text-align: left; }
+.pane button {
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--tab);
+  color: var(--ink);
+  font: inherit;
+}
+.pane button:hover { border-color: var(--accent); }
+#notice {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #2d2520;
+  border: 1px solid #6b4a35;
+  color: var(--ink);
+  user-select: text;
+}
+#notice[hidden] { display: none; }
+#notice-text { flex: 1; }
+#notice-close { border: 0; background: none; font: 15px/1 inherit; color: var(--muted); }

@@ -1,0 +1,32 @@
+{
+  "version": 7,
+  "record": {
+    "identity": {
+      "formatVersion": 4,
+      "createdAt": 1767000000000,
+      "isSeeded": false,
+      "inheritedEventCount": 0,
+      "cwd": "/work/beta"
+    },
+    "rows": {
+      "title": {
+        "ver": 1,
+        "seq": 5,
+        "val": "Draft release notes"
+      },
+      "sessionListMetadata": {
+        "ver": 1,
+        "seq": 5,
+        "val": {
+          "blank": false,
+          "lastPromptAt": 1767100000000
+        }
+      },
+      "subagent": {
+        "ver": 2,
+        "seq": 5,
+        "val": {}
+      }
+    }
+  }
+}

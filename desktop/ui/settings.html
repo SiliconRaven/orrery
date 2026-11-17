@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>orrery 应用位置 · Beta 0.10.0-beta.1</title>
+<link rel="stylesheet" href="settings.css">
+<script type="module" src="settings.mjs"></script>
+</head>
+<body>
+<div id="view" role="dialog" aria-labelledby="title" aria-describedby="sub" tabindex="-1">
+  <header>
+    <div>
+      <h1 id="title">应用位置</h1>
+      <p id="sub">在 + 面板里点一个没在运行的应用时，外壳从这里的位置启动它，不带任何参数。只有你在这里点了“使用这个位置”或在系统对话框里选中的程序才会被保存。</p>
+    </div>
+    <button id="close" type="button" title="关闭（Esc）" aria-label="关闭应用位置设置">×</button>
+  </header>
+  <ul id="rows" aria-label="支持的应用"></ul>
+</div>
+</body>
+</html>

@@ -1,0 +1,57 @@
+# Re-check after a push: runs the checks .premerge/checks.json declares (the same ones a local merge runs)
+# on a clean Windows machine. It is not a merge gate. The Electron checks under desktop/test, real apps
+# and real models are not run here.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    # Pinned instead of windows-latest so a change of image is a deliberate edit, not a silent move.
+    runs-on: windows-2025
+    # At least every check's scaled limit plus one rerun of the longest, plus setup (test/ci-workflow.test.ts checks it).
+    timeout-minutes: 45
+    env:
+      # The headless-browser smoke test must run here (the image ships Chrome and Edge), not skip.
+      ORRERY_REQUIRE_BROWSER: '1'
+      # node --test runs CPUs - 1 test files at once by default: one at a time on a 2-CPU runner. The files mostly
+      # wait on child processes and I/O: 4 at once halves the time on 2 CPUs and is about the default on 4 CPUs.
+      # More gained little and starved timing-sensitive tests in local trials.
+      ORRERY_TEST_CONCURRENCY: '4'
+      # A hung test fails by name after 2 minutes (the slowest test takes about 6 s locally on 2 CPUs). A file whose
+      # hung test left handles open can still keep running; the outer check limit then still applies.
+      ORRERY_TEST_TIMEOUT_MS: '120000'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # package.json engines: >=24.2; '24' takes the newest 24.x release.
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Run the checks in .premerge/checks.json
+        # The runner's default temp folder is on its slower system drive, where a durable SQLite commit was measured
+        # about 30 times slower than in the runner's own temp folder; every test Hub keeps its database in TEMP.
+        # (The runner context is not available in job-level env, so this is set on the step.)
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
+        run: node scripts/ci-checks.ts
+
+      - name: Print the failing tests
+        if: failure()
+        run: node scripts/ci-test-report.ts

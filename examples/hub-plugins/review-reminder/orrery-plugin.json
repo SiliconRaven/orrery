@@ -1,0 +1,19 @@
+{
+  "id": "review-reminder",
+  "version": "0.10.0-beta.1",
+  "name": "验收提醒示例",
+  "description": "Beta 测试版。提交后延时提醒尚未收到验收结果的任务。",
+  "apiVersion": 1,
+  "entry": "main.mjs",
+  "permissions": [
+    "events.read",
+    "messages.send"
+  ],
+  "events": [
+    "task.submitted",
+    "task.approved",
+    "task.rejected",
+    "task.merged"
+  ],
+  "commands": []
+}

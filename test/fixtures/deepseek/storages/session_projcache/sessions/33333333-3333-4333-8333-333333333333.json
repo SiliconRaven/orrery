@@ -1,0 +1,38 @@
+{
+  "version": 7,
+  "record": {
+    "identity": {
+      "formatVersion": 4,
+      "createdAt": 1767484800000,
+      "isSeeded": false,
+      "inheritedEventCount": 0,
+      "cwd": "/work/alpha"
+    },
+    "rows": {
+      "title": {
+        "ver": 1,
+        "seq": 5,
+        "val": "explore the tests"
+      },
+      "sessionListMetadata": {
+        "ver": 1,
+        "seq": 5,
+        "val": {
+          "blank": false,
+          "lastPromptAt": 1767484900000
+        }
+      },
+      "subagent": {
+        "ver": 2,
+        "seq": 5,
+        "val": {
+          "identity": {
+            "mode": "one-shot",
+            "label": "explore",
+            "seq": 3
+          }
+        }
+      }
+    }
+  }
+}

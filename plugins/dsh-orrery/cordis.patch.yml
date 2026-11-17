@@ -1,0 +1,6 @@
+# dsh-orrery bundle patch: inserts the orrery plugin row into the profile.
+# Install from the DSH Plugins page (Add plugin → the absolute path of this directory),
+# or with DSH fully quit: dsh plugin --profile desktop add link:<absolute path of this directory>
+- insert:
+    - id: dsh-orrery
+      name: dsh-orrery
