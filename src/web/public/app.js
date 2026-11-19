@@ -2995,6 +2995,9 @@ function renderMemberPanel() {
     panelIdentity = S.identity;
   }
   panelFor = m.id;
+  // Every member is a conversation of its native app since isolated mode was removed; that removal dropped this name
+  // but kept its uses, so the page threw here and never drew the member's lines.
+  const native = true;
   const note = $('member-composer-note');
   note.textContent = native
     ? t('原样投进这个对话，不加 orrery 的信封，和你在应用里自己输入一样。{value}{value2}{value3}{value4}', { value: m.harness === 'claude' ? t('Claude Desktop 里它显示为一张「来自另一个会话」（Message from another session）的消息卡片。') : '', value2: m.harness === 'antigravity' ? t('Antigravity 里它显示为一条高优先级的系统消息，并马上开始一轮。') : '', value3: m.harness === 'kimi' ? t('Kimi Code 会把它显示成你自己发的消息，所以开头会多一行 [orrery · 来自 user]。') : '', value4: m.harness === 'cursor' ? t('Cursor 会把它显示成你自己发的消息，所以开头会多一行 [orrery · 来自 user · #交接号]（交接号用来确认 Cursor 真的提交了）。') : '' })

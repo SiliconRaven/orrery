@@ -3528,3 +3528,39 @@ test('web ui: the chat filter, its stored form and the warning mark', () => {
   assert.match(app, /notice-\$\{mark\.level\}/, 'the article carries the level class');
   assert.match(app, /localStorage\.setItem\(CHAT_FILTER_KEY/, 'the filter is kept per browser');
 });
+
+test('web ui: opening a member page draws its lines and throws nothing (every name it reads exists)', () => {
+  // renderMemberPanel as the page runs it, with the page's state and elements stood in for. Its helpers are stubs; the
+  // names it reads from the page's scope are given here, so a name the page never declares throws as in the browser.
+  const app = readFileSync(join(REPO_ROOT, 'src', 'web', 'public', 'app.js'), 'utf8');
+  const fn = /^function renderMemberPanel\(\) \{[\s\S]*?^\}/m.exec(app)![0];
+  const elements = new Map<string, any>();
+  const el = (id: string) => {
+    if (!elements.has(id)) {
+      const e: any = { id, hidden: false, textContent: '', children: [] as unknown[], scrollTop: 0, scrollHeight: 0, clientHeight: 0, firstElementChild: null,
+        replaceChildren(...c: unknown[]) { this.children = c; }, append(...c: unknown[]) { this.children.push(...c); }, prepend(...c: unknown[]) { this.children.unshift(...c); } };
+      elements.set(id, e);
+    }
+    return elements.get(id);
+  };
+  const member = { id: 'm1', clusterId: 'c1', name: 'Ann', harness: 'codex', removedAt: null, hiddenAt: null, origin: 'attached', cwd: 'C:/p', workerSessionId: 's1' };
+  const lines = [{ seq: 1, kind: 'a' }, { seq: 2, kind: 'b' }, { seq: 3, kind: 'c' }];
+  const log = { events: lines, loading: false, error: false, prepended: 0 };
+  const filled: unknown[] = [];
+  const context: Record<string, any> = {
+    S: { members: new Map([[member.id, member]]), sel: { member: member.id }, harnesses: ['codex'], usage: null, rebinds: new Map(), activity: new Map(),
+      activityFailed: false, toolVersions: null, turnUsage: null, identity: 0, turnUsageError: false, memberLogs: new Map([[member.id, log]]) },
+    $: el, panelFor: null, panelIdentity: -1, panelCount: 0, hiding: new Set(), HIDDEN_MARK: '隐身中',
+    statusOf: () => 'idle', presenceOf: () => null, avatarEl: () => ({}), memberStatusLabel: () => 'idle', offlineHint: () => null, longWaitingHint: () => null,
+    memberDetails: () => ({ model: 'm', conversation: 'c' }), h: (tag: string) => ({ tag }), fmtTime: String, emptyState: (text: string) => ({ empty: text }),
+    activityEl: () => ({}), activitySummary: () => null, toolVersionView: () => ({}), memberHealth: () => ({}), usageAlertText: () => '', usageView: () => ({}),
+    refreshQuota() {}, usageRenderer: { draw() {}, renderTurns() {} }, loadMemberLog: () => log, renderComposer() {},
+    panelEditor: { fill: (m: unknown) => filled.push(m) }, direct: { input: { placeholder: '' } }, buildEvent: (e: { seq: number }) => ({ line: e.seq }),
+  };
+  runInNewContext(`${fn}\nglobalThis.renderMemberPanel = renderMemberPanel;`, context);
+  assert.doesNotThrow(() => context.renderMemberPanel());
+  assert.deepEqual(el('member-events').children, [{ line: 1 }, { line: 2 }, { line: 3 }], 'the member\'s lines are drawn');
+  assert.deepEqual(filled, [member], 'its editor is filled');
+  assert.equal(el('member-composer-note').hidden, false, 'every member is a native conversation: the note says how a direct message arrives');
+  assert.match(context.direct.input.placeholder, /直接发给这个对话/);
+});
