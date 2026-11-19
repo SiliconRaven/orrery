@@ -700,7 +700,8 @@ async function ensureAndSecondShell() {
   console.log('\n[E] --ensure: a real test Hub (temporary home and database, a free port) is started once and reused');
   const port = await freePort();
   const home = join(dir, 'home');
-  const env = { ...process.env, ORRERY_HOME: home, ORRERY_DB: join(dir, 'hub.db'), ORRERY_PORT: String(port), ORRERY_API_TOKEN: API_TOKEN };
+  const env = { ...process.env, ORRERY_HOME: home, ORRERY_DB: join(dir, 'hub.db'), ORRERY_REGISTRY: join(dir, 'registry'),
+    ORRERY_PORT: String(port), ORRERY_API_TOKEN: API_TOKEN };
   const a = await runEnsure({ env });
   const first = await health(port);
   const b = await runEnsure({ env });

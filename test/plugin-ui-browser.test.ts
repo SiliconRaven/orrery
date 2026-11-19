@@ -149,7 +149,8 @@ test('browser: plugin UI frames are isolated, render at both positions in every 
     assert.equal((await received(app)).length, heard, 'nothing reached the plugin');
     await page.evaluate(closePanel);
     await page.waitFor(`!document.querySelector('.pui-panel')`, 'the panel closed');
-    assert.equal((await rawFetch(`${app.url}/plugin-ui/${probeFrameId}/index.html`)).status, 404, 'closing gave the frame id back');
+    // The page gives the id back with a request it does not wait for, so the panel can be gone before the Hub hears it.
+    await waitFor(async () => (await rawFetch(`${app.url}/plugin-ui/${probeFrameId}/index.html`)).status === 404, 'closing to give the frame id back', 10_000);
 
     step = 'the example: one request, one push to the other position, the chip';
     await page.click(chip('ui-demo'), 'the example chip');

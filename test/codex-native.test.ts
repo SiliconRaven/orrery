@@ -1220,7 +1220,8 @@ async function liveNative(scenario: 'held' | 'wake', create: { model?: string; e
       // backend runs the queue on its own; nothing more to do here.
       openWake: (url) => { woken.push(url); if (!desktop && !wakeDone) wakeDone = startDesktop(url.split('/').pop()!); },
     });
-    const app = await startHub({ dbPath: join(root, 'hub.db'), port: 0, home: join(root, 'hub'), nativeAdapters: { codex: adapter }, apiToken: TEST_TOKEN });
+    const app = await startHub({ dbPath: join(root, 'hub.db'), port: 0, home: join(root, 'hub'), registryDir: join(root, 'registry'),
+      nativeAdapters: { codex: adapter }, apiToken: TEST_TOKEN });
     cleanup.push(() => app.close());
     const { secret } = JSON.parse(readFileSync(join(root, 'hub', 'hub.json'), 'utf8'));
     const q = JSON.stringify;   // a JSON string literal is a valid TOML basic string

@@ -62,6 +62,9 @@ One-way dependencies across `src/` are verified on every import by `test/boundar
 
 ## Native Data Flow & Member Creation Boundaries
 
+`src/hub-registry.ts` owns the account registry. `src/bridge-protocol.ts` defines the signature format, and `src/mcp/bridge-auth.ts` validates before dispatch. Secondary Hubs disable native delivery by default. [Native mode](native-mode.en.md)
+
+
 1. **Native Mode only**. Register adapters through `nativeAdapters`. New conversations require explicit `mode: "native"` and a non-empty `projectPath`. Attach existing conversations by `sessionId`. The UI has no mode switch and member responses omit `mode`.
 2. **Creating vs attaching directory rules**:
    - **New native session (`createSession`)**: Requires an **explicit `projectPath`** on supporting harnesses—there is no sandbox fallback directory;

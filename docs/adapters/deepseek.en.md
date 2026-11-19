@@ -8,7 +8,7 @@ The DeepSeek Harness (DSH) adapter links desktop DSH sessions into an orrery clu
 
 `plugins/dsh-orrery/` is a zero-dependency ESM bundle (`engines.dsh: >=0.2.1-rc.2 <0.3.0-0`) installed and enabled manually by the user inside DSH.
 
-1. **Loopback discovery & shared stream**: On each reconnect, reads `<ORRERY_HOME or ~/.orrery>/hub.json` over an isolated `node:http` agent (bypassing proxy env vars) and opens `GET /bridge/stream?harness=deepseek`.
+1. **Loopback discovery & shared stream**: Through `lib/hub-discovery.mjs`, every request reads the account's Hub registry (`ORRERY_REGISTRY`, default `~/.orrery/registry/`), uses the active Hub or the one pinned by `ORRERY_HUB`, and is signed with `x-orrery-sig` (including unread hints, turn ends and activity reports); `hub.json` is not read (rules in [Plug-ins: finding the Hub, signing, errors](../native-mode.en.md#plug-ins-finding-the-hub-signing-errors)). It connects only to `127.0.0.1` over an isolated `node:http` agent (bypassing proxy env vars) and opens `GET /bridge/stream?harness=deepseek`.
 2. **Turn-end batching (`follows: true`)**:
    - Because DSH runs one turn per queued prompt without merging, the plugin hooks `session/event` before calling `ctx.sessionController.prompt({ requestId: deliveryId, sessionId, mode: 'queue', ... }, signal)`.
    - Once `rpcId === deliveryId` finishes (`turn/end`), the plugin sends `POST /bridge/done` (`completed`, `failed`, or `unknown` on timeout/disconnect). Meanwhile the Hub queues subsequent mentions and merges them into the next batch.
@@ -21,7 +21,7 @@ The DeepSeek Harness (DSH) adapter links desktop DSH sessions into an orrery clu
 See [plugins/dsh-orrery/README.en.md](../../plugins/dsh-orrery/README.en.md) for full steps:
 
 1. In DSH **Plugins → Add plugin**, enter the absolute path to `<orrery>/plugins/dsh-orrery` (or exit DSH and run `dsh plugin --profile desktop add link:<absolute-path>`).
-2. Whenever orrery updates, disable and re-enable `dsh-orrery` in DSH (or restart DSH) so the updated bundle reloads. Disabling immediately marks members offline without backfilling missed chat messages.
+2. Whenever orrery updates, disable and re-enable `dsh-orrery` in DSH (or restart DSH) so the updated bundle reloads (installed by path or `link:` as above it is path-referenced, so no reinstall is needed; a copy installed from elsewhere must be copied again first). Disabling immediately marks members offline without backfilling missed chat messages.
 
 ## Listing, Activity & Tokens
 
@@ -30,7 +30,7 @@ See [plugins/dsh-orrery/README.en.md](../../plugins/dsh-orrery/README.en.md) for
 
 ## Security & Verified Use
 
-- **Approval warning**: Delivered prompts execute under your active DSH permission preset (auto-approve profiles run cluster `@mentions` unattended). The plugin never reads `~/.dsh/.credentials.yaml`, alters session settings, or logs bridge secrets.
+- **Approval warning**: Delivered prompts execute under your active DSH permission preset (auto-approve profiles run cluster `@mentions` unattended). The plugin never reads `~/.dsh/.credentials.yaml`, alters session settings, logs the bridge key, or sends the key itself to the Hub.
 - **Verified use**: Real-app checks cover incoming messages, MCP replies, busy-turn batching, and staying online after the main window is closed to the tray.
 - **Activity observation**: A real-app smoke check covered message exchange, turn completion, and heartbeat display.
 - **Token counts**: Per-turn values are reported by the host; detailed cache and multi-tool accounting is separate from the basic delivery checks.

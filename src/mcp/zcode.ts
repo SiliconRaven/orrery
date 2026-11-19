@@ -10,9 +10,9 @@ export { ARM_LIMIT, ARM_WINDOW_MS, hubUrlOf, NOT_MEMBER_TEXT, tail, TICKET_HEADE
 
 export const ZCODE = ZCODE_WAIT.harness;
 
-export const ticketFor = (secret: string, sessionId: string): string => core.ticketFor(ZCODE_WAIT, secret, sessionId);
+export const ticketFor = (secret: string, sessionId: string, hubId: string): string => core.ticketFor(ZCODE_WAIT, secret, sessionId, hubId);
 
-export const ticketSession = (secret: string, ticket: unknown): string | null => core.ticketSession(ZCODE_WAIT, secret, ticket);
+export const ticketSession = (secret: string, ticket: unknown, hubId: string): string | null => core.ticketSession(ZCODE_WAIT, secret, ticket, hubId);
 
 export const waitCommand = (ticket: string, hubUrl: string, script?: string): string => core.waitCommand(ZCODE_WAIT, ticket, hubUrl, script);
 

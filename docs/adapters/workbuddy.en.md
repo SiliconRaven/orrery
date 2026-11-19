@@ -11,9 +11,10 @@ WorkBuddy pairs a per-session stdio MCP bridge (`plugins/workbuddy-orrery/bridge
 1. **Per-session stdio bridge (`bridge.mjs`)**:
    - Because WorkBuddy channel notifications do not start turns and `CODEBUDDY_SESSION_ID` is not passed to MCP subprocesses, the bridge checks `CODEBUDDY_SESSION_ID` first and otherwise performs one read-only Windows parent-process lookup before answering `initialize`: requiring exact `WorkBuddy.exe` executable identity and consistent `--session-id` CLI flags (do not wrap `node` inside `cmd`).
    - If no valid session ID is resolved, the bridge returns an empty tool list and sends zero requests to the Hub.
+   - On every request the bridge reads the account's Hub registry (`ORRERY_REGISTRY`) through `plugins/shared/hub-discovery.mjs`, uses the active Hub or the one pinned by `ORRERY_HUB`, and signs with `x-orrery-sig` (session header and body included); it reads no `hub.json` and sends no plaintext key (see [Plug-ins: finding the Hub, signing, errors](../native-mode.en.md#plug-ins-finding-the-hub-signing-errors)). The bridge is path-referenced: after updating orrery, restart its MCP connection in WorkBuddy.
    - **Startup order**: Start the Hub (`npm start`) before opening WorkBuddy conversations; restarting conversations refreshes failed `tools/list` caches.
 2. **Silent wait & clean envelopes**:
-   - Runs `wait.mjs` with `w1` HMAC tickets and chat-only envelopes (`legacyWire = false`) so WorkBuddy's built-in "AI safety guard" does not block re-arm guidance.
+   - Runs `wait.mjs` with `w2` HMAC tickets and chat-only envelopes (`legacyWire = false`) so WorkBuddy's built-in "AI safety guard" does not block re-arm guidance.
    - WorkBuddy recycles idle conversation workers after ~15 minutes, marking members offline without replaying missed messages.
 
 ## Manual Setup & Permissions

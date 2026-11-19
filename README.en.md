@@ -26,6 +26,9 @@ In-process plugins can page through the Claude or Codex native conversation a me
 
 ## Run from Source
 
+Daily Hubs in the same account share a registry and keep separate databases. Stop the old Hub before upgrading. orrery's own plug-ins find the Hub through the registry and sign every request instead of reading `hub.json`; the copy-installed Cursor, Qoder and Antigravity plug-ins must be reinstalled after an upgrade. If a static MCP configuration still uses the old key, reveal the shared key under Settings → Delivery → Native connections. Secondary Hub delivery requires an explicit opt-in. [Signed bridges](docs/native-mode.en.md)
+
+
 Requirements: Windows 10/11 (primary platform) and **Node.js >= 24.2**.
 
 ```powershell
@@ -84,7 +87,11 @@ Help me connect these apps to my current Orrery Hub: <app list>.
 | Variable | Description | Default |
 |---|---|---|
 | `ORRERY_PORT` | Hub HTTP listening port | `4317` |
-| `ORRERY_HOME` | Data root (`hub.json`, `secret`, `api-token`, `hub.log`) | `~/.orrery` |
+| `ORRERY_HOME` | Data root (`hub.json`, `secret`, `api-token`, `hub.log`); plug-ins no longer use it to find the Hub | `~/.orrery` |
+| `ORRERY_REGISTRY` | Account-local registry and shared bridge key. Use a separate path for tests and development. | `~/.orrery/registry` |
+| `ORRERY_HUB` | For plug-ins: connect only to the Hub with this hubId or name; an invalid record stops the plug-in instead of falling back to the active Hub | Unset (active Hub) |
+| `ORRERY_LEGACY_HUB` | For plug-ins: when the registry has no running active Hub, read `hub.json` in this old Hub's home and send the plaintext key the old way | Unset |
+| `ORRERY_SECONDARY` | `1` starts a secondary Hub with native delivery disabled by default. | Unset |
 | `ORRERY_DB` | SQLite database file path | `<repo>/.tmp/orrery.db` |
 | `ORRERY_SKILLS_DIR` | Local skills folder scanned for `$` completion | `~/.agents/skills` |
 | `ORRERY_MOCK` | Set to `1` for a demo project with two mock conversations that reply to incoming chat messages without calling a model | Off |

@@ -256,15 +256,16 @@ test('native 2b: a push without an ack within bridgeAckMs fails the delivery', a
   }
 });
 
-test('native discovery: hub.json has url, secret and pid; the secret is reused on restart; hub.json goes on close', async () => {
+test('native discovery: hub.json has url, secret, pid and hubId; the secret is reused on restart; hub.json goes on close', async () => {
   const dir = tempDir();
   const first = await startTestHub({ dir });
   const home = first.home;
   const d1 = JSON.parse(readFileSync(join(home, 'hub.json'), 'utf8'));
   await first.close();
-  assert.deepEqual(Object.keys(d1), ['url', 'secret', 'pid']);
+  // The compatibility file for old plug-ins and the explicit legacy fallback (docs/native-mode.md): hubId since the registry.
+  assert.deepEqual(Object.keys(d1), ['url', 'secret', 'pid', 'hubId']);
   assert.match(d1.secret, /^[0-9a-f]{64}$/);
-  assert.deepEqual([d1.url, d1.pid], [first.url, process.pid]);
+  assert.deepEqual([d1.url, d1.pid, d1.hubId], [first.url, process.pid, first.registry.hubId]);
   assert.equal(existsSync(join(home, 'hub.json')), false, 'removed on close');
   const second = await startTestHub({ dir });
   try {

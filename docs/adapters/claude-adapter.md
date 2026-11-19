@@ -7,7 +7,7 @@
 ## 原生模式接入与收件箱投递
 
 1. **只读列会话（`src/adapters/claude/store.ts`）**：从用户本地 Claude 项目记录只读提取工作区路径 `cwd`、标题、模型与更新时间，绝不修改原会话文件（不支持 Hub 代建新会话，新会话请先在 Claude 中建立并至少发过一句消息）。
-2. **身份头区分**：桥程序只读 `<ORRERY_HOME 或 ~/.orrery>/hub.json`，经回环连接 `/bridge/stream?harness=claude&session=<id>` 与 `/mcp`；请求头中 **`x-orrery-bridge` 传桥密钥，`x-orrery-session` 传会话 ID**（`x-orrery-harness` 为 `claude`，旧调用兼容省略时默认 `claude`）。
+2. **找 Hub 与签名**：桥程序每次请求都经 `plugins/shared/hub-discovery.mjs` 读账户的 Hub 登记处（`ORRERY_REGISTRY`，默认 `~/.orrery/registry/`），连活动 Hub 或 `ORRERY_HUB` 钉住的那个，经回环连接 `/bridge/stream?harness=claude&session=<id>` 与 `/mcp`；请求带 **`x-orrery-sig` 签名（覆盖会话头和正文，密钥原文不上网络），`x-orrery-session` 传会话 ID**（`x-orrery-harness` 为 `claude`，旧调用兼容省略时默认 `claude`）。`ORRERY_HOME` 对桥不起作用，`hub.json` 只在设了 `ORRERY_LEGACY_HUB` 时才读。Hub 问不到时工具返回原因（"接入件没有发送请求：…"、"Hub「…」拒收：…"或"连不上 Hub「…」…"），见[接入件：找 Hub、签名、报错](../native-mode.md#接入件找-hub签名报错)。桥按路径引用，更新 orrery 后在 Claude Code 里重启 orrery 的 MCP 连接（或重开会话）即可。
 3. **收件箱回执语义**：收到 `deliver` 时桥把 `[orrery]` 信封写进会话收件箱（`CLAUDE_CODE_MESSAGING_SOCKET`，写入前发送令牌认证行且令牌不发给 Hub）后发送 `POST /bridge/ack`；**`ack` 仅证明消息写入了收件箱（投递状态到 `accepted`），不代表模型已经接手或本轮已经结束**（原生 Claude 不报经 orrery 逐轮 token）。
 4. **工具变更通知局限**：仅在桥重连、或此前 Hub 离线回答过缓存工具清单后连上 Hub 时发一次 `notifications/tools/list_changed`，不保证运行中途任意插件变更都即时通知刷新。
 5. **在线与离线边界**：仅正在运行的会话有收件箱监听，宿主进程退出后群员即离线，期间消息留在群聊中不补发（Hub 刚启动的默认宽限期内先暂存，桥重连上即送）。

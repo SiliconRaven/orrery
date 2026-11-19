@@ -1,3 +1,4 @@
+import { TEST_HUB_ID } from './helpers.ts';
 // ship: the merge script, its signed ticket, and the Hub's read-only check of the result (docs/collaboration.md).
 // Every git action happens in temporary repositories under the system temp directory.
 import assert from 'node:assert/strict';
@@ -327,7 +328,7 @@ test('ticket: forged, rebound or wrong-domain tickets are refused; a good one yi
   assert.throws(() => verifyShip(f.hub, 'b'.repeat(64), ticket), status(403), 'signed with another secret');
   assert.throws(() => verifyShip(f.hub, SECRET, `${ticket.slice(0, -1)}${ticket.endsWith('0') ? '1' : '0'}`), status(403), 'tampered signature');
   assert.throws(() => verifyShip(f.hub, SECRET, undefined), status(403));
-  assert.throws(() => verifyShip(f.hub, SECRET, ticketFor(ZCODE_WAIT, SECRET, 'abc')), status(403), 'a wait ticket is not a ship ticket');
+  assert.throws(() => verifyShip(f.hub, SECRET, ticketFor(ZCODE_WAIT, SECRET, 'abc', TEST_HUB_ID)), status(403), 'a wait ticket is not a ship ticket');
   const rebound = (claims: Partial<Parameters<typeof shipTicket>[1]>) => shipTicket(SECRET, { clusterId: 'c', taskId: task.id, submissionId: submission.id, commitSha: 'abcdef0', reviewer: 'b', ...claims });
   assert.throws(() => verifyShip(f.hub, SECRET, rebound({ commitSha: '1234567' })), status(409), 'another commit');
   assert.throws(() => verifyShip(f.hub, SECRET, rebound({ submissionId: 'other' })), status(409), 'another submission');

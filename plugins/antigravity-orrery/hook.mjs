@@ -2,17 +2,17 @@
 // Antigravity's MCP connection to the Hub is shared by all conversations, so the Hub cannot see the caller. Antigravity
 // runs this hook before a tool call with the conversation's id on stdin; for a call to the MCP server named `orrery`
 // the hook answers with an `overwrite` that sets the argument
-//   orreryCaller = "<conversationId>.<hex HMAC-SHA256(bridge secret, 'orrery-antigravity-caller\n' + conversationId)>"
-// replacing whatever the model wrote there. Without a readable hub.json or a conversation id it still overwrites, with
-// '', so a model-written value never reaches the Hub. The Hub accepts the id only with a valid tag (src/mcp/antigravity.ts).
+//   orreryCaller = "<conversationId>.<hex HMAC-SHA256(bridge key K, 'orrery-antigravity-caller\n' + conversationId)>"
+// replacing whatever the model wrote there. K is the account's shared key from the Hub registry (ORRERY_REGISTRY, default
+// ~/.orrery/registry/bridge-secret), the same for every daily Hub; there is no fallback to a Hub's hub.json. Without a
+// readable K or a conversation id it still overwrites, with '', so a model-written value never reaches the Hub, and it
+// says why on stderr. The Hub accepts the id only with a valid tag (src/mcp/antigravity.ts).
 // It never allows anything: the decision is always "ask", so the user's own permission settings decide as before.
-// Standalone: Node built-ins only; reads only <ORRERY_HOME or ~/.orrery>/hub.json; prints only its answer, never the
-// secret. Contract: docs/adapters/antigravity.md in the orrery repository.
+// Standalone: Node built-ins and its copy of orrery's plugins/shared/hub-discovery.mjs only; reads only the key file;
+// prints only its answer (stdout) and a reason (stderr), never the key. Contract: docs/adapters/antigravity.md.
 import { createHmac } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { HubError, readBridgeKey } from './hub-discovery.mjs';
 
 export const CALLER_ARG = 'orreryCaller';
 const SERVER = 'orrery';
@@ -64,12 +64,12 @@ export function answer(payload, secret) {
   return { ...ASK, overwrite: { [CALLER_ARG]: value } };
 }
 
-/** The Hub's bridge secret from hub.json, or null. */
+/** The shared key K from the registry, or null with the reason written to stderr (the call then goes unsigned). */
 export function hubSecret(env = process.env) {
   try {
-    const d = JSON.parse(readFileSync(join(env.ORRERY_HOME || join(homedir(), '.orrery'), 'hub.json'), 'utf8'));
-    return typeof d?.secret === 'string' && d.secret ? d.secret : null;
-  } catch {
+    return readBridgeKey(env);
+  } catch (e) {
+    process.stderr.write(`orrery hook: ${e instanceof HubError ? e.message : 'cannot read the key'}; this call is not signed and the Hub will not attribute it\n`);
     return null;
   }
 }

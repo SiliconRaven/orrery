@@ -46,6 +46,7 @@ dialog.settings-dialog { width: min(900px, calc(100vw - 32px)); height: min(700p
 }
 .settings-card h4 { margin: 0; font-size: var(--f-base); font-weight: 600; }
 .settings-card p { margin: 0; }
+#bridge-key-text { overflow-wrap: anywhere; }
 .settings-card .limit + .limit { padding-top: 10px; border-top: 1px solid var(--line); }
 .settings-dialog .limit.unlimited { margin: 0 -8px; padding: 6px 8px; }
 .settings-field { margin: 0; padding: 0; border: 0; min-width: 0; display: grid; gap: 8px; }

@@ -1,3 +1,4 @@
+import { TEST_HUB_ID } from './helpers.ts';
 // Reading a bound Qoder conversation (src/adapters/qoder/transcript.ts). Every database here is hand-written synthetic
 // data shaped like Qoder's main.sqlite (tables chat_sessions and chat_session_messages, JSON parts in payload_json).
 import { strict as assert } from 'node:assert';
@@ -22,7 +23,7 @@ const SECRET = 'synthetic-bridge-secret';
 const at = Date.parse('2026-01-02T12:00:00.000Z');
 const startedAt = new Date(at).toISOString();
 
-const commandFor = (session: string) => waitCommand(QODER_WAIT, ticketFor(QODER_WAIT, SECRET, session), 'http://127.0.0.1:4999');
+const commandFor = (session: string) => waitCommand(QODER_WAIT, ticketFor(QODER_WAIT, SECRET, session, TEST_HUB_ID), 'http://127.0.0.1:4999');
 /** What a whole-file Read returns: the printed text, lines numbered from 1. */
 const numbered = (text: string) => text.replace(/\n$/, '').split('\n').map((line, i) => `${i + 1}\t${line}`).join('\n');
 const outputPath = (task: string) => `C:\\synthetic\\tasks\\${task}.output`;
@@ -183,7 +184,7 @@ test('wait tickets are masked in every returned text, while the raw command stil
   const { items } = await page();
   assert.equal(items.length, 5);
   for (const item of items) assert.ok(!/[0-9a-f]{64}/.test(item.text ?? ''), item.text);
-  assert.ok(items[0]!.text!.includes(`q1.${SESSION}.<hidden> http://127.0.0.1:4999 qoder Qoder.exe`));
+  assert.ok(items[0]!.text!.includes(`q2.${TEST_HUB_ID}.${SESSION}.<hidden> http://127.0.0.1:4999 qoder Qoder.exe`));
   assert.deepEqual(items.at(-1)!.source?.candidate, { envelope });
 });
 
@@ -221,7 +222,7 @@ test('the wait command recognised is exactly the one wait_for_messages gives a Q
   assert.equal(waitCommandSession(commandFor(SESSION)), SESSION);
   assert.equal(waitCommandSession(commandFor(SESSION).replace(' qoder Qoder.exe', '')), undefined);
   assert.equal(waitCommandSession(`${commandFor(SESSION)}\n`), undefined);
-  assert.equal(waitCommandSession(commandFor(SESSION).replace('q1.', 'z1.')), undefined);
+  assert.equal(waitCommandSession(commandFor(SESSION).replace('q2.', 'z2.')), undefined);
 });
 
 test('a successful send_message through mcp_call carries its messageId with the recorded server name, others do not', async t => {

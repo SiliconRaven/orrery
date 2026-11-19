@@ -5,8 +5,7 @@
 // command exits and the app runs a turn), and the member runs the same command again at the end of that turn. This
 // module holds, per harness (core/types.ts WaitHarness):
 //   - who a caller is: the conversation id at _meta[metaKey];
-//   - the ticket: <first letter of the harness>1.<session id>.<hex HMAC-SHA256(bridge secret, "orrery-<harness>-wait\n" +
-//     session id)>. Not stored: a restarted Hub (same secret) still accepts it, so wait.mjs reconnects instead of exiting;
+//   - a v2 ticket scoped to the issuing Hub and conversation. The same Hub accepts it after a restart.
 //   - the wait connections, per session (in memory). Anti-loop rules, since every exit costs a turn:
 //       1. the Hub ends a wait only to deliver, or (3) when the conversation is no member any more;
 //       2. a second wait of the same session is held aside (kept open, never delivered to) and takes over when the
@@ -17,6 +16,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
+import { HUB_ID_RE } from '../bridge-protocol.ts';
 import type { Hub } from '../core/hub.ts';
 import { UNSAFE_PATH } from '../core/projects.ts';
 import type { WaitHarness } from '../core/types.ts';
@@ -36,20 +36,22 @@ const PROCESS_ARG = /^[A-Za-z0-9._-]{1,64}$/;
 /** The wait script, with forward slashes (bash and cmd both take them). */
 export const WAIT_SCRIPT = resolve(import.meta.dirname, '../../plugins/zcode-orrery/wait.mjs').replaceAll('\\', '/');
 
-const prefixOf = (h: WaitHarness) => `${h.harness[0]}1`;
-const tagOf = (h: WaitHarness, secret: string, sessionId: string) => createHmac('sha256', secret).update(`orrery-${h.harness}-wait\n${sessionId}`).digest('hex');
+const prefixOf = (h: WaitHarness, hubId: string) => `${h.harness[0]}2.${hubId}.`;
+const tagOf = (h: WaitHarness, secret: string, hubId: string, sessionId: string) =>
+  createHmac('sha256', secret).update(`orrery-${h.harness}-wait-v2\n${hubId}\n${sessionId}`).digest('hex');
 
-export function ticketFor(h: WaitHarness, secret: string, sessionId: string): string {
+export function ticketFor(h: WaitHarness, secret: string, sessionId: string, hubId: string): string {
+  if (!HUB_ID_RE.test(hubId)) throw new Error('Invalid Hub ID for wait ticket');
   if (!SESSION_RE.test(sessionId)) throw new Error(`这个 ${h.appProcess.replace(/\.exe$/i, '')} 会话 id 含有不能放进命令行的字符`);
-  return `${prefixOf(h)}.${sessionId}.${tagOf(h, secret, sessionId)}`;
+  return `${prefixOf(h, hubId)}${sessionId}.${tagOf(h, secret, hubId, sessionId)}`;
 }
 
 /** The session a ticket was made for, or null when it is malformed or not signed with this secret. Constant-time. */
-export function ticketSession(h: WaitHarness, secret: string, ticket: unknown): string | null {
-  const prefix = `${prefixOf(h)}.`;
+export function ticketSession(h: WaitHarness, secret: string, ticket: unknown, hubId: string): string | null {
+  const prefix = prefixOf(h, hubId);
   const m = typeof ticket === 'string' && ticket.startsWith(prefix) ? TICKET_BODY.exec(ticket.slice(prefix.length)) : null;
   if (!m) return null;
-  return timingSafeEqual(Buffer.from(m[2], 'hex'), Buffer.from(tagOf(h, secret, m[1]), 'hex')) ? m[1] : null;
+  return timingSafeEqual(Buffer.from(m[2], 'hex'), Buffer.from(tagOf(h, secret, hubId, m[1]), 'hex')) ? m[1] : null;
 }
 
 /** The issuing Hub's own address, from the port the request came in on (the Hub listens on 127.0.0.1 only). */
@@ -131,7 +133,7 @@ export class WaitRegistry {
 
   /** GET /bridge/<harness>-wait, ticket in x-orrery-ticket. */
   open(req: IncomingMessage, res: ServerResponse): void {
-    const sessionId = ticketSession(this.h, this.secret, req.headers[TICKET_HEADER]);
+    const sessionId = ticketSession(this.h, this.secret, req.headers[TICKET_HEADER], this.hub.bridgeHubId);
     if (sessionId === null) {
       res.writeHead(403, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'ticket invalid' }));
       return;
@@ -172,7 +174,7 @@ export class WaitRegistry {
       res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'invalid ack' }));
       return;
     }
-    const sessionId = ticketSession(this.h, this.secret, body?.ticket);
+    const sessionId = ticketSession(this.h, this.secret, body?.ticket, this.hub.bridgeHubId);
     if (sessionId === null) {
       res.writeHead(403, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'ticket invalid' }));
       return;
@@ -197,7 +199,7 @@ export class WaitRegistry {
         // session is the member's re-arm. A held wait takes over (rule 2).
         this.sent.set(sessionId, { deliveryId: e.deliveryId, wait });
         this.release(sessionId, s, entry);
-        const text = this.h.legacyWire ? e.text + tail(waitCommand(this.h, ticketFor(this.h, this.secret, sessionId), wait.hubUrl)) : e.text;
+        const text = this.h.legacyWire ? e.text + tail(waitCommand(this.h, ticketFor(this.h, this.secret, sessionId, this.hub.bridgeHubId), wait.hubUrl)) : e.text;
         wait.res.write(`event: deliver\ndata: ${JSON.stringify({ deliveryId: e.deliveryId, text })}\n\n`);
       },
       // The Hub is closing: end the stream without a delivery; wait.mjs reconnects to the next Hub instead of exiting.

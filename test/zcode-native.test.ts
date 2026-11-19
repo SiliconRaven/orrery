@@ -1,3 +1,4 @@
+import { TEST_HUB_ID } from './helpers.ts';
 // Native ZCode without ZCode (docs/adapters/zcode.md, "测试"): the store over databases built here (WAL included, columns
 // missing), the caller identity from _meta, tickets, the wait/ack flow with a fake wait client, the anti-loop rules, and
 // the real wait.mjs as a child process against a real test Hub. Nothing here runs ZCode or calls a model.
@@ -14,7 +15,7 @@ import { nativeFactories } from '../src/adapters/index.ts';
 import { REPO_ROOT } from '../src/main.ts';
 import { ARM_LIMIT, NOT_MEMBER_TEXT, tail, ticketFor, ticketSession, waitCommand, WAIT_SCRIPT, zcodeCaller } from '../src/mcp/zcode.ts';
 import type { BridgePort, Member, NativeDeliverContext } from '../src/core/types.ts';
-import { freePort, startTestHub, tempDir, waitFor, openSse } from './helpers.ts';
+import { freePort, startTestHub, tempDir, waitFor, openSse, writeRegistry } from './helpers.ts';
 
 const WAIT = join(REPO_ROOT, 'plugins', 'zcode-orrery', 'wait.mjs');
 const waitModule = await import(pathToFileURL(WAIT).href);
@@ -107,17 +108,17 @@ test('zcode store: missing columns are tolerated, a missing table or database re
 // ───────────── identity and tickets ─────────────
 
 test('zcode tickets: signed per session, verified in constant time, stable; the command is byte-identical', () => {
-  const t = ticketFor('secret-a', S1);
-  assert.match(t, /^z1\.task_11111111\.[0-9a-f]{64}$/);
-  assert.equal(ticketFor('secret-a', S1), t, 'same session, same ticket');
-  assert.equal(ticketSession('secret-a', t), S1);
-  assert.equal(ticketSession('secret-b', t), null, 'another secret');
-  assert.equal(ticketSession('secret-a', t.replace(S1, S2)), null, 'another session under the same tag');
+  const t = ticketFor('secret-a', S1, TEST_HUB_ID);
+  assert.match(t, /^z2\.[0-9a-f-]{36}\.task_11111111\.[0-9a-f]{64}$/);
+  assert.equal(ticketFor('secret-a', S1, TEST_HUB_ID), t, 'same session, same ticket');
+  assert.equal(ticketSession('secret-a', t, TEST_HUB_ID), S1);
+  assert.equal(ticketSession('secret-b', t, TEST_HUB_ID), null, 'another secret');
+  assert.equal(ticketSession('secret-a', t.replace(S1, S2), TEST_HUB_ID), null, 'another session under the same tag');
   for (const bad of [undefined, '', 'z1.', `z2.${S1}.${'0'.repeat(64)}`, `z1.${S1}.${'0'.repeat(63)}`, `z1.a b.${'0'.repeat(64)}`, 'secret-a']) {
-    assert.equal(ticketSession('secret-a', bad), null, String(bad));
+    assert.equal(ticketSession('secret-a', bad, TEST_HUB_ID), null, String(bad));
   }
-  assert.throws(() => ticketFor('s', 'has space'));
-  assert.throws(() => ticketFor('s', 'semi;colon'));
+  assert.throws(() => ticketFor('s', 'has space', TEST_HUB_ID));
+  assert.throws(() => ticketFor('s', 'semi;colon', TEST_HUB_ID));
   assert.notEqual(t, 'secret-a');
   const hub = 'http://127.0.0.1:4390';
   assert.equal(waitCommand(t, hub), `node "${WAIT_SCRIPT}" ${t} ${hub}`, 'names the issuing Hub');
@@ -208,10 +209,10 @@ test('zcode identity: _meta names the member; subagents speak as their root; wai
 
     const w = await call(app, 'wait_for_messages', {}, { session_id: S1 });
     const got = JSON.parse(w.content[0].text);
-    assert.equal(got.command, waitCommand(ticketFor(app.secret, S1), app.url));
+    assert.equal(got.command, waitCommand(ticketFor(app.secret, S1, app.registry.hubId), app.url));
     assert.deepEqual([got.run_in_background, got.description], [true, 'orrery：等群消息']);
     assert.equal(got.running, 0);
-    const held = openWait(app.url, ticketFor(app.secret, S1));
+    const held = openWait(app.url, ticketFor(app.secret, S1, app.registry.hubId));
     await held.status;
     const again = JSON.parse((await call(app, 'wait_for_messages', {}, { session_id: S1 })).content[0].text);
     assert.equal(again.running, 1);
@@ -241,13 +242,13 @@ test('zcode wait: deliver → printed and acked → busy until re-armed; message
   const app = await zHub();
   try {
     const { cluster, z1 } = await zCluster(app);
-    const ticket = ticketFor(app.secret, S1);
+    const ticket = ticketFor(app.secret, S1, app.registry.hubId);
     assert.equal(await statusOf(app, z1.id), 'offline');
     assert.equal((await say(app, cluster.id, '@Z1 while offline')).id !== undefined, true);
     await waitFor(async () => (await deliveriesOf(app, cluster.id, z1.id))[0]?.state === 'offline', 'offline delivery');
 
     assert.equal(await openWait(app.url, 'z1.bad').status, 403);
-    assert.equal(await openWait(app.url, ticketFor('another secret', S1)).status, 403);
+    assert.equal(await openWait(app.url, ticketFor('another secret', S1, app.registry.hubId)).status, 403);
     const first = openWait(app.url, ticket);
     assert.equal(await first.status, 200);
     await waitFor(async () => (await statusOf(app, z1.id)) === 'idle', 'online once a wait is connected');
@@ -260,7 +261,7 @@ test('zcode wait: deliver → printed and acked → busy until re-armed; message
     assert.ok(data.text.endsWith(tail(waitCommand(ticket, app.url))), 'the envelope ends with the re-arm instructions');
     assert.equal(await statusOf(app, z1.id), 'busy');
 
-    assert.deepEqual(await ack(app, ticketFor(app.secret, S2), data.deliveryId), { acked: false }, 'another session cannot ack it');
+    assert.deepEqual(await ack(app, ticketFor(app.secret, S2, app.registry.hubId), data.deliveryId), { acked: false }, 'another session cannot ack it');
     assert.deepEqual(await ack(app, ticket, data.deliveryId), { acked: true });
     await first.ended;
     assert.deepEqual(await ack(app, ticket, data.deliveryId), { acked: false }, 'once');
@@ -288,7 +289,7 @@ test('zcode wait: a duplicate wait is held aside, takes over after a delivery, a
   const app = await zHub();
   try {
     const { cluster, z1 } = await zCluster(app);
-    const ticket = ticketFor(app.secret, S1);
+    const ticket = ticketFor(app.secret, S1, app.registry.hubId);
     const a = openWait(app.url, ticket);
     await waitFor(async () => (await statusOf(app, z1.id)) === 'idle', 'online');
     const b = openWait(app.url, ticket);
@@ -312,7 +313,7 @@ test('zcode wait: the active wait dropping without a delivery hands over to the 
   const app = await zHub();
   try {
     const { cluster, z1 } = await zCluster(app);
-    const ticket = ticketFor(app.secret, S1);
+    const ticket = ticketFor(app.secret, S1, app.registry.hubId);
     const a = openWait(app.url, ticket);
     await waitFor(async () => (await statusOf(app, z1.id)) === 'idle', 'online');
     const b = openWait(app.url, ticket);
@@ -337,7 +338,7 @@ test('zcode wait: at most ARM_LIMIT waits per window are taken; later ones are o
   const app = await zHub();
   try {
     const { cluster, z1 } = await zCluster(app);
-    const ticket = ticketFor(app.secret, S1);
+    const ticket = ticketFor(app.secret, S1, app.registry.hubId);
     const waits: ReturnType<typeof openWait>[] = [];
     for (let i = 0; i < ARM_LIMIT; i++) {
       const w = openWait(app.url, ticket);
@@ -374,7 +375,7 @@ test('zcode wait: a member moved to another conversation tells the old conversat
   const app = await zHub();
   try {
     const { z1 } = await zCluster(app);
-    const wait = openWait(app.url, ticketFor(app.secret, S1));
+    const wait = openWait(app.url, ticketFor(app.secret, S1, app.registry.hubId));
     assert.equal(await wait.status, 200);
     await waitFor(() => app.hub.listMembers().find((m) => m.id === z1.id)!.status === 'idle', 'the wait counts as online');
     await app.api('POST', `/api/members/${z1.id}/session`, { harness: 'zcode', sessionId: OUTSIDER, confirmStopped: true });
@@ -389,7 +390,7 @@ test('zcode wait: no re-arm within the grace → offline, the queue ends offline
   const app = await zHub({ graceMs: 200 });
   try {
     const { cluster, z1 } = await zCluster(app);
-    const ticket = ticketFor(app.secret, S1);
+    const ticket = ticketFor(app.secret, S1, app.registry.hubId);
     const w = openWait(app.url, ticket);
     await waitFor(async () => (await statusOf(app, z1.id)) === 'idle', 'online');
     await say(app, cluster.id, '@Z1 one');
@@ -406,8 +407,9 @@ test('zcode wait: no re-arm within the grace → offline, the queue ends offline
 
 // ───────────── the real wait.mjs ─────────────
 
-function runWait(home: string, ticket: string, ...extraArgs: string[]) {
-  const child = spawn(process.execPath, [WAIT, ticket, ...extraArgs], { env: { ...process.env, ORRERY_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] });
+/** The real wait command with `registry` as its ORRERY_REGISTRY. */
+function runWait(registry: string, ticket: string, ...extraArgs: string[]) {
+  const child = spawn(process.execPath, [WAIT, ticket, ...extraArgs], { env: { ...process.env, ORRERY_REGISTRY: registry }, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';
   child.stdout.setEncoding('utf8').on('data', (c) => { out += c; });
   child.stderr.resume();
@@ -423,10 +425,10 @@ test('wait.mjs: prints the envelope verbatim (quotes, newlines, & | < > ^ % $())
   let wait: ReturnType<typeof runWait> | undefined;
   try {
     const { cluster, z1 } = await zCluster(app);
-    const ticket = ticketFor(app.secret, S1);
-    // The Hub URL from the command, with a home whose hub.json names another Hub: the argument wins.
-    const elsewhere = tempDir();
-    writeFileSync(join(elsewhere, 'hub.json'), JSON.stringify({ url: 'http://127.0.0.1:1', secret: 'x' }));
+    const ticket = ticketFor(app.secret, S1, app.registry.hubId);
+    // The Hub URL from the command, with a registry that names another Hub: the argument wins.
+    const elsewhere = join(tempDir(), 'registry');
+    writeRegistry(elsewhere, 'http://127.0.0.1:1');
     wait = runWait(elsewhere, ticket, app.url);
     await waitFor(async () => (await statusOf(app, z1.id)) === 'idle', 'wait.mjs connected', 10_000);
     assert.equal(wait.out(), waitModule.STARTED);
@@ -452,36 +454,42 @@ test('wait.mjs: prints the envelope verbatim (quotes, newlines, & | < > ^ % $())
   }
 });
 
-test('wait.mjs: a wrong ticket ends at once with a message; a refused ticket says it is void; a non-loopback hub.json is never contacted', async () => {
+test('wait.mjs: a wrong ticket ends at once with a message; a refused ticket says it is void; a non-loopback record is never contacted', async () => {
   const home = tempDir();
   const bad = runWait(home, 'not-a-ticket');
   assert.equal(await bad.exited, 0);
   assert.equal(bad.out(), waitModule.BAD_TICKET);
   for (const url of ['http://example.com:80', 'http://10.0.0.1:4317', 'https://127.0.0.1:4317', 'http://127.0.0.1']) {
-    const away = runWait(home, ticketFor('s', S1), url);
+    const away = runWait(home, ticketFor('s', S1, TEST_HUB_ID), url);
     assert.equal(await away.exited, 0);
     assert.equal(away.out(), waitModule.BAD_TICKET, `${url} is refused before any connection`);
   }
 
   const app = await zHub();
   try {
-    const refused = runWait(app.home, ticketFor('another secret', S1));   // no URL argument (an older command): hub.json
+    // No URL argument (an older command): the Hub from the registry. A ticket it did not sign is void.
+    const refused = runWait(app.registryDir, ticketFor('another secret', S1, app.registry.hubId));
     assert.equal(await refused.exited, 0);
-    assert.equal(refused.out(), waitModule.STARTED + waitModule.VOID_TICKET, 'reached the Hub through hub.json');
+    assert.equal(refused.out(), waitModule.STARTED + waitModule.VOID_TICKET, 'reached the Hub through the registry');
+    // A ticket another Hub signed (another hubId): void too, and the command does not wait on this Hub.
+    const crossed = runWait(app.registryDir, ticketFor(app.secret, S1, TEST_HUB_ID), app.url);
+    assert.equal(await crossed.exited, 0);
+    assert.equal(crossed.out(), waitModule.STARTED + waitModule.VOID_TICKET);
   } finally {
     await done(app);
   }
 
-  // hub.json pointing away from this machine: waitOnce keeps retrying and never asks it.
-  writeFileSync(join(home, 'hub.json'), JSON.stringify({ url: 'http://example.com:80', secret: 'x' }));
+  // A registry record pointing away from this machine: waitOnce keeps retrying and never asks it.
+  const registry = join(tempDir(), 'registry');
+  writeRegistry(registry, 'http://example.com:80');
   const logs: string[] = [];
   const stop = new AbortController();
-  const p = waitModule.waitOnce(ticketFor('s', S1), { home, retryMs: 20, log: (s: string) => logs.push(s), signal: stop.signal });
+  const p = waitModule.waitOnce(ticketFor('s', S1, TEST_HUB_ID), { env: { ORRERY_REGISTRY: registry }, retryMs: 20, log: (s: string) => logs.push(s), signal: stop.signal });
   await new Promise((ok) => setTimeout(ok, 150));
   stop.abort();
   await assert.rejects(p);
   assert.equal(logs.length, 1, 'one log line, however many retries');
-  assert.match(logs[0], /no hub\.json/);
+  assert.match(logs[0], /接入件没有发送请求：登记处文件无效/);
 });
 
 test('zcode adapter: a connected wait with no ZCode.exe running is offline and gets no delivery; unknown counts as running', async () => {
@@ -534,7 +542,7 @@ test('wait.mjs: exits when the program above its shell is gone, even though the 
   let anchor: ReturnType<typeof spawn> | undefined;
   try {
     const { z1 } = await zCluster(app);
-    const command = waitCommand(ticketFor(app.secret, S1), app.url);
+    const command = waitCommand(ticketFor(app.secret, S1, app.registry.hubId), app.url);
     // Like ZCode: a non-shell program starts a shell that runs the wait. Killing the program leaves the shell alive.
     anchor = spawn(process.execPath, ['-e', `require('node:child_process').spawn(${JSON.stringify(command)}, { shell: true, stdio: 'ignore' }); setInterval(() => {}, 1000);`], { stdio: 'ignore' });
     await waitFor(async () => (await statusOf(app, z1.id)) === 'idle', 'wait.mjs connected', 15_000);
@@ -552,7 +560,7 @@ test('wait.mjs: exits when the shell that started it is gone', async () => {
   // A parent that starts wait.mjs and exits at once, as a crashed shell would leave it.
   const parent = spawn(process.execPath, ['-e', `
     const { spawn } = require('node:child_process');
-    const c = spawn(process.execPath, [${JSON.stringify(WAIT)}, ${JSON.stringify(ticketFor('s', S1))}], { env: { ...process.env, ORRERY_HOME: ${JSON.stringify(home)} }, stdio: 'ignore', detached: true });
+    const c = spawn(process.execPath, [${JSON.stringify(WAIT)}, ${JSON.stringify(ticketFor('s', S1, TEST_HUB_ID))}], { env: { ...process.env, ORRERY_REGISTRY: ${JSON.stringify(home)} }, stdio: 'ignore', detached: true });
     console.log(c.pid); c.unref();`], { stdio: ['ignore', 'pipe', 'inherit'] });
   let out = '';
   parent.stdout.on('data', (c) => { out += c; });
@@ -569,7 +577,8 @@ test('wait.mjs: exits when the shell that started it is gone', async () => {
 test('wait.mjs: Node built-ins only, no fetch; the plugin folder is self-contained', () => {
   const code = readFileSync(WAIT, 'utf8');
   const specs = [...code.matchAll(/(?:import|from)\s*\(?\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
-  assert.ok(specs.length > 0 && specs.every((s) => s.startsWith('node:')), specs.join());
+  // Node built-ins and its own copy of the shared discovery module (test/hub-discovery-client.test.ts checks the copy).
+  assert.ok(specs.length > 0 && specs.every((s) => s.startsWith('node:') || s === './hub-discovery.mjs'), specs.join());
   assert.ok(!/\bfetch\(/.test(code));
   assert.ok(!code.includes('secret'), 'never reads the bridge secret');
 });

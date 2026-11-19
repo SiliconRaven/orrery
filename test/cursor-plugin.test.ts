@@ -1,6 +1,7 @@
 // The Cursor plugin's real scripts (plugins/cursor-orrery) as child processes against a test Hub, fed hook inputs shaped
 // like Cursor's (docs/adapters/cursor.md, "已测到的事实"; every value here is made up). A recording relay sits between
-// the scripts and the Hub so the privacy checks see every request. Nothing here runs Cursor or reads its data.
+// the scripts and the Hub (the scripts' registry names it; it signs each request again for the Hub) so the privacy checks
+// see every request. Nothing here runs Cursor or reads its data.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -12,7 +13,7 @@ import { pathToFileURL } from 'node:url';
 import { createCursorNativeAdapter } from '../src/adapters/cursor/native.ts';
 import type { Member } from '../src/core/types.ts';
 import { REPO_ROOT } from '../src/main.ts';
-import { freePort, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { freePort, registryEnv, relayRegistry, resignedHeaders, startTestHub, tempDir, waitFor, writeRegistry } from './helpers.ts';
 
 const PLUGIN = join(REPO_ROOT, 'plugins', 'cursor-orrery');
 const S1 = 'aaaaaaaa-1111-4111-8111-111111111111';
@@ -28,8 +29,8 @@ const hookInput = (conversationId: string, extra: Record<string, unknown> = {}) 
   workspace_roots: ['C:\\private\\project'], transcript_path: TRANSCRIPT, user_email: EMAIL, hook_event_name: 'stop', ...extra,
 });
 
-/** A relay that records every request (path, headers, body) and forwards it to the Hub. */
-async function recorder(target: string) {
+/** A relay that records every request (path, headers, body) and forwards it to the Hub; `registry` names the relay. */
+async function recorder(app: PHub) {
   const seen: { path: string; body: string; headers: Record<string, unknown> }[] = [];
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -37,9 +38,10 @@ async function recorder(target: string) {
     req.on('end', () => {
       const body = Buffer.concat(chunks).toString('utf8');
       seen.push({ path: req.url!, body, headers: req.headers });
-      const { host: _host, ...headers } = req.headers;   // the Hub checks Host: let the request carry its own address
+      // Signed again for the Hub's own address (the Hub checks Host and the signature binds it).
+      const headers = resignedHeaders(app, req, Buffer.from(body));
       // A fresh connection each time (agent: false): no pooled socket is shared between a stream and a request.
-      const out = request(`${target}${req.url}`, { method: req.method, headers, agent: false }, (r) => {
+      const out = request(`${app.url}${req.url}`, { method: req.method, headers, agent: false }, (r) => {
         res.writeHead(r.statusCode!, r.headers);
         r.pipe(res);
       });
@@ -50,7 +52,9 @@ async function recorder(target: string) {
   });
   const port = await freePort();
   await new Promise<void>((ok) => server.listen(port, '127.0.0.1', ok));
-  return { url: `http://127.0.0.1:${port}`, seen, close: () => new Promise<void>((ok) => { server.closeAllConnections(); server.close(() => ok()); }) };
+  const registry = join(tempDir(), 'registry');
+  relayRegistry(app, registry, `http://127.0.0.1:${port}`);
+  return { url: `http://127.0.0.1:${port}`, registry, seen, close: () => new Promise<void>((ok) => { server.closeAllConnections(); server.close(() => ok()); }) };
 }
 
 async function pHub(opts: { port?: number; dir?: string } = {}) {
@@ -71,18 +75,18 @@ async function member(app: PHub) {
   return { cluster, c1 };
 }
 
-/** An ORRERY_HOME whose hub.json points the scripts at `url` with the Hub's secret. */
-function homeFor(url: string, secret: string) {
-  const home = tempDir();
-  writeFileSync(join(home, 'hub.json'), JSON.stringify({ url, secret, pid: 1 }));
-  return home;
+/** An ORRERY_REGISTRY whose active record points the scripts at `url` (with `key`, or a key of its own). */
+function registryFor(url: string, key?: string) {
+  const registry = join(tempDir(), 'registry');
+  writeRegistry(registry, url, key ? { key } : {});
+  return registry;
 }
 
 const TEST_ENV = { ORRERY_CURSOR_PARENT_MS: '200', ORRERY_CURSOR_RETRY_MS: '100' };
 
 /** Runs a hook script with the input on stdin. */
-function hook(script: string, input: unknown, home: string, env: Record<string, string> = {}) {
-  const child = spawn(process.execPath, [join(PLUGIN, 'hooks', script)], { env: { ...process.env, ...TEST_ENV, ORRERY_HOME: home, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+function hook(script: string, input: unknown, registry: string, env: Record<string, string> = {}) {
+  const child = spawn(process.execPath, [join(PLUGIN, 'hooks', script)], { env: { ...process.env, ...TEST_ENV, ORRERY_REGISTRY: registry, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.setEncoding('utf8').on('data', (c) => { stdout += c; });
@@ -99,11 +103,11 @@ const statusOf = async (app: PHub, id: string) => {
 
 test('cursor plugin end to end: stop parks, a batch becomes followup_message, prompt confirms it, stop ends the turn; nothing private leaves', async () => {
   const app = await pHub();
-  const rec = await recorder(app.url);
+  const rec = await recorder(app);
   const outputs: string[] = [];
   try {
     const { cluster, c1 } = await member(app);
-    const home = homeFor(rec.url, app.secret);
+    const home = rec.registry;
     const stop1 = hook('stop.mjs', hookInput(S1, { status: 'completed', input_tokens: 10, output_tokens: 2, cache_read_tokens: 4, cache_write_tokens: 0, loop_count: 0 }), home);
     await waitFor(async () => (await statusOf(app, c1.id)) === 'idle', 'parked');
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@C1 please review' });
@@ -150,6 +154,8 @@ test('cursor plugin end to end: stop parks, a batch becomes followup_message, pr
     }
     assert.ok(rec.seen.some((r) => r.path.startsWith('/bridge/cursor-park') && r.path.includes('version=3.29.9')), 'the Cursor version is shown');
     assert.ok(!outputs.join('\n').includes(app.secret), 'the secret is never printed');
+    assert.ok(!JSON.stringify(rec.seen).includes(app.secret), 'the key is never on the wire');
+    assert.ok(rec.seen.every((r) => r.headers['x-orrery-bridge'] === undefined && /^v1 /.test(String(r.headers['x-orrery-sig']))), 'signed requests only');
   } finally {
     await rec.close();
     await app.close();
@@ -160,7 +166,7 @@ test('cursor plugin stop hook: superseded, Hub down, not loopback, its own park 
   const app = await pHub();
   try {
     const { c1 } = await member(app);
-    const home = homeFor(app.url, app.secret);
+    const home = app.registryDir;
     const older = hook('stop.mjs', hookInput(S1), home);
     await waitFor(async () => (await statusOf(app, c1.id)) === 'idle', 'parked');
     await new Promise((ok) => setTimeout(ok, 20));
@@ -170,9 +176,9 @@ test('cursor plugin stop hook: superseded, Hub down, not loopback, its own park 
     assert.ok(Date.now() - t < 1500);
     assert.deepEqual(await newer.json(), {}, 'its own park limit');
 
-    assert.deepEqual(await hook('stop.mjs', hookInput(S1), tempDir()).json(), {}, 'no hub.json');
-    assert.deepEqual(await hook('stop.mjs', hookInput(S1), homeFor('http://10.0.0.1:4318', app.secret)).json(), {}, 'not a loopback address');
-    assert.deepEqual(await hook('stop.mjs', hookInput(S1), homeFor(app.url, 'wrong-secret')).json(), {}, 'refused');
+    assert.deepEqual(await hook('stop.mjs', hookInput(S1), tempDir()).json(), {}, 'no registry');
+    assert.deepEqual(await hook('stop.mjs', hookInput(S1), registryFor('http://10.0.0.1:4318')).json(), {}, 'not a loopback address');
+    assert.deepEqual(await hook('stop.mjs', hookInput(S1), registryFor(app.url, 'f'.repeat(64))).json(), {}, 'refused');
     assert.deepEqual(await hook('stop.mjs', 'not an object', home).json(), {});
 
     // A parent that goes away: the hook leaves without printing anything.
@@ -180,7 +186,7 @@ test('cursor plugin stop hook: superseded, Hub down, not loopback, its own park 
     const launcher = `const { spawn } = require('node:child_process'); const fs = require('node:fs');
       const c = spawn(process.execPath, [${JSON.stringify(join(PLUGIN, 'hooks', 'stop.mjs'))}], { stdio: ['pipe', fs.openSync(${JSON.stringify(out)}, 'w'), 'ignore'], detached: true });
       c.stdin.end(${JSON.stringify(JSON.stringify(hookInput(S1)))}); console.log(c.pid); setTimeout(() => process.exit(0), 700);`;
-    const parent = spawn(process.execPath, ['-e', launcher], { env: { ...process.env, ...TEST_ENV, ORRERY_HOME: home }, stdio: ['ignore', 'pipe', 'inherit'] });
+    const parent = spawn(process.execPath, ['-e', launcher], { env: { ...process.env, ...TEST_ENV, ORRERY_REGISTRY: home }, stdio: ['ignore', 'pipe', 'inherit'] });
     const pid = Number((await createInterface({ input: parent.stdout })[Symbol.asyncIterator]().next()).value);
     await waitFor(() => { try { process.kill(pid, 0); return false; } catch { return true; } }, 'the orphaned hook exits', 5000);
     assert.equal(readFileSync(out, 'utf8'), '', 'nothing printed');
@@ -195,12 +201,11 @@ test('cursor plugin stop hook: the Hub restarting drops the park, the hook recon
   let app = await pHub({ port, dir });
   try {
     const { cluster, c1 } = await member(app);
-    const home = homeFor(app.url, app.secret);
-    const stop = hook('stop.mjs', hookInput(S1), home);
+    // The test Hub's own registry: the restarted Hub registers there again (same hubId, new claim).
+    const stop = hook('stop.mjs', hookInput(S1), app.registryDir);
     await waitFor(async () => (await statusOf(app, c1.id)) === 'idle', 'parked');
     await app.close();
     app = await pHub({ port, dir });
-    writeFileSync(join(home, 'hub.json'), JSON.stringify({ url: app.url, secret: app.secret }));
     await waitFor(async () => (await statusOf(app, c1.id)) === 'idle', 'parked again', 8000);
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@C1 after the restart' });
     assert.match((await stop.json()).followup_message, /after the restart/);
@@ -211,10 +216,10 @@ test('cursor plugin stop hook: the Hub restarting drops the park, the hook recon
 
 test('cursor plugin prompt and tool hooks: the id only; tool calls run at the Hub as the conversation; placeholders only', async () => {
   const app = await pHub();
-  const rec = await recorder(app.url);
+  const rec = await recorder(app);
   try {
     const { cluster, c1 } = await member(app);
-    const home = homeFor(rec.url, app.secret);
+    const home = rec.registry;
     assert.deepEqual(await hook('prompt.mjs', hookInput(S1, { prompt: '[orrery · 来自 A · #0a1b2c3d]\nrest' }), home).json(), { continue: true });
     assert.deepEqual(JSON.parse(rec.seen.at(-1)!.body), { sessionId: S1, event: 'start', generationId: 'gen-1', handout: '0a1b2c3d' });
     assert.deepEqual(await hook('prompt.mjs', hookInput(S1, { prompt: 'see [orrery · 来自 A · #0a1b2c3d]' }), home).json(), { continue: true });
@@ -240,16 +245,17 @@ test('cursor plugin prompt and tool hooks: the id only; tool calls run at the Hu
     assert.match(outsider.updated_mcp_tool_output.content[0].text, /^错误：.*不是任何 orrery 集群的成员/);
     assert.equal((await app.messages(cluster.id)).at(-1)!.body, 'hello from cursor', 'nothing written');
     const down = await tool('MCP:send_message', { body: 'x' }, `${placeholder}\nnot executed`, S1, tempDir());
-    assert.deepEqual(down, { updated_mcp_tool_output: { content: [{ type: 'text', text: 'orrery Hub 没有运行或连不上：这次调用没有执行，消息没有发出。' }] } });
-    // hub.json names a port nobody listens on: the request never left, so "not executed" is true.
-    const refused = await tool('MCP:send_message', { body: 'x' }, `${placeholder}\nnot executed`, S1, homeFor(`http://127.0.0.1:${await freePort()}`, app.secret));
-    assert.equal(refused.updated_mcp_tool_output.content[0].text, 'orrery Hub 没有运行或连不上：这次调用没有执行，消息没有发出。');
+    assert.deepEqual(Object.keys(down), ['updated_mcp_tool_output']);
+    assert.match(down.updated_mcp_tool_output.content[0].text, /^orrery：这次调用没有执行，消息没有发出。原因：接入件没有发送请求：未找到活动 Hub/);
+    // The registry names a port nobody listens on: the request never left, so "not executed" is true.
+    const refused = await tool('MCP:send_message', { body: 'x' }, `${placeholder}\nnot executed`, S1, registryFor(`http://127.0.0.1:${await freePort()}`));
+    assert.match(refused.updated_mcp_tool_output.content[0].text, /^orrery：这次调用没有执行，消息没有发出。原因：连不上 Hub「Test Hub」/);
     // A tool the Hub does not have: rejected before anything runs, so no "cannot be confirmed".
     const noSuchTool = await tool('MCP:no_such_tool', {}, `${placeholder}\nnot executed`);
     assert.match(noSuchTool.updated_mcp_tool_output.content[0].text, /^(错误：|orrery Hub 拒绝了这次调用)/);
-    // The Hub refuses the request (wrong secret: 401): it ran nothing.
-    const unauthorized = await tool('MCP:send_message', { body: 'x' }, `${placeholder}\nnot executed`, S1, homeFor(app.url, 'wrong-secret'));
-    assert.equal(unauthorized.updated_mcp_tool_output.content[0].text, 'orrery Hub 拒绝了这次调用（HTTP 401），没有执行，消息没有发出。');
+    // The Hub refuses the request (a record that is not this Hub's start: 401 claim): it ran nothing.
+    const unauthorized = await tool('MCP:send_message', { body: 'x' }, `${placeholder}\nnot executed`, S1, registryFor(app.url, 'f'.repeat(64)));
+    assert.equal(unauthorized.updated_mcp_tool_output.content[0].text, 'orrery Hub 拒绝了这次调用（Hub「Test Hub」拒收：claim），没有执行，消息没有发出。');
   } finally {
     await rec.close();
     await app.close();
@@ -263,7 +269,7 @@ test('cursor plugin tool hook: the Hub ran the call but the answer was lost: the
     const chunks: Buffer[] = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
-      const { host: _host, ...headers } = req.headers;
+      const headers = resignedHeaders(app, req, Buffer.concat(chunks));
       const out = request(`${app.url}${req.url}`, { method: req.method, headers, agent: false }, (r) => {
         r.resume();
         r.on('end', () => res.socket?.destroy());
@@ -277,7 +283,7 @@ test('cursor plugin tool hook: the Hub ran the call but the answer was lost: the
     const { cluster, c1 } = await member(app);
     const placeholder: string = (await import(pathToFileURL(join(PLUGIN, 'lib', 'hub.mjs')).href)).PLACEHOLDER;
     const lost = await hook('tool.mjs', hookInput(S1, { tool_name: 'MCP:send_message', tool_input: { body: 'stored but unanswered' },
-      tool_output: `${placeholder}\nnot executed` }), homeFor(`http://127.0.0.1:${port}`, app.secret)).json();
+      tool_output: `${placeholder}\nnot executed` }), relayRegistry(app, join(tempDir(), 'registry'), `http://127.0.0.1:${port}`).dir).json();
     const last = (await app.messages(cluster.id)).at(-1)!;
     assert.deepEqual([last.from, last.body], [c1.id, 'stored but unanswered'], 'the Hub did run it');
     const text: string = lost.updated_mcp_tool_output.content[0].text;
@@ -292,8 +298,8 @@ test('cursor plugin tool hook: the Hub ran the call but the answer was lost: the
 });
 
 /** The MCP program over stdio. */
-function mcpProgram(home: string) {
-  const child = spawn(process.execPath, [join(PLUGIN, 'mcp.mjs')], { env: { ...process.env, ORRERY_HOME: home }, stdio: ['pipe', 'pipe', 'inherit'] });
+function mcpProgram(registry: string) {
+  const child = spawn(process.execPath, [join(PLUGIN, 'mcp.mjs')], { env: { ...process.env, ORRERY_REGISTRY: registry }, stdio: ['pipe', 'pipe', 'inherit'] });
   const waiting = new Map<unknown, (m: any) => void>();
   const notes: any[] = [];
   createInterface({ input: child.stdout }).on('line', (line) => {
@@ -313,7 +319,7 @@ function mcpProgram(home: string) {
 test('cursor plugin MCP program: answers initialize itself, lists the Hub\'s tools (tools.json while down, kept equal), only placeholders for calls', async () => {
   const app = await pHub();
   const down = mcpProgram(tempDir());
-  const up = mcpProgram(homeFor(app.url, app.secret));
+  const up = mcpProgram(registryEnv(app).ORRERY_REGISTRY);
   try {
     const init = await up.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'cursor-vscode', version: '1' } });
     assert.equal(init.result.serverInfo.name, 'orrery');
@@ -335,9 +341,49 @@ test('cursor plugin MCP program: answers initialize itself, lists the Hub\'s too
   }
 });
 
+test('cursor plugin MCP program: a Hub that refuses it (401) is asked again slowly and the reason is logged; a down Hub quickly', async () => {
+  let status = 401;
+  const asked: string[] = [];
+  const hub = createServer((req, res) => {
+    asked.push(req.url!);
+    req.resume();
+    if (status === 401) res.writeHead(401, { 'content-type': 'application/json' }).end('{"error":"unauthorized","reason":"mac"}');
+    else res.writeHead(503).end();
+  });
+  const port = await freePort();
+  await new Promise<void>((ok) => hub.listen(port, '127.0.0.1', ok));
+  const run = () => {
+    const child = spawn(process.execPath, [join(PLUGIN, 'mcp.mjs')], { env: { ...process.env, ORRERY_REGISTRY: registryFor(`http://127.0.0.1:${port}`),
+      ORRERY_CURSOR_MCP_RETRY_MS: '40' }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let err = '';
+    child.stderr.setEncoding('utf8').on('data', (c) => { err += c; });
+    const first = new Promise((ok) => createInterface({ input: child.stdout }).once('line', ok));
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })}\n`);
+    return { child, first, err: () => err };
+  };
+  try {
+    const refused = run();
+    await refused.first;
+    await new Promise((ok) => setTimeout(ok, 400));
+    refused.child.kill();
+    assert.equal(asked.length, 1, 'no retry within 12 retry periods after a refusal');
+    assert.match(refused.err(), /Hub「Test Hub」拒收：mac; asking again every 0.48 s/);
+    asked.length = 0;
+    status = 503;
+    const down = run();
+    await down.first;
+    await new Promise((ok) => setTimeout(ok, 400));
+    down.child.kill();
+    assert.ok(asked.length >= 4, `a Hub that is only down is asked again quickly (${asked.length})`);
+  } finally {
+    hub.closeAllConnections();
+    await new Promise<void>((ok) => hub.close(() => ok()));
+  }
+});
+
 test('cursor plugin files: Node built-ins only, no fetch, loopback only, no secret; hooks.json and mcp.json as documented', () => {
   const files = readdirSync(PLUGIN, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.mjs'));
-  assert.deepEqual(files.map((f) => f.replaceAll('\\', '/')).sort(), ['hooks/prompt.mjs', 'hooks/stop.mjs', 'hooks/tool.mjs', 'lib/hub.mjs', 'mcp.mjs']);
+  assert.deepEqual(files.map((f) => f.replaceAll('\\', '/')).sort(), ['hooks/prompt.mjs', 'hooks/stop.mjs', 'hooks/tool.mjs', 'lib/hub-discovery.mjs', 'lib/hub.mjs', 'mcp.mjs']);
   for (const f of files) {
     const code = readFileSync(join(PLUGIN, f), 'utf8');
     const imports = [...code.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
@@ -347,7 +393,10 @@ test('cursor plugin files: Node built-ins only, no fetch, loopback only, no secr
     assert.doesNotMatch(code, /writeFile|appendFile|createWriteStream|console\.log/, `${f}: writes no file, logs nothing`);
     assert.doesNotMatch(code, /state\.vscdb|\.cursor[\\/]|cursor:\/\//, `${f}: reads no Cursor data, opens no cursor:// link`);
   }
-  assert.match(readFileSync(join(PLUGIN, 'lib', 'hub.mjs'), 'utf8'), /LOOPBACK_URL = \/\^http:\\\/\\\/\(127\\\.0\\\.0\\\.1\|localhost\):\\d\{1,5\}\$\//);
+  // The Hub address comes from the registry (http://127.0.0.1:<port> only) or the explicit legacy hub.json (loopback only).
+  const discovery = readFileSync(join(PLUGIN, 'lib', 'hub-discovery.mjs'), 'utf8');
+  assert.match(discovery, /REGISTRY_URL = \/\^http:\\\/\\\/127\\\.0\\\.0\\\.1:/);
+  assert.match(discovery, /LEGACY_URL = \/\^http:\\\/\\\/\(127\\\.0\\\.0\\\.1\|localhost\):\\d\{1,5\}\$\//);
   const hooks = JSON.parse(readFileSync(join(PLUGIN, 'hooks', 'hooks.json'), 'utf8'));
   assert.deepEqual(hooks.hooks.stop, [{ command: 'node "${CURSOR_PLUGIN_ROOT}/hooks/stop.mjs"', timeout: 86400, loop_limit: null }]);
   assert.equal(hooks.hooks.beforeSubmitPrompt[0].timeout, 5);

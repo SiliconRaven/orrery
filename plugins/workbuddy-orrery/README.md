@@ -6,9 +6,9 @@ WorkBuddy 桌面应用的原生模式接入件，包含一个 stdio MCP 桥与�
 
 > **Beta 版本提示**：本接入件随 `orrery v0.10.0-beta.2`（Beta 测试版）提供，接口与配置格式仍可能变化。
 
-安装版用户请使用内置 Node 路径，并为宿主插件设置 `ORRERY_HOME`，见[安装版接入说明](../../docs/desktop.md)。
+安装版用户请使用内置 Node 路径，见[安装版接入说明](../../docs/desktop.md)。接入件经账户的 Hub 登记处（`ORRERY_REGISTRY`，默认 `~/.orrery/registry/`）找 Hub，不再需要为宿主设置 `ORRERY_HOME`。
 
-- `bridge.mjs`：由 WorkBuddy 按对话拉起的 stdio MCP 桥。优先读取环境里的 `CODEBUDDY_SESSION_ID`，未透传且在 Windows 上时只读探测直接父进程 `WorkBuddy.exe` 命令行中的 `--session-id` 参数（必须直接以 `node` 运行，经 `cmd` 包装将无法识别），确认身份后带回环 Hub 密钥转交请求；模型无法在参数里伪造会话 ID。投递采用共享后台等待命令，详见 [docs/adapters/workbuddy.md](../../docs/adapters/workbuddy.md)。
+- `bridge.mjs`：由 WorkBuddy 按对话拉起的 stdio MCP 桥。优先读取环境里的 `CODEBUDDY_SESSION_ID`，未透传且在 Windows 上时只读探测直接父进程 `WorkBuddy.exe` 命令行中的 `--session-id` 参数（必须直接以 `node` 运行，经 `cmd` 包装将无法识别），确认身份后经 `plugins/shared/hub-discovery.mjs` 读账户的 Hub 登记处（`ORRERY_REGISTRY`）找到回环上的活动 Hub，用 `x-orrery-sig` 签名（会话头和正文都在签名里）转交请求，不读 `hub.json`、不发密钥原文；桥按路径引用，更新 orrery 后在 WorkBuddy 里重启这个 MCP 连接即可；模型无法在参数里伪造会话 ID。投递采用共享后台等待命令，详见 [docs/adapters/workbuddy.md](../../docs/adapters/workbuddy.md)。
 - `skill/SKILL.md`（可选）：复制到 WorkBuddy 技能目录后支持通过“加入 orrery”或 `$orrery` 挂接。
 
 ## 手动配置步骤

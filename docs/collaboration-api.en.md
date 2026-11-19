@@ -53,7 +53,7 @@ The user can opt into `taskPlanningRoleBypass: true` on `coordinator.set`. The b
   - `ship-verify` `{ ticket }`: Read-only **query** returning `{ taskId, shortId, commitSha, reviewer, round, verdict: "pass" | "self" }` for the approved submission (does not submit check status).
   - `ship-result` `{ ticket, mergeCommit, pushed, retried? }` or `{ ticket, failed: { kind: "conflict" | "checks", detail } }`: Reports merge outcome so Hub verifies Git ancestry read-only and marks `merged` or returns the task to the executor.
   - **Batch tickets** (starting with `b1.`, `scripts/ship.ts --batch`) use the same two routes: `ship-verify` returns the batch and its tasks in dependency order; a successful `ship-result` records every task as merged at once, a failure is `{ failed: { kind, detail, taskId? } }` (a conflict must name `taskId`, and only that task is returned). A single-task ticket for a task in a batch gets `409`.
-- **`POST /bridge/unread-hint`**: Polled with `x-orrery-bridge` and `{ harness, session }`; returns `{ hint }` categorized into 4 buckets (`mention`, `user`, `broadcast`, `task_notice` with `fyi`/`offline`/`failed_or_unknown`/`blocked` notes) when unread items remain and their breakdown has changed since the last hint, else `{}`.
+- **`POST /bridge/unread-hint`**: Polled with `{ harness, session }` in a request signed with `x-orrery-sig` (the key itself is not sent; plain `x-orrery-bridge` is compatibility only); returns `{ hint }` categorized into 4 buckets (`mention`, `user`, `broadcast`, `task_notice` with `fyi`/`offline`/`failed_or_unknown`/`blocked` notes) when unread items remain and their breakdown has changed since the last hint, else `{}`.
 
 ## Member MCP Tools (23 Standard / 24 Wait Route)
 

@@ -3,18 +3,17 @@
 // A fake DSH ctx registers the real plugin; a fake Hub speaks only the /bridge/unread-hint contract.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { REPO_ROOT } from '../src/main.ts';
-import { tempDir } from './helpers.ts';
+import { tempDir, writeRegistry } from './helpers.ts';
 
 const PLUGIN_DIR = join(REPO_ROOT, 'plugins', 'dsh-orrery');
 const plugin: any = await import(pathToFileURL(join(PLUGIN_DIR, 'lib', 'index.js')).href);
 const S1 = '11111111-1111-4111-8111-111111111111';
-const SECRET = 'unread-hint-test-secret';
+const SECRET = '5ec7e7'.repeat(10) + 'abcd';   // the registry key: never on the wire, never logged
 const HINT = 'orrery：你有 2 条未读（含用户 1 条），方便时用 read_messages 查看';
 
 // ───────────── fake Hub: /bridge/stream fails fast, /bridge/unread-hint follows the mode ─────────────
@@ -87,8 +86,8 @@ function fakeDsh() {
   };
   return {
     logs, listeners, tools,
-    start(home: string, opts: Record<string, unknown> = {}) {
-      plugin.start(ctx, { home, retryMs: 60_000, ...opts });
+    start(registry: string, opts: Record<string, unknown> = {}) {
+      plugin.start(ctx, { env: { ORRERY_REGISTRY: registry }, retryMs: 60_000, ...opts });
     },
     dispose() {
       for (const dispose of disposers.reverse()) dispose();
@@ -113,12 +112,12 @@ function fakeDsh() {
 
 async function setup(opts: Record<string, unknown> = {}) {
   const hub = await fakeHub();
-  const home = tempDir();
-  writeFileSync(join(home, 'hub.json'), JSON.stringify({ url: hub.url, secret: SECRET }));
+  const registry = join(tempDir(), 'registry');
+  writeRegistry(registry, hub.url, { key: SECRET });
   const dsh = fakeDsh();
-  dsh.start(home, opts);
+  dsh.start(registry, opts);
   return {
-    hub, home, dsh,
+    hub, registry, dsh,
     async close() { dsh.dispose(); await hub.close(); },
   };
 }
@@ -156,7 +155,9 @@ test('dsh unread hint: a Hub hint becomes one additional user message; the tool 
 
     const [request] = hub.hintRequests();
     assert.equal(request.method, 'POST');
-    assert.equal(request.headers['x-orrery-bridge'], SECRET);
+    assert.equal(request.headers['x-orrery-bridge'], undefined, 'signed, the key is not sent');
+    assert.match(String(request.headers['x-orrery-sig']), /^v1 /);
+    assert.ok(!JSON.stringify(hub.requests).includes(SECRET), 'the key is nowhere on the wire');
     assert.equal(request.headers['content-type'], 'application/json');
     assert.deepEqual(JSON.parse(request.body), { harness: 'deepseek', session: S1 });
     assert.ok(!dsh.logs.some((line) => line.includes(SECRET)), 'the secret is never logged');
@@ -196,7 +197,7 @@ test('dsh unread hint: a 500, bad JSON, a dropped or stalled connection, or a ti
   } finally { await close(); }
 });
 
-test('dsh unread hint: no hub.json and a closed Hub port are silent and change nothing', async () => {
+test('dsh unread hint: no registry and a closed Hub port are silent and change nothing', async () => {
   const downstream = toolResult();
 
   const noHub = fakeDsh();
@@ -210,10 +211,10 @@ test('dsh unread hint: no hub.json and a closed Hub port are silent and change n
   await new Promise<void>((ok) => closed.listen(0, '127.0.0.1', ok));
   const url = `http://127.0.0.1:${(closed.address() as AddressInfo).port}`;
   await new Promise<void>((ok) => closed.close(() => ok()));
-  const home = tempDir();
-  writeFileSync(join(home, 'hub.json'), JSON.stringify({ url, secret: SECRET }));
+  const registry = join(tempDir(), 'registry');
+  writeRegistry(registry, url, { key: SECRET });
   const dsh = fakeDsh();
-  dsh.start(home);
+  dsh.start(registry);
   try {
     const { out, nextCalls } = await dsh.postExecute(execOf(S1), downstream);
     assert.equal(out, downstream);

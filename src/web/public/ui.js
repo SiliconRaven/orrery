@@ -1304,12 +1304,13 @@ export const activeMember = (members, clusterId, id) => activeMembers(members, c
 
 /** The Hub's channel status for a member; memberships of one conversation share a busy channel. */
 export function memberStatus(member, harnessAvailable, running) {
-  if (member.removedAt || !harnessAvailable) return 'offline';
+  if (member.removedAt || member.deliveryDisabled || !harnessAvailable) return 'offline';
   if (running || member.status === 'busy') return 'busy';
   return member.status === 'offline' ? 'offline' : 'idle';
 }
 
 export function memberStatusLabel(member, status) {
+  if (member.deliveryDisabled === 'secondary') return t('第二实例：不投递');
   if (status === 'busy') return t("投递通道占用");
   return status === 'offline' ? t("离线") : t("空闲");
 }

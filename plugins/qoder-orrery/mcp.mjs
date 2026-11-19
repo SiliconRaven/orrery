@@ -1,52 +1,34 @@
 // orrery's MCP server for the Qoder plugin. Qoder starts it once for the whole app (stdio) and writes each conversation's
 // id into every tools/call, in _meta["com.qoder/turnContext"].sessionId; this process cannot tell conversations apart, so
 // it never names one itself: it relays the JSON-RPC messages unchanged to the Hub, which reads that _meta (src/mcp/qoder.ts).
-// Standalone: Node built-ins only and no fetch: a proxy must never see the secret. It reads <ORRERY_HOME or ~/.orrery>/hub.json
-// fresh for every request and talks only to the loopback address there. Contract: docs/adapters/qoder.md.
-import { readFile } from 'node:fs/promises';
-import { Agent, request } from 'node:http';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+// Standalone: Node built-ins only and no fetch: a proxy must never see a request. Which Hub and how: ./hub-discovery.mjs,
+// a byte-identical copy of orrery's plugins/shared/hub-discovery.mjs (the account's Hub registry, read fresh for every
+// request; requests signed with x-orrery-sig over the body, so the _meta that names the conversation is covered; the key
+// itself is never sent; no valid record: nothing is sent). Contract: docs/adapters/qoder.md.
 import { createInterface } from 'node:readline';
+import { callOutcome, hubFetch } from './hub-discovery.mjs';
 
 const HARNESS = 'qoder';
 const RETRY_MS = 5000;
-const LOOPBACK_URL = /^http:\/\/(127\.0\.0\.1|localhost):\d{1,5}$/;
 const PROTOCOL_VERSION = '2025-06-18';
-const HUB_DOWN ='orrery Hub 没有运行或连不上（在 orrery 目录运行 npm start），这次调用没有送达';
+const log = (m) => process.stderr.write(`orrery: ${m}\n`);   // Qoder keeps MCP stderr in its log
 
-const home = () => process.env.ORRERY_HOME || join(homedir(), '.orrery');
-// An agent of our own: with NODE_USE_ENV_PROXY=1 the global agent would send the secret to HTTP_PROXY.
-const direct = new Agent();
-
-/** The Hub from hub.json; null when there is none. */
-async function findHub() {
-  try {
-    const d = JSON.parse(await readFile(join(home(), 'hub.json'), 'utf8'));
-    if (typeof d?.url === 'string' && LOOPBACK_URL.test(d.url) && typeof d.secret === 'string' && d.secret) return d;
-  } catch { /* no Hub */ }
-  return null;
-}
-
-/** Forwards one JSON-RPC message. Resolves with the Hub's JSON-RPC response; throws when it cannot get one. */
+/**
+ * Forwards one JSON-RPC message. Resolves with the Hub's JSON-RPC response; throws when it cannot get one, saying
+ * whether the plugin sent nothing, the Hub refused it, or the Hub could not be reached.
+ */
 async function relay(msg) {
-  const hub = await findHub();
-  if (!hub) throw new Error(HUB_DOWN);
-  const body = await new Promise((ok, fail) => {
-    const req = request(`${hub.url}/mcp`, {
-      method: 'POST', agent: direct,
-      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'x-orrery-bridge': hub.secret, 'x-orrery-harness': HARNESS },
-    }, (res) => {
-      let text = '';
-      res.setEncoding('utf8');
-      res.on('data', (c) => { text += c; });
-      res.on('end', () => (res.statusCode === 200 ? ok(text) : fail(new Error(`orrery Hub 拒绝了请求（HTTP ${res.statusCode}）`))));
-      res.on('error', fail);
-    });
-    req.on('error', () => fail(new Error(HUB_DOWN)));
-    req.end(JSON.stringify(msg));
-  });
-  return JSON.parse(body);
+  let status;
+  let text;
+  try {
+    ({ status, text } = await hubFetch('POST', '/mcp', { log, body: JSON.stringify(msg),
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'x-orrery-harness': HARNESS } }));
+  } catch (e) {
+    // Not sent (retry is safe), refused (it did not run), or unknown (it may have run): see callOutcome.
+    throw new Error(callOutcome(e));
+  }
+  if (status !== 200) throw new Error(`orrery Hub 拒绝了请求（HTTP ${status}）`);
+  return JSON.parse(text);
 }
 
 // U+2028 / U+2029 are valid raw inside JSON strings, but line readers split on them.

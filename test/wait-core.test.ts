@@ -1,3 +1,4 @@
+import { TEST_HUB_ID } from './helpers.ts';
 // The background-wait core with a harness that is not ZCode (docs/adapters/zcode.md, "共用等待核心"): everything that
 // varies comes from its WaitHarness, and the anti-loop and offline rules hold for it. Real Hub routes and the real
 // wait.mjs as a child process; nothing here runs a native app or calls a model.
@@ -61,19 +62,19 @@ const ack = (url: string, harness: string, ticket: string, deliveryId: string) =
 }).then((r) => r.json());
 
 test('wait core config: the ticket, the command and the _meta key come from the harness config', () => {
-  const t = ticketFor(FAKE, 'secret-a', S1);
-  assert.match(t, /^f1\.conv-1\.[0-9a-f]{64}$/);
-  assert.equal(ticketSession(FAKE, 'secret-a', t), S1);
-  assert.equal(ticketSession(FAKE, 'secret-b', t), null, 'another secret');
-  assert.equal(ticketSession(ZCODE_WAIT, 'secret-a', t), null, 'a ticket of one harness is void for another');
-  assert.equal(ticketSession(FAKE, 'secret-a', ticketFor(ZCODE_WAIT, 'secret-a', S1)), null);
+  const t = ticketFor(FAKE, 'secret-a', S1, TEST_HUB_ID);
+  assert.match(t, /^f2\.[0-9a-f-]{36}\.conv-1\.[0-9a-f]{64}$/);
+  assert.equal(ticketSession(FAKE, 'secret-a', t, TEST_HUB_ID), S1);
+  assert.equal(ticketSession(FAKE, 'secret-b', t, TEST_HUB_ID), null, 'another secret');
+  assert.equal(ticketSession(ZCODE_WAIT, 'secret-a', t, TEST_HUB_ID), null, 'a ticket of one harness is void for another');
+  assert.equal(ticketSession(FAKE, 'secret-a', ticketFor(ZCODE_WAIT, 'secret-a', S1, TEST_HUB_ID), TEST_HUB_ID), null);
   const sameLetter: WaitHarness = { ...FAKE, harness: 'fakeother' };
-  assert.equal(ticketSession(sameLetter, 'secret-a', t), null, 'the same first letter does not make it valid: the signature names the harness');
+  assert.equal(ticketSession(sameLetter, 'secret-a', t, TEST_HUB_ID), null, 'the same first letter does not make it valid: the signature names the harness');
 
   const hub = 'http://127.0.0.1:4390';
   assert.equal(waitCommand(FAKE, t, hub), `node "${WAIT_SCRIPT}" ${t} ${hub} fakewait FakeAgent.exe`);
   assert.equal(waitCommand({ ...FAKE, ancestorProcess: null }, t, hub), `node "${WAIT_SCRIPT}" ${t} ${hub} fakewait`);
-  assert.equal(waitCommand(ZCODE_WAIT, ticketFor(ZCODE_WAIT, 'secret-a', S1), hub), `node "${WAIT_SCRIPT}" ${ticketFor(ZCODE_WAIT, 'secret-a', S1)} ${hub}`, 'ZCode: no harness arguments');
+  assert.equal(waitCommand(ZCODE_WAIT, ticketFor(ZCODE_WAIT, 'secret-a', S1, TEST_HUB_ID), hub), `node "${WAIT_SCRIPT}" ${ticketFor(ZCODE_WAIT, 'secret-a', S1, TEST_HUB_ID)} ${hub}`, 'ZCode: no harness arguments');
   for (const bad of ['Fake App.exe', 'a&calc', 'x"y', '']) assert.throws(() => waitCommand({ ...FAKE, ancestorProcess: bad }, t, hub), bad);
   assert.throws(() => waitCommand({ ...FAKE, harness: 'Fake Wait' }, t, hub));
 
@@ -133,8 +134,8 @@ function rawStatus(url: string): Promise<number> {
 test('wait core: a new harness on its own route: envelope only (no instruction), acked, busy until re-armed', async () => {
   const app = await fakeHub();
   try {
-    const ticket = ticketFor(FAKE, app.secret, S1);
-    assert.equal(await openWait(app.url, 'fakewait', ticketFor(ZCODE_WAIT, app.secret, S1)).status, 403, 'a ZCode ticket is void here');
+    const ticket = ticketFor(FAKE, app.secret, S1, app.registry.hubId);
+    assert.equal(await openWait(app.url, 'fakewait', ticketFor(ZCODE_WAIT, app.secret, S1, app.registry.hubId)).status, 403, 'a ZCode ticket is void here');
     const first = openWait(app.url, 'fakewait', ticket);
     assert.equal(await first.status, 200);
     await waitFor(async () => (await app.statusOf()) === 'idle', 'online once a wait is connected');
@@ -145,7 +146,7 @@ test('wait core: a new harness on its own route: envelope only (no instruction),
     assert.ok(data.text.includes(`messageId=${m.id}`) && data.text.includes('@F1 hello'));
     for (const instruction of ['再运行', '重新运行', 'run_in_background', 'wait.mjs', ticket]) assert.ok(!data.text.includes(instruction), `no "${instruction}" in the envelope`);
     assert.equal(await app.statusOf(), 'busy');
-    assert.deepEqual(await ack(app.url, 'fakewait', ticketFor(FAKE, app.secret, S2), data.deliveryId), { acked: false });
+    assert.deepEqual(await ack(app.url, 'fakewait', ticketFor(FAKE, app.secret, S2, app.registry.hubId), data.deliveryId), { acked: false });
     assert.deepEqual(await ack(app.url, 'fakewait', ticket, data.deliveryId), { acked: true });
     await first.ended;
     const again = openWait(app.url, 'fakewait', ticket);
@@ -159,7 +160,7 @@ test('wait core: a new harness on its own route: envelope only (no instruction),
 test('wait core: a new harness holds a duplicate wait aside, and it takes over after a delivery', async () => {
   const app = await fakeHub();
   try {
-    const ticket = ticketFor(FAKE, app.secret, S1);
+    const ticket = ticketFor(FAKE, app.secret, S1, app.registry.hubId);
     const a = openWait(app.url, 'fakewait', ticket);
     await waitFor(async () => (await app.statusOf()) === 'idle', 'online');
     const b = openWait(app.url, 'fakewait', ticket);
@@ -182,7 +183,7 @@ test('wait core: a new harness holds a duplicate wait aside, and it takes over a
 test('wait core: a new harness takes at most ARM_LIMIT waits per window; a removed member is told to stop', async () => {
   const app = await fakeHub();
   try {
-    const ticket = ticketFor(FAKE, app.secret, S1);
+    const ticket = ticketFor(FAKE, app.secret, S1, app.registry.hubId);
     const waits: ReturnType<typeof openWait>[] = [];
     for (let i = 0; i < ARM_LIMIT; i++) {
       const w = openWait(app.url, 'fakewait', ticket);
@@ -212,7 +213,7 @@ test('wait core: a new harness takes at most ARM_LIMIT waits per window; a remov
 test('wait core: the application process gone: a connected wait is offline and gets nothing; deliver reports offline', async () => {
   const app = await fakeHub(FAKE, { appRunning: async () => false });
   try {
-    const wait = openWait(app.url, 'fakewait', ticketFor(FAKE, app.secret, S1));
+    const wait = openWait(app.url, 'fakewait', ticketFor(FAKE, app.secret, S1, app.registry.hubId));
     assert.equal(await wait.status, 200);
     await app.say('@F1 to an orphan');
     await waitFor(async () => (await app.deliveries())[0]?.state === 'offline', 'the delivery ends offline');
@@ -268,7 +269,7 @@ test('wait.mjs: a new harness\'s command uses its route, prints only the envelop
   const app = await fakeHub();
   let wait: ReturnType<typeof runWait> | undefined;
   try {
-    const ticket = ticketFor(FAKE, app.secret, S1);
+    const ticket = ticketFor(FAKE, app.secret, S1, app.registry.hubId);
     wait = runWait(ticket, app.url, 'fakewait', 'FakeAgent.exe');
     await waitFor(async () => (await app.statusOf()) === 'idle', 'wait.mjs connected', 10_000);
     assert.equal(wait.out(), '', 'a named harness prints nothing while it waits');
@@ -300,7 +301,7 @@ test('wait.mjs: with a named ancestor it exits when that process is gone, and th
   const app = await fakeHub(named);
   let anchor: ReturnType<typeof spawn> | undefined;
   try {
-    const command = waitCommand(named, ticketFor(named, app.secret, S1), app.url);
+    const command = waitCommand(named, ticketFor(named, app.secret, S1, app.registry.hubId), app.url);
     // Like an app: a program starts a shell that runs the wait. Killing the program leaves the shell alive.
     anchor = spawn(process.execPath, ['-e', `require('node:child_process').spawn(${JSON.stringify(command)}, { shell: true, stdio: 'ignore' }); setInterval(() => {}, 1000);`], { stdio: 'ignore' });
     await waitFor(async () => (await app.statusOf()) === 'idle', 'wait.mjs connected', 15_000);

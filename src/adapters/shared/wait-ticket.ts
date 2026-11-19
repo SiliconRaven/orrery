@@ -3,7 +3,7 @@
 // its output, so every text an adapter returns goes through maskTickets; attribution keeps using the raw record.
 import type { TranscriptDraft } from './transcript.ts';
 
-const TICKET = /(?<![A-Za-z0-9._-])([a-z][0-9]\.[A-Za-z0-9._-]{1,128}\.)[0-9a-f]{64}(?![0-9a-f])/g;
+const TICKET = /(?<![A-Za-z0-9._-])([a-z](?:2\.[0-9a-f-]{36}\.|[0-9]\.)[A-Za-z0-9._-]{1,128}\.)[0-9a-f]{64}(?![0-9a-f])/g;
 export const TICKET_MASK = '<hidden>';
 
 /** The text with the secret part of every orrery ticket replaced; the prefix and session id stay readable. */

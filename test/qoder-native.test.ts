@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { copyFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
@@ -15,7 +15,7 @@ import { QODER_WAIT, type Member } from '../src/core/types.ts';
 import { REPO_ROOT } from '../src/main.ts';
 import { QODER_WAIT_TOOL, qoderSession } from '../src/mcp/qoder.ts';
 import { ARM_LIMIT, ticketFor, ticketSession, waitCommand } from '../src/mcp/wait-core.ts';
-import { startTestHub, tempDir, waitFor, openSse } from './helpers.ts';
+import { startTestHub, tempDir, waitFor, openSse, registryEnv, writeRegistry } from './helpers.ts';
 
 const PLUGIN = join(REPO_ROOT, 'plugins', 'qoder-orrery');
 const WAIT = join(REPO_ROOT, 'plugins', 'zcode-orrery', 'wait.mjs');
@@ -112,10 +112,10 @@ test('qoder identity: only _meta["com.qoder/turnContext"].sessionId names a conv
   assert.equal(qoderSession({ 'com.qoder/turnContext': ['sessionId'] } as any), null);
 });
 
-async function qHub(opts: { running?: () => Promise<boolean | null>; graceMs?: number } = {}) {
+async function qHub(opts: { running?: () => Promise<boolean | null>; graceMs?: number; registryDir?: string } = {}) {
   const q = fakeQoder();
   const adapter = createQoderNativeAdapter({ qoderData: q.home, rearmGraceMs: opts.graceMs ?? 60_000, pollMs: 10, qoderRunning: opts.running ?? (async () => true) });
-  const app = await startTestHub({ nativeAdapters: { qoder: adapter }, limits: { recheckMs: 60_000 } });
+  const app = await startTestHub({ nativeAdapters: { qoder: adapter }, limits: { recheckMs: 60_000 }, ...(opts.registryDir ? { registryDir: opts.registryDir } : {}) });
   const secret = JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8')).secret as string;
   const { cluster, members: [q1, q2] } = await app.api('POST', '/api/clusters', {
     name: 'qc',
@@ -188,12 +188,12 @@ test('qoder tool text: the stop rule is in the tool description, the reply gives
     assert.match(QODER_WAIT_TOOL, /do not run it again/);
     assert.match(QODER_WAIT_TOOL, /output file/);
     const reply = JSON.parse((await call(app, 'wait_for_messages', {}, meta(S1))).content[0].text);
-    const ticket = ticketFor(QODER_WAIT, app.secret, S1);
+    const ticket = ticketFor(QODER_WAIT, app.secret, S1, app.registry.hubId);
     assert.equal(reply.command, waitCommand(QODER_WAIT, ticket, app.url));
     assert.ok(reply.command.endsWith(`${app.url} qoder Qoder.exe`), reply.command);
     assert.deepEqual([reply.run_in_background, reply.running], [true, 0]);
-    assert.equal(ticketSession(QODER_WAIT, app.secret, ticket), S1);
-    assert.match(ticket, /^q1\./);
+    assert.equal(ticketSession(QODER_WAIT, app.secret, ticket, app.registry.hubId), S1);
+    assert.match(ticket, /^q2\./);
   } finally {
     await app.done();
   }
@@ -210,7 +210,7 @@ const ack = (url: string, ticket: string, deliveryId: string) => fetch(`${url}/b
 test('qoder wait route (shared core): a delivery is the envelope only, then busy until re-armed; duplicates held; arms limited', async () => {
   const app = await qHub();
   try {
-    const ticket = ticketFor(QODER_WAIT, app.secret, S1);
+    const ticket = ticketFor(QODER_WAIT, app.secret, S1, app.registry.hubId);
     const first = openWait(app.url, ticket);
     assert.equal(await first.status, 200);
     await waitFor(async () => (await app.statusOf()) === 'idle', 'online once a wait is connected');
@@ -231,11 +231,11 @@ test('qoder wait route (shared core): a delivery is the envelope only, then busy
 
     const waits: ReturnType<typeof openWait>[] = [];
     for (let i = 0; i < ARM_LIMIT; i++) {
-      const w = openWait(app.url, ticketFor(QODER_WAIT, app.secret, S2));
+      const w = openWait(app.url, ticketFor(QODER_WAIT, app.secret, S2, app.registry.hubId));
       await w.status;
       waits.push(w);
     }
-    const over = openWait(app.url, ticketFor(QODER_WAIT, app.secret, S2));
+    const over = openWait(app.url, ticketFor(QODER_WAIT, app.secret, S2, app.registry.hubId));
     await over.status;
     await waitFor(() => app.events.some((e) => e.kind === 'guard' && (e.payload as any).reason === 'qoder_arm_rate' && e.memberId === app.q2.id), 'rate notice');
     for (const w of [...waits, over]) w.close();
@@ -247,7 +247,7 @@ test('qoder wait route (shared core): a delivery is the envelope only, then busy
 test('qoder offline (shared core): a wait left behind by a Qoder that is gone is offline and gets nothing', async () => {
   const app = await qHub({ running: async () => false });
   try {
-    const wait = openWait(app.url, ticketFor(QODER_WAIT, app.secret, S1));
+    const wait = openWait(app.url, ticketFor(QODER_WAIT, app.secret, S1, app.registry.hubId));
     assert.equal(await wait.status, 200);
     await app.say('@Q1 to an orphan');
     await waitFor(async () => (await app.deliveries())[0]?.state === 'offline', 'the delivery ends offline');
@@ -261,7 +261,7 @@ test('qoder offline (shared core): a wait left behind by a Qoder that is gone is
 
 test('qoder wait command: the real wait.mjs prints nothing while waiting, then only the envelope, and exits', async () => {
   const app = await qHub();
-  const ticket = ticketFor(QODER_WAIT, app.secret, S1);
+  const ticket = ticketFor(QODER_WAIT, app.secret, S1, app.registry.hubId);
   const child = spawn(process.execPath, [WAIT, ticket, app.url, 'qoder', 'Qoder.exe'], { stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';
   child.stdout.setEncoding('utf8').on('data', (c) => { out += c; });
@@ -281,9 +281,9 @@ test('qoder wait command: the real wait.mjs prints nothing while waiting, then o
   }
 });
 
-/** The plugin's real MCP relay as a child process, speaking newline-delimited JSON-RPC. */
-function startRelay(home: string) {
-  const child = spawn(process.execPath, [join(PLUGIN, 'mcp.mjs')], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ORRERY_HOME: home } });
+/** The plugin's real MCP relay as a child process, speaking newline-delimited JSON-RPC; `registry` is its ORRERY_REGISTRY. */
+function startRelay(registry: string) {
+  const child = spawn(process.execPath, [join(PLUGIN, 'mcp.mjs')], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ORRERY_REGISTRY: registry } });
   child.stderr.resume();
   const lines: any[] = [];
   createInterface({ input: child.stdout }).on('line', (l) => lines.push(JSON.parse(l)));
@@ -297,7 +297,7 @@ function startRelay(home: string) {
 
 test('qoder plugin relay: initialize is local, calls reach the Hub unchanged, _meta decides the member, a missing _meta attaches nothing', async () => {
   const app = await qHub();
-  const relay = startRelay(app.home);
+  const relay = startRelay(registryEnv(app).ORRERY_REGISTRY);
   try {
     const init = await relay.ask(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'qoder-desktop-mcp-host', version: '1' } });
     assert.equal(init.result.protocolVersion, '2025-03-26');
@@ -314,7 +314,7 @@ test('qoder plugin relay: initialize is local, calls reach the Hub unchanged, _m
     const wait = await relay.ask(5, 'tools/call', { name: 'wait_for_messages', arguments: {} });
     assert.equal(wait.result.isError, true);
     const issued = await relay.ask(6, 'tools/call', { name: 'wait_for_messages', arguments: {}, _meta: meta(S2) });
-    assert.match(JSON.parse(issued.result.content[0].text).command, /q1\.22222222/);
+    assert.match(JSON.parse(issued.result.content[0].text).command, /q2\.[0-9a-f-]{36}\.22222222/);
     assert.equal((await relay.ask(7, 'ping')).result && true, true);
   } finally {
     relay.child.kill();
@@ -323,26 +323,85 @@ test('qoder plugin relay: initialize is local, calls reach the Hub unchanged, _m
 });
 
 test('qoder plugin relay: with no Hub yet, tools/list is empty and calls fail softly; list_changed arrives once the Hub is up', async () => {
-  const home = tempDir();
-  const relay = startRelay(home);
-  const app = await qHub();
+  const registry = join(tempDir(), 'registry');
+  const relay = startRelay(registry);
+  let app: Awaited<ReturnType<typeof qHub>> | undefined;
   try {
     assert.deepEqual((await relay.ask(1, 'tools/list')).result.tools, []);
     const call1 = await relay.ask(2, 'tools/call', { name: 'list_agents', arguments: {}, _meta: meta(S1) });
     assert.equal(call1.result.isError, true);
-    assert.match(call1.result.content[0].text, /Hub/);
-    copyFileSync(join(app.home, 'hub.json'), join(home, 'hub.json'));
+    assert.match(call1.result.content[0].text, /^接入件没有发送请求：未找到活动 Hub/);
+    app = await qHub({ registryDir: registry });   // the Hub registers in the relay's registry: no relay restart
     await waitFor(() => relay.lines.some((l) => l.method === 'notifications/tools/list_changed'), 'list_changed', 10_000);
     assert.ok((await relay.ask(3, 'tools/list')).result.tools.length > 0);
   } finally {
     relay.child.kill();
-    await app.done();
+    await app?.done();
+  }
+});
+
+test('qoder plugin relay: requests are signed over the body (the _meta that names the member), never carrying the key', async () => {
+  const seen: { headers: Record<string, unknown>; body: string }[] = [];
+  const { createServer } = await import('node:http');
+  const hub = createServer(async (req, res) => {
+    let body = '';
+    for await (const c of req) body += c;
+    seen.push({ headers: req.headers, body });
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(body).id, result: { content: [] } }));
+  });
+  await new Promise<void>((ok) => hub.listen(0, '127.0.0.1', ok));
+  const registry = join(tempDir(), 'registry');
+  const reg = writeRegistry(registry, `http://127.0.0.1:${(hub.address() as import('node:net').AddressInfo).port}`);
+  const relay = startRelay(registry);
+  try {
+    await relay.ask(1, 'tools/call', { name: 'list_agents', arguments: {}, _meta: meta(S1) });
+    const [got] = seen;
+    assert.equal(got.headers['x-orrery-bridge'], undefined);
+    const [, hubId, claim, ts, nonce, mac] = String(got.headers['x-orrery-sig']).split(' ');
+    assert.deepEqual([hubId, claim], [reg.hubId, reg.claim]);
+    const { bridgeMac } = await import('../src/bridge-protocol.ts');
+    assert.equal(mac, bridgeMac(reg.key, reg, 'POST', '/mcp', new Map([['x-orrery-harness', 'qoder']]), ts, nonce, Buffer.from(got.body)));
+    assert.equal(JSON.parse(got.body).params._meta['com.qoder/turnContext'].sessionId, S1, 'the body is relayed unchanged');
+    assert.ok(!JSON.stringify(seen).includes(reg.key));
+  } finally {
+    relay.child.kill();
+    hub.closeAllConnections();
+    await new Promise<void>((ok) => hub.close(() => ok()));
+  }
+});
+
+test('qoder plugin relay: an answer cut off after the Hub got the call is reported as unknown, never as not delivered', async () => {
+  const { createServer } = await import('node:http');
+  let got = 0;
+  // Reads the whole request (the Hub may have run it), then drops the connection without answering.
+  const hub = createServer(async (req) => {
+    for await (const _ of req) { /* the whole body arrives */ }
+    got++;
+    req.socket.destroy();
+  });
+  await new Promise<void>((ok) => hub.listen(0, '127.0.0.1', ok));
+  const registry = join(tempDir(), 'registry');
+  writeRegistry(registry, `http://127.0.0.1:${(hub.address() as import('node:net').AddressInfo).port}`);
+  const relay = startRelay(registry);
+  try {
+    const r = await relay.ask(1, 'tools/call', { name: 'send_message', arguments: { body: 'x' }, _meta: meta(S1) });
+    assert.equal(got, 1);
+    assert.equal(r.result.isError, true);
+    const text: string = r.result.content[0].text;
+    assert.match(text, /结果未知/);
+    assert.match(text, /read_messages/);
+    assert.doesNotMatch(text, /没有送达|没有发出|没有执行/);
+  } finally {
+    relay.child.kill();
+    hub.closeAllConnections();
+    await new Promise<void>((ok) => hub.close(() => ok()));
   }
 });
 
 test('qoder plugin: self-contained, no fetch, identity only in _meta, stops rule in the skill, manifest and MCP entry in place', () => {
   const relaySource = readFileSync(join(PLUGIN, 'mcp.mjs'), 'utf8');
-  for (const m of relaySource.matchAll(/from\s+['"]([^'"]+)['"]/g)) assert.ok(m[1].startsWith('node:'), `only node: modules, not ${m[1]}`);
+  // Node modules and its own copy of the shared discovery module (test/hub-discovery-client.test.ts checks the copy).
+  for (const m of relaySource.matchAll(/from\s+['"]([^'"]+)['"]/g)) assert.ok(m[1].startsWith('node:') || m[1] === './hub-discovery.mjs', `only node: modules, not ${m[1]}`);
   assert.ok(!/\bfetch\s*\(/.test(relaySource));
   assert.ok(!relaySource.includes('x-orrery-session'), 'the relay never names a conversation');
   assert.equal(JSON.parse(readFileSync(join(PLUGIN, '.qoder-plugin', 'plugin.json'), 'utf8')).name, 'orrery');

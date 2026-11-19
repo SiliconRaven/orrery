@@ -6,7 +6,7 @@
 
 ## 工作原理：停靠 Hook 与占位转发
 
-Cursor 的本地插件通过三个生命周期 Hook 与一个占位 stdio MCP 服务器连接本机 Hub（仅使用 Node 内置模块与回环地址，不写本地数据库）：
+Cursor 的本地插件通过三个生命周期 Hook 与一个占位 stdio MCP 服务器连接本机 Hub（仅使用 Node 内置模块与回环地址，不写本地数据库）。它们用插件自带的 `lib/hub-discovery.mjs` 每次读账户的 Hub 登记处（`ORRERY_REGISTRY`），连活动 Hub 或 `ORRERY_HUB` 钉住的那个，所有请求用 `x-orrery-sig` 签名，不读 `hub.json`、不发密钥原文（规则见[接入件：找 Hub、签名、报错](../native-mode.md#接入件找-hub签名报错)）：
 
 1. **一轮结束停靠（`stop.mjs` -> `/bridge/cursor-turn` & `/bridge/cursor-park`）**：
    - 对话每次跑完一轮，`stop` hook 先向 Hub 上报 `event: 'end'`、`generationId`、状态与 token 原始数。
@@ -17,8 +17,9 @@ Cursor 的本地插件通过三个生命周期 Hook 与一个占位 stdio MCP �
    - 仅当 Hub 确认看到对应交接号时，该批投递才算实际在 Cursor 落地；若中途被用户打字顶替或 hook 未运行导致超时没看到交接号，投递记为 `unknown` 且**从不自动重投**。
 3. **MCP 工具转发（`mcp.mjs` + `postToolUse`）**：
    - `mcp.mjs` 对每次 `tools/call` 仅返回带 `orrery-cursor-placeholder` 标记的占位结果；
-   - 随后 `postToolUse` hook 拿到 Cursor 不可伪造的 `conversation_id` 与工具参数，携带本机 `hub.json` 中的 `x-orrery-bridge`、`x-orrery-harness: cursor` 与 `x-orrery-session` 向 Hub 实际执行请求，再通过 `updated_mcp_tool_output` 将 Hub 真实输出替换回模型上下文。
+   - 随后 `postToolUse` hook 拿到 Cursor 不可伪造的 `conversation_id` 与工具参数，带 `x-orrery-harness: cursor` 与 `x-orrery-session` 发出签名请求向 Hub 实际执行，再通过 `updated_mcp_tool_output` 将 Hub 真实输出替换回模型上下文。
    - 若 Hub 掉线或请求超期未拿到完整响应，hook 输出明确故障说明（若请求已发出则提示先用 `read_messages` 核对再行动），避免重复发言。
+   - `mcp.mjs` 连 Hub 遇到 401 时改为约每 60 秒重试一次并在日志里写明原因（多半是插件副本过旧或密钥对不上）；Hub 只是没开时仍每 5 秒重试。
 
 ## 用户一次性安装与卸载
 
@@ -27,7 +28,8 @@ orrery 不替用户安装、启用或修改 Cursor 配置：
 1. 将仓库目录 [plugins/cursor-orrery/](../../plugins/cursor-orrery/README.md) 整体复制到 `~/.cursor/plugins/local/cursor-orrery/`。
 2. 确保 `node` 在 PATH 上，重载或重启 Cursor 后确认 MCP 列表中存在并启用了 `orrery`。
 3. （可选退路）：若局部版本未加载本地插件目录，可手动将插件内的 `hooks/hooks.json` 与 `mcp.json` 内容合并到 `~/.cursor/hooks.json` 与 `~/.cursor/mcp.json`，并替换其中的 `${CURSOR_PLUGIN_ROOT}` 为插件绝对正斜杠路径。
-4. **卸载**：直接删除上述目录或移除合并的配置项即可。
+4. **升级**：插件是复制安装的副本，不随 orrery 更新。每次更新 orrery 后**必须重装**：重新复制整个插件目录（含 `lib/hub-discovery.mjs`）并重启 Cursor。没重装的旧副本仍读 `<ORRERY_HOME 或 ~/.orrery>/hub.json`、发密钥原文。改为读登记处、签名之后的插件目前只经自动化测试验证。
+5. **卸载**：直接删除上述目录或移除合并的配置项即可。
 
 ## 对话枚举与状态判断
 

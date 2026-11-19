@@ -47,7 +47,7 @@ type Candidate = NonNullable<TranscriptSource['candidate']>;
 /** The session id in the exact command wait_for_messages gives a Qoder member (src/mcp/wait-core.ts), else undefined. */
 export function waitCommandSession(command: unknown): string | undefined {
   const match = typeof command === 'string'
-    ? /^node "[^"\r\n]*\/wait\.mjs" q1\.([0-9a-f-]{36})\.[0-9a-f]{64} http:\/\/127\.0\.0\.1:\d{1,5} qoder Qoder\.exe$/.exec(command) : null;
+    ? /^node "[^"\r\n]*\/wait\.mjs" q(?:1\.|2\.[0-9a-f-]{36}\.)([0-9a-f-]{36})\.[0-9a-f]{64} http:\/\/127\.0\.0\.1:\d{1,5} qoder Qoder\.exe$/.exec(command) : null;
   return match?.[1];
 }
 

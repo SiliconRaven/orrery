@@ -15,10 +15,13 @@ The launcher safely probes or starts a local Hub and opens the collaboration UI 
 
 ## Configuration & Probe Behavior
 
+The launcher resolves and passes `ORRERY_REGISTRY`. When an active registry entry matches the occupied port and signed `/bridge/whoami` succeeds, it reports the other Hub's name and data directory. When two launchers start at once, the one whose Hub lost the port waits up to 20 s for the other Hub to finish starting (while it answers 503 or does not answer yet) instead of reporting the port as taken.
+
+
 `resolveConfig()` resolves `ORRERY_PORT` (default `4317`), `ORRERY_HOME` (default `~/.orrery`), and `ORRERY_DB` (default `<repo>/.tmp/orrery.db`). Tests must specify separate ports and paths to avoid the daily `4317` Hub.
 
 - **No directory lock or PID cleanup**: The launcher maintains no directory lock files and never inspects or cleans dead PIDs; mutual exclusion relies on Hub port binding.
-- **Same-data reuse across ports**: Reads `<ORRERY_HOME>/hub.json` (URL + PID) and probes that URL's `GET /api/health` with the API token:
+- **Same-data reuse across ports**: Reads its own `<ORRERY_HOME>/hub.json` (URL + PID; only to check for the same data, bridges and plug-ins do not read this file, they use the account's Hub registry) and probes that URL's `GET /api/health` with the API token:
   1. If `/api/health` confirms `app === 'orrery'`, matching `pid`, and matching `(home, db)` paths, the launcher **reuses that Hub even if its port differs from current `ORRERY_PORT`**;
   2. If another data directory owns the Hub (`other-data`), auth fails (`401` -> `unauthorized`), or health status is unreadable (`unknown`), the launcher aborts cleanly without hijacking or killing anything;
   3. Only on `none` (missing/stale `hub.json`, `ECONNREFUSED`, non-orrery, or mismatched PID) does it spawn a background Hub and poll `/api/health` up to **20s (`START_TIMEOUT_MS`)**. On timeout, it reports an error with `<ORRERY_HOME>/hub.log` and exits **without terminating the background Hub** (which may still be finishing startup).

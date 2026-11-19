@@ -53,7 +53,7 @@
   - `ship-verify` `{ ticket }`：只读**查询**当前获准合并的目标任务详情（`{ taskId, shortId, commitSha, reviewer, round, verdict: "pass" | "self" }`），不提交预合并检查状态。
   - `ship-result` `{ ticket, mergeCommit, pushed, retried? }` 或 `{ ticket, failed: { kind: "conflict" | "checks", detail } }`：上报合并落盘成功或失败诊断，供 Hub 只读核对 Git 祖先并推动进入 `merged` 或退回执行者。
   - **批次票据**（`b1.` 开头，`scripts/ship.ts --batch`）走同样两个路由：`ship-verify` 返回批次和按依赖顺序的任务；`ship-result` 成功时一次记录全部任务为已合并，失败时 `{ failed: { kind, detail, taskId? } }`（冲突必须带 `taskId`，只退回那个任务）。批次里任务的单任务票据返回 `409`。
-- **`POST /bridge/unread-hint`**：由插件或未读钩子携带 `x-orrery-bridge` 发送 `{ harness, session }`；仍有未读且分项计数相对上次提示有变化时返回 `{ hint }`（4 桶：`mention`、`user`、`broadcast`、`task_notice`，含 `fyi`/`offline`/`failed_or_unknown`/`blocked` 标注），否则返回 `{}`。
+- **`POST /bridge/unread-hint`**：由插件或未读钩子发送 `{ harness, session }`，请求带签名 `x-orrery-sig`（不发密钥原文；明文 `x-orrery-bridge` 只用于兼容）；仍有未读且分项计数相对上次提示有变化时返回 `{ hint }`（4 桶：`mention`、`user`、`broadcast`、`task_notice`，含 `fyi`/`offline`/`failed_or_unknown`/`blocked` 标注），否则返回 `{}`。
 
 ## 群员 MCP 工具清单（标准 23 项 / 后台等待 24 项）
 

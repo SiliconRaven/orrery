@@ -1,3 +1,4 @@
+import { TEST_HUB_ID } from './helpers.ts';
 import assert from 'node:assert/strict';
 import { appendFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -228,8 +229,8 @@ test('Hub attributes WorkBuddy TaskOutput/wait deliveries and direct/deferred MC
   insert('own-deferred-mcp', 'Posted via DeferExecuteTool', group, 'wb-reader', 'wb-peer');
   insert('other-post', 'Posted by peer', group, 'wb-peer', 'wb-reader');
 
-  const ticketS1 = ticketFor('secret-test', S1);
-  const ticketS2 = ticketFor('secret-test', S2);
+  const ticketS1 = ticketFor('secret-test', S1, TEST_HUB_ID);
+  const ticketS2 = ticketFor('secret-test', S2, TEST_HUB_ID);
   const cmdS1 = waitCommand(ticketS1, 'http://127.0.0.1:4399');
   const cmdOther = waitCommand(ticketS2, 'http://127.0.0.1:4399');
   const realEnv = `[orrery] cluster=Cluster One clusterId=${group} from=wb-peer messageId=${dBatch.messageId} hop=0 to=@wb-reader\nWorkBuddy batch body`;

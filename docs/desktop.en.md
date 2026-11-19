@@ -8,6 +8,9 @@ Language: [中文](desktop.md) | **English**
 
 ## Design: Dock Top-Level Windows, Never Embed
 
+The shell and source launcher share the account-local Hub registry and port-conflict diagnostics. [Signed bridges](native-mode.en.md)
+
+
 Reparenting third-party apps via `BrowserView` or Win32 `SetParent` triggers focus stealing, DPI clipping, and boundary issues. The shell acts purely as a coordinator frame:
 
 - Renders the authenticated collaboration UI inside the shell;
@@ -40,7 +43,7 @@ The shell is the only part of orrery that ever starts a user's app, and only on 
 
 The Windows x64 NSIS installer includes Node and all runtime dependencies. Launch **Orrery Beta** from its shortcut. Data is stored in `%APPDATA%/Orrery Beta/hub`; closing the window leaves Hub running. The installer stops only its own Hub before upgrade or removal, and retains the database.
 
-For native bridges and plugins, use `<installation>/resources/node/node.exe`, files under `<installation>/resources/hub/plugins` or `resources/hub/src/bridge`, and set `ORRERY_HOME` to `%APPDATA%/Orrery Beta/hub` in the host's MCP configuration. Use expanded absolute paths in MCP JSON. The installer does not edit host settings.
+For native bridges and plugins, use `<installation>/resources/node/node.exe`, files under `<installation>/resources/hub/plugins` or `resources/hub/src/bridge`. Bridges and plugins find the installed Hub through the account's Hub registry (default `%USERPROFILE%/.orrery/registry`), so the host's MCP configuration no longer needs `ORRERY_HOME`. Use expanded absolute paths in MCP JSON. The installer does not edit host settings.
 
 Developer start:
 

@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { createDeepseekNativeAdapter } from '../src/adapters/deepseek/native.ts';
 import { REPO_ROOT } from '../src/main.ts';
 import type { BridgePort, Member, NativeDeliverContext } from '../src/core/types.ts';
-import { startTestHub, tempDir, waitFor, type TestHub } from './helpers.ts';
+import { startTestHub, tempDir, waitFor, writeRegistry, type TestHub } from './helpers.ts';
 
 const PLUGIN_DIR = join(REPO_ROOT, 'plugins', 'dsh-orrery');
 const plugin = await import(pathToFileURL(join(PLUGIN_DIR, 'lib', 'index.js')).href);
@@ -23,7 +23,7 @@ const SUB = '33333333-3333-4333-8333-333333333333';  // /work/alpha, a subagent'
 const S4 = '44444444-4444-4444-8444-444444444444';   // /work/beta
 const NO_CWD = '55555555-5555-4555-8555-555555555555';
 const BROKEN = '66666666-6666-4666-8666-666666666666';
-const HUB_DOWN = 'orrery Hub 未运行';
+const NOT_SENT = /^接入件没有发送请求：未找到活动 Hub/;
 const RETRY_MS = 100;
 
 // ───────────── store and adapter ─────────────
@@ -164,8 +164,9 @@ function fakeDsh(onPrompt: (p: Prompt) => Promise<unknown> = async () => ({ acce
   };
   return {
     ctx, tools, prompts, logs, listeners, postExecutes, emit, turn,
-    start: (home: string, retryMs = RETRY_MS, turnWaitMs?: number, activityHeartbeatMs?: number) =>
-      plugin.start(ctx, { home, retryMs, turnWaitMs, activityHeartbeatMs }),
+    /** Starts the plugin with `registry` as its ORRERY_REGISTRY (a test Hub's, or a fixture's). */
+    start: (registry: string, retryMs = RETRY_MS, turnWaitMs?: number, activityHeartbeatMs?: number) =>
+      plugin.start(ctx, { env: { ORRERY_REGISTRY: registry }, retryMs, turnWaitMs, activityHeartbeatMs }),
     dispose() {
       for (const d of disposers.reverse()) d();
       disposers = [];
@@ -204,7 +205,7 @@ test('dsh activity: collects only eligible sessions, normalizes native and PTC e
   const dsh = fakeDsh();
   try {
     const { cluster, d1, d2 } = await dsCluster(app);
-    dsh.start(app.home, RETRY_MS, undefined, 40);
+    dsh.start(app.registryDir, RETRY_MS, undefined, 40);
     await waitFor(() => app.hub.bridge.isOnline('deepseek', S1), 'DSH bridge');
     dsh.emit(S1, { type: 'tool/call', data: { callId: 'before', name: 'bash', arguments: 'private-before' } });
     assert.equal(app.hub.activityFor(d1.id).state, 'unknown', 'joining does not enable observation');
@@ -260,7 +261,7 @@ test('dsh activity: an older Hub without target frames still completes deliverie
   };
   try {
     const { cluster, d1 } = await dsCluster(app);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     await waitFor(() => app.hub.bridge.isOnline('deepseek', S1), 'legacy bridge online');
     const message = app.hub.sendFromUser(cluster.id, '@D1 old hub');
     await waitFor(async () => (await deliveryTo(app, cluster.id, message.id, d1.id))?.outcome === 'completed', 'legacy delivery completed');
@@ -274,7 +275,7 @@ test('dsh activity: the first delivery enables observation before the turn start
   const dsh = fakeDsh();
   try {
     const { cluster, d1 } = await dsCluster(app);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     await waitFor(() => app.hub.bridge.isOnline('deepseek', S1), 'DSH bridge online');
     assert.equal(app.hub.activityFor(d1.id).state, 'unknown');
     const message = app.hub.sendFromUser(cluster.id, '@D1 first delivery');
@@ -327,7 +328,7 @@ test('dsh plugin: tool names and DSH subset preserve Hub validation; package is 
     for (const field of ['memberId', 'assignmentId', 'summary', 'evidenceMessageIds', 'evidenceFileIds',
       'expectedDependencyVersions', 'get_task_context', 'submissionId', 'verdict', 'reason']) assert.ok(action.description.includes(field), field);
     for (const field of ['name', 'roleId', 'memberId', 'roleIds', 'description']) assert.ok(roles.description.includes(field), field);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     const registered = [...dsh.tools.values()];
     const asHub = (t: any) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema });
     assert.deepEqual(plugin.TOOLS.map(asHub), hubTools.map(asHub), 'the plugin retains the Hub schemas');
@@ -366,7 +367,8 @@ test('dsh plugin: tool names and DSH subset preserve Hub validation; package is 
   for (const lang of ['en', 'zh']) assert.ok(JSON.parse(readFileSync(join(PLUGIN_DIR, 'locale', `${lang}.json`), 'utf8')).meta.title);
   const code = readFileSync(join(PLUGIN_DIR, 'lib', 'index.js'), 'utf8');
   const imports = [...code.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
-  assert.deepEqual(imports.filter((s) => !s.startsWith('node:')), [], 'Node built-ins only');
+  // Its own copy of the shared discovery module (test/hub-discovery-client.test.ts checks it), else Node built-ins.
+  assert.deepEqual(imports.filter((s) => !s.startsWith('node:')), ['./hub-discovery.mjs'], 'Node built-ins only');
   assert.doesNotMatch(code, /\bfetch\(/, 'no fetch: it would honour NODE_USE_ENV_PROXY and send the secret to a proxy');
   assert.deepEqual([plugin.name, plugin.inject], ['dsh-orrery', ['sessionController', 'tools']]);
 });
@@ -380,7 +382,7 @@ test('dsh plugin: a delivery becomes a queued prompt with requestId = deliveryId
   try {
     const { cluster, d1, d2 } = await dsCluster(app);
     assert.equal(await statusOf(app, d1.id), 'offline', 'no plugin yet');
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle' && (await statusOf(app, d2.id)) === 'idle', 'both online');
 
     const m1 = await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: 'hello d1', to: [d1.id] });
@@ -406,7 +408,7 @@ test('dsh plugin: the tools speak as the calling session; no session id or no me
   const dsh = fakeDsh();
   try {
     const { cluster, d1, a } = await dsCluster(app);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     assert.deepEqual(JSON.parse(await dsh.call('list_agents', {}, S1)).map((m: any) => m.name), ['D1', 'D2', 'A']);
     const observed = app.hub.toolVersionReport().find((row) => row.memberId === d1.id)?.observation;
     const versions = await app.api('GET', '/api/tool-versions');
@@ -443,15 +445,15 @@ test('dsh plugin: Hub down → tools say so and it keeps retrying; it reconnects
   const dir = tempDir();
   const first = await deepseekHub(dir);
   const { cluster, d1 } = await dsCluster(first);
-  const home = first.home;
-  await first.close();   // hub.json is gone
+  const registry = first.registryDir;
+  await first.close();   // its registry record is gone
   const dsh = fakeDsh();
   let second: TestHub | undefined;
   try {
-    dsh.start(home);
-    await assert.rejects(dsh.call('list_agents', {}, S1), { message: HUB_DOWN });
+    dsh.start(registry);
+    await assert.rejects(dsh.call('list_agents', {}, S1), { message: NOT_SENT });
     await new Promise((ok) => setTimeout(ok, RETRY_MS * 3));
-    assert.equal(dsh.logs.filter((l) => /not reachable/.test(l)).length, 1, 'reported once, not on every retry');
+    assert.equal(dsh.logs.filter((l) => /未找到活动 Hub/.test(l)).length, 1, 'reported once, not on every retry');
     second = await deepseekHub(dir);
     assert.notEqual(second.url, first.url);
     await waitFor(async () => (await statusOf(second!, d1.id)) === 'idle', 'online through the new Hub');
@@ -470,7 +472,7 @@ test('dsh plugin: disabling it (dispose) closes the stream, unregisters the tool
   const dsh = fakeDsh();
   try {
     const { cluster, d1 } = await dsCluster(app);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
     assert.equal(dsh.tools.size, 23);
 
@@ -486,7 +488,7 @@ test('dsh plugin: disabling it (dispose) closes the stream, unregisters the tool
     assert.equal(await statusOf(app, d1.id), 'offline', 'no reconnect after dispose');
     assert.equal(dsh.prompts.length, 0);
 
-    dsh.start(app.home);   // enabled again
+    dsh.start(app.registryDir);   // enabled again
     assert.equal(dsh.tools.size, 23, 'tools back');
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online again');
     const m = await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: 'welcome back', to: [d1.id] });
@@ -498,7 +500,7 @@ test('dsh plugin: disabling it (dispose) closes the stream, unregisters the tool
   }
 });
 
-test('dsh plugin: a tool call still reading hub.json when the plugin is disabled sends nothing to the Hub', async () => {
+test('dsh plugin: a tool call started just before the plugin is disabled sends nothing to the Hub', async () => {
   // A plain HTTP server stands in for the Hub and counts every request it gets.
   const requests: string[] = [];
   const server = createServer((req, res) => {
@@ -506,12 +508,12 @@ test('dsh plugin: a tool call still reading hub.json when the plugin is disabled
     res.writeHead(200, { 'content-type': 'application/json' }).end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
   });
   await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
-  const home = tempDir();
-  writeFileSync(join(home, 'hub.json'), JSON.stringify({ url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, secret: 'fake-secret' }));
+  const registry = join(tempDir(), 'registry');
+  writeRegistry(registry, `http://127.0.0.1:${(server.address() as AddressInfo).port}`);
   const dsh = fakeDsh();
   try {
-    dsh.start(home);
-    // Both calls are now waiting for hub.json (read asynchronously); the plugin is disabled before the read completes.
+    dsh.start(registry);
+    // Both calls have started; the plugin is disabled before either reaches the Hub.
     const calls = [dsh.call('send_message', { body: 'late' }, S1), dsh.call('list_agents', {}, S1, undefined)];
     dsh.dispose();
     // Wait on both at once: awaiting one by one leaves the other's rejection briefly unhandled.
@@ -535,7 +537,7 @@ test('dsh plugin: retrying while the Hub is down does not pile up abort listener
   } as typeof original;
   const dsh = fakeDsh();
   try {
-    dsh.start(tempDir(), 1);   // no hub.json: retry every 1 ms
+    dsh.start(tempDir(), 1);   // no registry: retry every 1 ms
     await waitFor(() => added >= 20, 'many retries');
     const attached = () => [...signals].reduce((n, s) => n + getEventListeners(s, 'abort').length, 0);
     assert.ok(attached() <= 1, `abort listeners after ${added} retries: ${attached()}`);
@@ -561,7 +563,7 @@ test('dsh plugin: 3 messages 200 ms apart to a busy session reach DSH as two pro
   const dsh = fakeDsh(undefined, { autoTurn: false });
   try {
     const { cluster, d1 } = await dsCluster(app);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
     const m1 = await post(app, cluster.id, '@D1 one');
     await waitFor(() => dsh.prompts.length === 1, 'first prompt');
@@ -594,7 +596,7 @@ test('dsh plugin: without session events the ack promises nothing and every mess
   const dsh = fakeDsh(undefined, { autoTurn: false, events: false });
   try {
     const { cluster, d1 } = await dsCluster(app);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
     for (const body of ['@D1 one', '@D1 two', '@D1 three']) {
       await post(app, cluster.id, body);
@@ -614,7 +616,7 @@ test('dsh plugin: a matched turn reports its actual end reason; an observation t
   const dsh = fakeDsh(undefined, { autoTurn: false });
   try {
     const { cluster, d1 } = await dsCluster(app);
-    dsh.start(app.home, RETRY_MS, 1000);
+    dsh.start(app.registryDir, RETRY_MS, 1000);
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
     const cases = [
       ['completed', { outcome: 'completed' }],
@@ -654,7 +656,7 @@ test('dsh plugin: a repeated delivery ID replays the cached result without promp
   const dsh = fakeDsh(undefined, { autoTurn: false });
   try {
     const { d1 } = await dsCluster(app);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
     const send = () => app.hub.bridge.push('deepseek', S1, 'repeat-id', 'hi');
     assert.deepEqual(await send(), { ok: true, follows: true });
@@ -677,7 +679,7 @@ test('dsh plugin: an unrelated aborted turn leaves the unobserved delivery outco
   const dsh = fakeDsh(undefined, { autoTurn: false });
   try {
     const { cluster, d1 } = await dsCluster(app);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
     const m = await post(app, cluster.id, '@D1 queued behind the user');
     await waitFor(() => dsh.prompts.length === 1, 'prompted');
@@ -705,7 +707,7 @@ test('deepseek: a lost connection or a time limit stops the wait; removing a mem
     const dsh = fakeDsh(undefined, { autoTurn: false });
     try {
       const { cluster, d1 } = await dsCluster(app);
-      dsh.start(app.home);
+      dsh.start(app.registryDir);
       await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
       const m = await post(app, cluster.id, '@D1 hi');
       await waitFor(async () => dsh.prompts.length === 1 && (await deliveryTo(app, cluster.id, m.id, d1.id))?.state === 'running', 'waiting');
@@ -725,7 +727,7 @@ test('deepseek: a lost connection or a time limit stops the wait; removing a mem
     const dsh = fakeDsh(undefined, { autoTurn: false });
     try {
       const { cluster, d1 } = await dsCluster(app);
-      dsh.start(app.home);
+      dsh.start(app.registryDir);
       await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
       const m = await post(app, cluster.id, '@D1 hi');
       await waitFor(() => dsh.prompts.length === 1, 'prompted');
@@ -747,7 +749,7 @@ test('deepseek: a lost connection or a time limit stops the wait; removing a mem
     const dsh = fakeDsh(undefined, { autoTurn: false });
     try {
       const { cluster, d1, d2 } = await dsCluster(app);
-      dsh.start(app.home);
+      dsh.start(app.registryDir);
       await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
       const m = await post(app, cluster.id, '@D1 @D2 hi');
       await waitFor(() => dsh.prompts.length === 2, 'both prompted');
@@ -769,7 +771,7 @@ test('bridge: /bridge/done ends only the wait of that delivery in its own sessio
   const dsh = fakeDsh(undefined, { autoTurn: false });
   try {
     const { cluster, d1, d2 } = await dsCluster(app);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
     const first = await post(app, cluster.id, '@D2 finished one');
     await waitFor(() => dsh.prompts.length === 1, 'd2 prompted');
@@ -808,7 +810,7 @@ test('dsh plugin: a Hub restart leaves in-flight deliveries unknown and does not
   const dsh = fakeDsh(undefined, { autoTurn: false });
   try {
     const { cluster, d1, d2 } = await dsCluster(app);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
     const m = await post(app, cluster.id, '@D1 @D2 long job');
     await waitFor(() => dsh.prompts.length === 2, 'both prompted');
@@ -837,7 +839,7 @@ test('dsh plugin usage: the model calls of the delivery\'s turn are summed and s
   const dsh = fakeDsh(undefined, { autoTurn: false });
   try {
     const { cluster, d1, d2 } = await dsCluster(app);
-    dsh.start(app.home);
+    dsh.start(app.registryDir);
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
     await post(app, cluster.id, '@D1 count me');
     await waitFor(() => dsh.prompts.length === 1, 'prompt');

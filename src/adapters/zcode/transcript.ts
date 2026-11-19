@@ -47,7 +47,7 @@ export function waitOutput(output: string, sessionId: string): Candidate | undef
   const tail = lines.findIndex((line, i) => line === '----------' && lines[i + 1]?.startsWith('（orrery 等待命令）'));
   if (tail < 2) return undefined;
   // The rearm tail names the ticket of the session it was delivered to: z1.<session id>.<64 hex>.
-  const ticket = new RegExp(`wait\\.mjs" z1\\.${sessionId.replaceAll('.', '\\.')}\\.[0-9a-f]{64} http://127\\.0\\.0\\.1:\\d+$`);
+  const ticket = new RegExp(`wait\\.mjs" z(?:1\\.|2\\.[0-9a-f-]{36}\\.)${sessionId.replaceAll('.', '\\.')}\\.[0-9a-f]{64} http://127\\.0\\.0\\.1:\\d+$`);
   if (!lines.slice(tail).some(line => ticket.test(line))) return undefined;
   const content = lines.slice(1, tail);
   while (content.at(-1) === '') content.pop();

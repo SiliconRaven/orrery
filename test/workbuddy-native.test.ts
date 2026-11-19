@@ -1,3 +1,4 @@
+import { TEST_HUB_ID } from './helpers.ts';
 // Native WorkBuddy without WorkBuddy (docs/adapters/workbuddy.md, "测试"): the conversation list over a database built
 // here (WAL included, columns missing), the stdio bridge as a child process (identity only from its environment or a
 // WorkBuddy.exe parent; nothing reaches the Hub without one), the wait/ack flow on the workbuddy route, and the offline
@@ -19,7 +20,7 @@ import type { Member } from '../src/core/types.ts';
 import { WORKBUDDY_WAIT } from '../src/core/types.ts';
 import { ticketFor, ticketSession, waitCommand } from '../src/mcp/workbuddy.ts';
 import { WAIT_SCRIPT } from '../src/mcp/wait-core.ts';
-import { startTestHub, tempDir, waitFor, openSse } from './helpers.ts';
+import { startTestHub, tempDir, waitFor, openSse, registryEnv, writeRegistry } from './helpers.ts';
 
 const BRIDGE = join(REPO_ROOT, 'plugins', 'workbuddy-orrery', 'bridge.mjs');
 const { processInfo, resolveSessionId, sessionIdFromParent } = await import(pathToFileURL(BRIDGE).href);
@@ -114,10 +115,10 @@ test('workbuddy wait config: its own route, ticket and command; the command name
   assert.equal(WORKBUDDY_WAIT.ancestorProcess, 'WorkBuddy.exe');
   assert.equal(WORKBUDDY_WAIT.metaKey, undefined, 'identity comes from the bridge process environment, never _meta');
   assert.equal(WORKBUDDY_WAIT.legacyWire, undefined, 'the envelope carries chat content only');
-  const t = ticketFor('secret-a', S1);
-  assert.match(t, /^w1\.11111111-1111-4111-8111-111111111111\.[0-9a-f]{64}$/);
-  assert.equal(ticketSession('secret-a', t), S1);
-  assert.equal(ticketSession('secret-b', t), null);
+  const t = ticketFor('secret-a', S1, TEST_HUB_ID);
+  assert.match(t, /^w2\.[0-9a-f-]{36}\.11111111-1111-4111-8111-111111111111\.[0-9a-f]{64}$/);
+  assert.equal(ticketSession('secret-a', t, TEST_HUB_ID), S1);
+  assert.equal(ticketSession('secret-b', t, TEST_HUB_ID), null);
   const hub = 'http://127.0.0.1:4390';
   assert.equal(waitCommand(t, hub), `node "${WAIT_SCRIPT}" ${t} ${hub} workbuddy WorkBuddy.exe`);
   assert.ok(!WAIT_SCRIPT.includes('\\'));
@@ -191,13 +192,13 @@ function openWait(url: string, ticket: string) {
   return openSse(`${url}/bridge/workbuddy-wait`, { 'x-orrery-ticket': ticket });
 }
 const ack = (app: WHub, session: string, deliveryId: string) => fetch(`${app.url}/bridge/workbuddy-ack`, {
-  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket: ticketFor(app.secret, session), deliveryId }),
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket: ticketFor(app.secret, session, app.registry.hubId), deliveryId }),
 }).then((r) => r.json());
 
-/** The real command as WorkBuddy would run it: through the shell, with a home whose hub.json names another Hub. */
-function runWait(home: string, ticket: string, url: string) {
+/** The real command as WorkBuddy would run it: through the shell, with a registry that names another Hub. */
+function runWait(registry: string, ticket: string, url: string) {
   const child = spawn(process.execPath, [WAIT_SCRIPT, ticket, url, 'workbuddy', 'WorkBuddy.exe'], {
-    env: { ...process.env, ORRERY_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, ORRERY_REGISTRY: registry }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   let out = '';
   child.stdout.setEncoding('utf8').on('data', (c) => { out += c; });
@@ -335,9 +336,9 @@ test('bridge: a parent with --session-id that is not WorkBuddy.exe gives no id, 
   let hits = 0;
   const fake = createServer((_req, res) => { hits++; res.writeHead(500, { 'content-type': 'application/json' }).end('{}'); });
   await new Promise<void>((ok) => fake.listen(0, '127.0.0.1', ok));
-  const home = tempDir();
-  writeFileSync(join(home, 'hub.json'), JSON.stringify({ url: `http://127.0.0.1:${(fake.address() as { port: number }).port}`, secret: 's' }));
-  const b = startBridge({ CODEBUDDY_SESSION_ID: undefined, ORRERY_HOME: home }, ['--session-id', S1]);
+  const home = join(tempDir(), 'registry');
+  writeRegistry(home, `http://127.0.0.1:${(fake.address() as { port: number }).port}`);
+  const b = startBridge({ CODEBUDDY_SESSION_ID: undefined, ORRERY_REGISTRY: home }, ['--session-id', S1]);
   try {
     // Sent at once, before the startup lookup can have finished: they wait for it and are still answered.
     const [init, listed] = await Promise.all([b.rpc('initialize', { protocolVersion: '2025-06-18' }), b.rpc('tools/list')]);
@@ -355,7 +356,7 @@ test('bridge: a parent with --session-id that is not WorkBuddy.exe gives no id, 
 
 test('bridge: an environment id wins over --session-id on the parent', async () => {
   const app = await wbHub();
-  const b = startBridge({ CODEBUDDY_SESSION_ID: S1, ORRERY_HOME: app.home }, ['--session-id', S2]);
+  const b = startBridge({ CODEBUDDY_SESSION_ID: S1, ...registryEnv(app) }, ['--session-id', S2]);
   try {
     const { cluster, w1 } = await wbCluster(app);
     const init = await b.rpc('initialize', { protocolVersion: '2025-06-18' });
@@ -371,8 +372,8 @@ test('bridge: an environment id wins over --session-id on the parent', async () 
 
 test('bridge: identity is only CODEBUDDY_SESSION_ID from the process environment; one process per conversation', async () => {
   const app = await wbHub();
-  const b1 = startBridge({ CODEBUDDY_SESSION_ID: S1, ORRERY_HOME: app.home });
-  const b2 = startBridge({ CODEBUDDY_SESSION_ID: S2, ORRERY_HOME: app.home });
+  const b1 = startBridge({ CODEBUDDY_SESSION_ID: S1, ...registryEnv(app) });
+  const b2 = startBridge({ CODEBUDDY_SESSION_ID: S2, ...registryEnv(app) });
   try {
     const { cluster, w1, w2 } = await wbCluster(app);
     const init = await b1.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'WorkBuddy', version: '0' } });
@@ -391,7 +392,7 @@ test('bridge: identity is only CODEBUDDY_SESSION_ID from the process environment
     const listed = JSON.parse((await b1.rpc('tools/call', { name: 'list_agents', arguments: { session_id: S2, sessionId: S2 } })).result.content[0].text);
     assert.deepEqual(listed.map((m: any) => m.name), ['W1', 'W2'], 'arguments never choose the conversation');
     const got = JSON.parse((await b1.rpc('tools/call', { name: 'wait_for_messages', arguments: {} })).result.content[0].text);
-    assert.equal(got.command, waitCommand(ticketFor(app.secret, S1), app.url));
+    assert.equal(got.command, waitCommand(ticketFor(app.secret, S1, app.registry.hubId), app.url));
   } finally {
     b1.stop();
     b2.stop();
@@ -403,12 +404,12 @@ test('bridge: without CODEBUDDY_SESSION_ID nothing is sent to the Hub and no too
   let hits = 0;
   const fake = createServer((_req, res) => { hits++; res.writeHead(500, { 'content-type': 'application/json' }).end('{}'); });
   await new Promise<void>((ok) => fake.listen(0, '127.0.0.1', ok));
-  const home = tempDir();
-  writeFileSync(join(home, 'hub.json'), JSON.stringify({ url: `http://127.0.0.1:${(fake.address() as { port: number }).port}`, secret: 's' }));
-  const env: Record<string, string | undefined> = { ...process.env, ORRERY_HOME: home };
+  const home = join(tempDir(), 'registry');
+  writeRegistry(home, `http://127.0.0.1:${(fake.address() as { port: number }).port}`);
+  const env: Record<string, string | undefined> = { ...process.env, ORRERY_REGISTRY: home };
   delete env.CODEBUDDY_SESSION_ID;
   const b = startBridge(env);
-  const empty = startBridge({ CODEBUDDY_SESSION_ID: '', ORRERY_HOME: home });
+  const empty = startBridge({ CODEBUDDY_SESSION_ID: '', ORRERY_REGISTRY: home });
   try {
     for (const [name, bridge] of [['missing', b], ['empty', empty]] as const) {
       const init = await bridge.rpc('initialize', { protocolVersion: '2025-06-18' });
@@ -427,9 +428,37 @@ test('bridge: without CODEBUDDY_SESSION_ID nothing is sent to the Hub and no too
   }
 });
 
+test('bridge: requests are signed over the harness, the conversation and the body; the key never goes on the wire', async () => {
+  const seen: { headers: Record<string, unknown>; body: string }[] = [];
+  const fake = createServer(async (req, res) => {
+    let body = '';
+    for await (const c of req) body += c;
+    seen.push({ headers: req.headers, body });
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(body).id, result: { content: [] } }));
+  });
+  await new Promise<void>((ok) => fake.listen(0, '127.0.0.1', ok));
+  const registry = join(tempDir(), 'registry');
+  const reg = writeRegistry(registry, `http://127.0.0.1:${(fake.address() as { port: number }).port}`);
+  const b = startBridge({ CODEBUDDY_SESSION_ID: S1, ORRERY_REGISTRY: registry });
+  try {
+    await b.rpc('tools/call', { name: 'list_agents', arguments: {} });
+    const [got] = seen;
+    assert.equal(got.headers['x-orrery-bridge'], undefined);
+    const [, hubId, claim, ts, nonce, mac] = String(got.headers['x-orrery-sig']).split(' ');
+    assert.deepEqual([hubId, claim, got.headers['x-orrery-session']], [reg.hubId, reg.claim, S1]);
+    const { bridgeMac } = await import('../src/bridge-protocol.ts');
+    assert.equal(mac, bridgeMac(reg.key, reg, 'POST', '/mcp', new Map([['x-orrery-harness', 'workbuddy'], ['x-orrery-session', S1]]), ts, nonce, Buffer.from(got.body)));
+    assert.ok(!JSON.stringify(seen).includes(reg.key) && !b.stderr().includes(reg.key));
+  } finally {
+    b.stop();
+    fake.closeAllConnections();
+    await new Promise<void>((ok) => fake.close(() => ok()));
+  }
+});
+
 test('bridge: an environment id that is no member is refused, not joined', async () => {
   const app = await wbHub();
-  const b = startBridge({ CODEBUDDY_SESSION_ID: OUTSIDER, ORRERY_HOME: app.home });
+  const b = startBridge({ CODEBUDDY_SESSION_ID: OUTSIDER, ...registryEnv(app) });
   try {
     const { cluster } = await wbCluster(app);
     const count = (await app.messages(cluster.id)).length;
@@ -450,18 +479,18 @@ test('bridge: an environment id that is no member is refused, not joined', async
 
 test('workbuddy wait: the real command prints the envelope only, acks, exits; a new wait ends the batch', async () => {
   const app = await wbHub();
-  const elsewhere = tempDir();
-  writeFileSync(join(elsewhere, 'hub.json'), JSON.stringify({ url: 'http://127.0.0.1:1', secret: 'x' }));
+  const elsewhere = join(tempDir(), 'registry');
+  writeRegistry(elsewhere, 'http://127.0.0.1:1');   // the URL in the command wins over the registry
   let wait: ReturnType<typeof runWait> | undefined;
   try {
     const { cluster, w1 } = await wbCluster(app);
     const got = JSON.parse((await call(app, 'wait_for_messages')).content[0].text);
-    assert.equal(got.command, waitCommand(ticketFor(app.secret, S1), app.url));
+    assert.equal(got.command, waitCommand(ticketFor(app.secret, S1, app.registry.hubId), app.url));
     assert.deepEqual([got.run_in_background, got.description, got.running], [true, 'orrery：等群消息', 0]);
     assert.equal(await openWait(app.url, 'w1.bad').status, 403);
-    assert.equal(await openWait(app.url, ticketFor('another secret', S1)).status, 403);
+    assert.equal(await openWait(app.url, ticketFor('another secret', S1, app.registry.hubId)).status, 403);
 
-    wait = runWait(elsewhere, ticketFor(app.secret, S1), app.url);
+    wait = runWait(elsewhere, ticketFor(app.secret, S1, app.registry.hubId), app.url);
     await waitFor(async () => (await statusOf(app, w1.id)) === 'idle', 'the real command connected', 15_000);
     assert.equal(wait.out(), '', 'silent while waiting: a named harness prints the envelope only');
     const m = await say(app, cluster.id, '@W1 hello "quoted" & | < > ^ % $(x)\nline 2');
@@ -472,7 +501,7 @@ test('workbuddy wait: the real command prints the envelope only, acks, exits; a 
       assert.ok(!printed.includes(instruction), `no "${instruction}" in the envelope`);
     }
     assert.equal(await statusOf(app, w1.id), 'busy', 'in the re-arm grace');
-    const second = openWait(app.url, ticketFor(app.secret, S1));
+    const second = openWait(app.url, ticketFor(app.secret, S1, app.registry.hubId));
     await second.status;
     await waitFor(async () => (await deliveriesOf(app, cluster.id, w1.id))[0]?.state === 'done', 'the batch is over');
     second.close();
@@ -486,7 +515,7 @@ test('workbuddy wait: the app not running: a connected wait gets nothing and the
   const app = await wbHub({ running: async () => false });
   try {
     const { cluster, w1 } = await wbCluster(app);
-    const wait = openWait(app.url, ticketFor(app.secret, S1));
+    const wait = openWait(app.url, ticketFor(app.secret, S1, app.registry.hubId));
     assert.equal(await wait.status, 200);
     await say(app, cluster.id, '@W1 to an orphan');
     await waitFor(async () => (await deliveriesOf(app, cluster.id, w1.id))[0]?.state === 'offline', 'nothing delivered, offline');
@@ -502,7 +531,7 @@ test('workbuddy wait: no re-arm within the grace: offline, the queue ends offlin
   const app = await wbHub({ graceMs: 200 });
   try {
     const { cluster, w1 } = await wbCluster(app);
-    const ticket = ticketFor(app.secret, S1);
+    const ticket = ticketFor(app.secret, S1, app.registry.hubId);
     const wait = openWait(app.url, ticket);
     await waitFor(async () => (await statusOf(app, w1.id)) === 'idle', 'online');
     await say(app, cluster.id, '@W1 one');

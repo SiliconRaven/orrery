@@ -1,10 +1,12 @@
 import { request, type IncomingMessage } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { keepTestTemp, removeTestDir, sleepSync, TEST_TEMP_PREFIX } from '../scripts/test-temp.ts';
+import { signBridgeRequest } from '../src/bridge-protocol.ts';
 import { dbModeOf } from '../src/config.ts';
 import { startHub, type StartOptions } from '../src/main.ts';
 import { createMockNativeAdapter, MOCK_MODEL, type MockNativeAdapter, type MockNativeOptions } from '../src/adapters/mock/native.ts';
@@ -20,6 +22,7 @@ process.env.ORRERY_UPDATE_CHECKS = '0';
 
 /** The API token of every test Hub (startTestHub's default; tests that call startHub pass it themselves). */
 export const TEST_TOKEN = 'test-token-0123456789abcdefghijklmnopqrstuvwxyz';
+export const TEST_HUB_ID = '52778aa6-f402-4340-886a-483986a64804';
 
 /** fetch as Node has it, with no token added: for tests of the token check itself. */
 export const rawFetch = globalThis.fetch;
@@ -77,6 +80,9 @@ export function tempDir(): string {
   if (createdTemp.push(dir) === 1) process.once('exit', removeCreatedTemp);
   return dir;
 }
+
+// Children launched directly by tests inherit a private registry, never the user's registry.
+process.env.ORRERY_REGISTRY = join(tempDir(), 'registry');
 
 /**
  * Seeds a message and its 'message' event in one transaction, with the payload Hub.post writes. A bare
@@ -197,8 +203,44 @@ export function hubSecret(home: string): string {
   return JSON.parse(readFileSync(join(home, 'hub.json'), 'utf8')).secret;
 }
 
+/**
+ * A registry for plug-in tests (docs/hub-discovery.md 3): active.json and hubs/<hubId>.json naming `url` (a fake Hub or a
+ * proxy), and the shared key. The record is alive (this test process's pid) unless `pid` says otherwise.
+ */
+export function writeRegistry(dir: string, url: string, opts: { key?: string; hubId?: string; claim?: string; pid?: number;
+  name?: string; active?: boolean } = {}) {
+  const record = { version: 1, hubId: opts.hubId ?? randomUUID(), name: opts.name ?? 'Test Hub', url, pid: opts.pid ?? process.pid,
+    home: join(dir, 'home'), role: 'active', claim: opts.claim ?? randomBytes(16).toString('hex'), startedAt: new Date().toISOString() };
+  const key = opts.key ?? randomBytes(32).toString('hex');
+  mkdirSync(join(dir, 'hubs'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, 'bridge-secret'), `${key}\n`, { mode: 0o600 });
+  writeFileSync(join(dir, 'hubs', `${record.hubId}.json`), JSON.stringify(record));
+  if (opts.active !== false) writeFileSync(join(dir, 'active.json'), JSON.stringify(record));
+  return { ...record, key, dir };
+}
+
+/**
+ * For a test relay in front of a test Hub (to record or drop traffic): the plug-ins' registry names the relay, with the
+ * Hub's key, and resignedHeaders() turns each request the relay received into one the Hub accepts (a signature binds
+ * one address and one Hub start, so a relay that only forwards would be refused).
+ */
+export const relayRegistry = (app: Pick<TestHub, 'home'>, registryDir: string, relayUrl: string) =>
+  writeRegistry(registryDir, relayUrl, { key: hubSecret(app.home), name: 'Test relay' });
+
+export function resignedHeaders(app: Pick<TestHub, 'home' | 'registry' | 'url'>, req: IncomingMessage, body: Buffer): Record<string, string> {
+  const own = Object.entries(req.headers).filter(([k]) => k.startsWith('x-orrery-') && k !== 'x-orrery-sig') as [string, string][];
+  const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k !== 'x-orrery-sig')) as Record<string, string>;
+  return { ...headers, host: app.url.slice(7),
+    'x-orrery-sig': signBridgeRequest(hubSecret(app.home), app.registry, req.method!, req.url!, new Map(own), body) };
+}
+
+/** The environment a plug-in started by a test needs to find this test Hub: its registry, never the account's. */
+export const registryEnv = (app: Pick<TestHub, 'registryDir'>) => ({ ORRERY_REGISTRY: app.registryDir });
+
 export type TestHub = Awaited<ReturnType<typeof startHub>> & {
   dir: string;
+  /** The test Hub's own registry (ORRERY_REGISTRY for the plug-ins a test starts). */
+  registryDir: string;
   /** A project folder (empty at start) for new mock conversations: a new conversation must name its project. */
   project: string;
   /** The adapter registered as the 'mock' harness: the scripted mock (test/mock.ts), or the test's own opts.nativeAdapters.mock. */
@@ -215,11 +257,13 @@ export async function startTestHub(
   opts: Partial<StartOptions> & { mock?: MockOptions; dir?: string } = {},
 ): Promise<TestHub> {
   const dir = opts.dir ?? tempDir();
+  const registryDir = opts.registryDir ?? join(dir, 'registry');
   // The scripted mock answers through the Hub's MCP endpoint, known once the Hub listens (a turn before that waits a tick).
   let endpoint: { url: string; secret: string } | null = null;
   const native = scriptedNative({ ...fixture(dir), model: MOCK_MODEL, ...opts.mock }, () => endpoint);
   const app = await startHub({
     dbPath: join(dir, 'test.db'), port: 0, home: join(dir, 'home'),
+    registryDir,
     apiToken: TEST_TOKEN, dbMode: dbModeOf(process.env), ...opts, nativeAdapters: { mock: native, ...opts.nativeAdapters },
     // No start-up grace unless a test asks for one: an offline native member's deliveries end 'offline' at once.
     // No system-notice wait window either: a busy member still batches everything queued, and the tests that exercise
@@ -240,7 +284,7 @@ export async function startTestHub(
   const messages = (clusterId: string): ReturnType<TestHub["messages"]> => api('GET', `/api/clusters/${clusterId}/messages`);
   return Object.assign(app, {
     // The adapter the Hub really uses: a test's own 'mock' replaces the scripted one, so assertions on app.native see its calls.
-    dir, project, native: (opts.nativeAdapters?.mock ?? native) as MockNativeAdapter, events, api, messages,
+    dir, registryDir, project, native: (opts.nativeAdapters?.mock ?? native) as MockNativeAdapter, events, api, messages,
     cluster: (name: string, memberNames: string[]) =>
       api('POST', '/api/clusters', { name, members: memberNames.map((n) => ({ harness: 'mock', mode: 'native', name: n, projectPath: project })) }),
     settled: async (clusterId: string) => {

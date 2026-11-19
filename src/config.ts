@@ -11,6 +11,7 @@ const DEFAULT_PORT = 4317;
 
 export interface Config {
   home: string;     // bridge secret, API token, hub.json, hub.log
+  registryDir: string;
   port: number;
   dbPath: string;
   /** ORRERY_API_TOKEN: the web API token (docs/security.md). Absent: the Hub makes one in <home>/api-token. */
@@ -18,6 +19,8 @@ export interface Config {
 }
 
 export type Env = Record<string, string | undefined>;
+
+export const defaultRegistryDir = (): string => join(homedir(), '.orrery', 'registry');
 
 /** ORRERY_UPDATE_CHECKS=0 disables background release checks for this CLI process. */
 export const updateChecksOf = (env: Env): boolean => env.ORRERY_UPDATE_CHECKS !== '0';
@@ -152,6 +155,7 @@ export function resolveConfig(env: Env): Config {
   }
   return {
     home: resolve(env.ORRERY_HOME || join(homedir(), '.orrery')),
+    registryDir: resolve(env.ORRERY_REGISTRY || defaultRegistryDir()),
     port: intEnv(env, 'ORRERY_PORT') ?? DEFAULT_PORT,
     dbPath: resolve(env.ORRERY_DB || join(REPO_ROOT, '.tmp', 'orrery.db')),
     ...(apiToken ? { apiToken } : {}),

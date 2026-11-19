@@ -17,6 +17,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Hub } from '../core/hub.ts';
 import type { TurnHookHarness, TurnReport } from '../core/types.ts';
+import { readBridgeBody } from './request-body.ts';
 
 const HEARTBEAT_MS = 25_000;
 const MAX_BODY = 4096;
@@ -175,14 +176,7 @@ function json(res: ServerResponse, status: number, data: unknown): void {
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
-  let size = 0;
-  const chunks: Buffer[] = [];
-  for await (const c of req) {
-    size += c.length;
-    if (size > MAX_BODY) throw new Error('body too large');
-    chunks.push(c);
-  }
-  return Buffer.concat(chunks).toString('utf8') || '{}';
+  return (await readBridgeBody(req, MAX_BODY)).toString('utf8') || '{}';
 }
 
 const registries = new WeakMap<Hub, Map<string, ParkRegistry>>();

@@ -12,10 +12,10 @@ Qoder 适配器通过用户自行安装的插件中继（`plugins/qoder-orrery/`
 
 ## 工作原理与用户一次性设置
 
-1. **装插件**：按 [plugins/qoder-orrery/README.md](../../plugins/qoder-orrery/README.md) 打 ZIP 包并在 Qoder「Extensions → Plugins → Add Plugins → Upload Plugin」手动安装（确保 `node` 在 PATH 上）。插件运行全应用单进程 `mcp.mjs` 中继，带 `x-orrery-bridge` 与 `x-orrery-harness: qoder` 转发调用，Hub 只信任 Qoder 运行时注入的 `_meta["com.qoder/turnContext"].sessionId`。
+1. **装插件**：按 [plugins/qoder-orrery/README.md](../../plugins/qoder-orrery/README.md) 打 ZIP 包并在 Qoder「Extensions → Plugins → Add Plugins → Upload Plugin」手动安装（确保 `node` 在 PATH 上）。插件运行全应用单进程 `mcp.mjs` 中继，经插件自带的 `hub-discovery.mjs` 读账户的 Hub 登记处（`ORRERY_REGISTRY`）找 Hub，带 `x-orrery-harness: qoder` 发签名请求（`x-orrery-sig`，签名覆盖正文，所以认人用的 `_meta` 改不了，不读 `hub.json`、不发密钥原文）转发调用，Hub 只信任 Qoder 运行时注入的 `_meta["com.qoder/turnContext"].sessionId`。插件是复制安装的副本，更新 orrery 后**必须重装**：重新打 ZIP、Upload Plugin，再在对话里重新"加入 orrery"（见[接入件的升级和回退](../native-mode.md#接入件的升级和回退)）。签名后的中继目前只经自动化测试验证。
 2. **审批**：由用户自己决定在“每次询问”或其他模式下的放行方式。
 3. **接入对话**：`npm start` 启动 Hub，在网页建群选 `qoder` 原生模式并勾选已有对话（新对话须先在 Qoder 内建立）。
-4. **挂上等待**：在对应 Qoder 对话发送“加入 orrery”（或“重新挂上 orrery”）。模型调用 `wait_for_messages` 获得 `q1` 票据命令并在后台静默运行 `wait.mjs`（等待期间不打印以避开 Qoder 45 秒交互提示检测，信封仅含纯群聊内容 `legacyWire = false`）；`wait.mjs` 跟踪 `Qoder.exe` 祖先进程，Hub 亦在投递前通过 `tasklist` 复查 `Qoder.exe` 存活。
+4. **挂上等待**：在对应 Qoder 对话发送“加入 orrery”（或“重新挂上 orrery”）。模型调用 `wait_for_messages` 获得 `q2` 票据命令并在后台静默运行 `wait.mjs`（等待期间不打印以避开 Qoder 45 秒交互提示检测，信封仅含纯群聊内容 `legacyWire = false`）；`wait.mjs` 跟踪 `Qoder.exe` 祖先进程，Hub 亦在投递前通过 `tasklist` 复查 `Qoder.exe` 存活。
 
 - **后启动 Hub**：插件先返回空工具列表并每 5 秒重试；Hub 可用后发出 `notifications/tools/list_changed`。客户端若仍未显示工具，重载插件或重启 Qoder。
 

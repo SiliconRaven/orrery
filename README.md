@@ -26,6 +26,8 @@ Windows x64 安装包内置 Node 与运行依赖，安装后从 Orrery Beta 快�
 
 ## 从源码运行
 
+同一账户的日常 Hub 共用登记处，各自保留数据库。升级时先退出旧 Hub。orrery 自带的接入件经登记处找 Hub 并给每个请求签名，不再读 `hub.json`；复制安装的 Cursor、Qoder 和 Antigravity 接入件升级后必须重装。静态 MCP 配置需要更新时，在「设置 → 投递 → 原生接入」点按显示接入密钥。第二实例的原生投递需要用户确认启用。[签名接入](docs/native-mode.md)
+
 环境要求：Windows 10/11（主力平台）与 **Node.js >= 24.2**。
 
 ```powershell
@@ -84,7 +86,11 @@ npm start --prefix desktop
 | 变量 | 说明 | 默认值 |
 |---|---|---|
 | `ORRERY_PORT` | Hub HTTP 监听端口 | `4317` |
-| `ORRERY_HOME` | 数据根目录（`hub.json`、`secret`、`api-token`、`hub.log`） | `~/.orrery` |
+| `ORRERY_HOME` | 数据根目录（`hub.json`、`secret`、`api-token`、`hub.log`）；接入件不再按它找 Hub | `~/.orrery` |
+| `ORRERY_REGISTRY` | 账户级 Hub 登记处和共享接入密钥，开发或测试用独立目录 | `~/.orrery/registry` |
+| `ORRERY_HUB` | 给接入件设置：只连这个 hubId 或名字的 Hub；记录无效时停下，不改投活动 Hub | 不设（连活动 Hub） |
+| `ORRERY_LEGACY_HUB` | 给接入件设置：登记处没有在运行的活动 Hub 时，读这个旧版 Hub home 的 `hub.json`，按旧方式发明文密钥 | 不设 |
+| `ORRERY_SECONDARY` | `1` 表示第二实例，默认禁止原生投递 | 不设 |
 | `ORRERY_DB` | SQLite 数据库文件路径 | `<仓库>/.tmp/orrery.db` |
 | `ORRERY_SKILLS_DIR` | 协作页 `$` 补全读取的本地 skill 目录 | `~/.agents/skills` |
 | `ORRERY_MOCK` | 设为 `1` 时启用演示用的 `mock` 适配器。提供演示项目和两个已有对话，收到群聊消息后自动回复，不调用模型 | 未开启 |

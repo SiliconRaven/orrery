@@ -2,6 +2,7 @@
 
 Language: [中文](backlog.md) | **English**
 
+- Hub discovery still needs response authentication and atomic stale-lock recovery. The current protocol signs requests and uses an exclusive file lock for normal claims.
 - Plugin installs: explain replacement of the same ID and dependency downloads in the preview, improve retry messages, and provide installable public GitHub/npm examples.
 - Storage and errors: clean old plugin versions and interrupted staging folders; improve Windows reserved-name, file-limit, and filesystem error messages. Sources currently accept any user-supplied HTTPS URL.
 - Desktop language: existing status reasons can keep the previous language until the panel is reopened.

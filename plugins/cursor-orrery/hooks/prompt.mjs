@@ -8,7 +8,7 @@ const HANDOUT = /^\[orrery\b[^\]\r\n]*· #([0-9a-f]{8})\]/;
 async function main() {
   const input = await readInput();
   const sessionId = id(input.conversation_id);
-  const hub = sessionId ? await findHub() : null;
+  const hub = sessionId ? findHub() : null;
   if (hub) {
     const first = typeof input.prompt === 'string' ? input.prompt.slice(0, 1000).split(/\r?\n/, 1)[0] : '';
     const handout = HANDOUT.exec(first)?.[1];

@@ -9,7 +9,8 @@ import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { registries } from './adapters/index.ts';
 import { automaticUpgradeBackup } from './backup.ts';
-import { API_TOKEN_RE, dbModeOf, disabledPluginsOf, HUB_CLOSE_PLUGIN_GRACE_MS, intEnv, readPluginsFile, REPO_ROOT, resolveConfig, safeModeOf, skillsDirOf, updateChecksOf,
+import { SIGNATURE_HEADER } from './bridge-protocol.ts';
+import { API_TOKEN_RE, dbModeOf, defaultRegistryDir, disabledPluginsOf, HUB_CLOSE_PLUGIN_GRACE_MS, intEnv, readPluginsFile, REPO_ROOT, resolveConfig, safeModeOf, skillsDirOf, updateChecksOf,
   writeDisabledPlugins, writePluginsFile } from './config.ts';
 import { AppExtensions } from './core/app-extensions.ts';
 import { loadAvatarPresets } from './core/avatars.ts';
@@ -24,7 +25,9 @@ import { TrustedPlugins } from './core/trusted-plugins.ts';
 import { ToolListMemory } from './core/tool-list.ts';
 import type { NativeAdapter } from './core/types.ts';
 import { officialPlugins } from './plugins/index.ts';
+import { registerHub } from './hub-registry.ts';
 import { handleBridge } from './mcp/bridge.ts';
+import { createBridgeAuthenticator } from './mcp/bridge-auth.ts';
 import { handleMcp, toolLists } from './mcp/server.ts';
 import { cacheToolFingerprints, fingerprintsOf } from './mcp/tool-fingerprint.ts';
 import { handleWeb, type WebControl } from './web/server.ts';
@@ -43,6 +46,9 @@ export interface StartOptions {
   withMock?: boolean;
   /** Where the bridge secret and the discovery file hub.json live. Default: .orrery in the user's home directory. */
   home?: string;
+  registryDir: string;        // CLI defaults to the account registry; tests pass an isolated directory
+  secondary?: boolean;
+  name?: string;
   /** When given, POST /api/shutdown answers 202 and then calls it (main.ts: close, then exit). Without it, 404. */
   onShutdown?: () => void;
   /** The user's shared skills folder for the `$` picker, and where 技能与 MCP installs skills. Absent: no skills (tests never read the real one). */
@@ -78,8 +84,7 @@ export interface StartOptions {
 }
 
 /**
- * A secret kept in a file: made once, then reused on every start. Never logged. The bridge secret (the user's Codex
- * MCP config holds it) and the web API token (the launcher reads it) both live this way.
+ * A per-home web API token, made once and reused on every start. The launcher reads it and it is never logged.
  */
 function loadSecret(file: string, valid: RegExp, make: () => string): string {
   try {
@@ -102,7 +107,7 @@ export const DISCOVERY_RETRY_MS = [10, 20, 40, 80, 160, 300, 400, 500];
  * a few times; after the last try the temp file is removed and the rename's own error is thrown (its code, path and
  * dest name the file), with the number of tries added to its message.
  */
-export async function writeDiscovery(home: string, data: { url: string; secret: string; pid: number },
+export async function writeDiscovery(home: string, data: { url: string; secret: string; pid: number; hubId?: string },
   rename: (from: string, to: string) => void = renameSync, delays: readonly number[] = DISCOVERY_RETRY_MS): Promise<void> {
   const tmp = join(home, `hub.json.${process.pid}.tmp`);
   const file = join(home, 'hub.json');
@@ -165,7 +170,9 @@ function checkRequest(req: IncomingMessage, path: string, port: number): { statu
 export async function startHub(opts: StartOptions) {
   const home = resolve(opts.home ?? join(homedir(), '.orrery'));
   const dbPath = resolve(opts.dbPath);
-  let opened: { hub: Hub; store: Store; secret: string; control: WebControl } | undefined;   // set once the port is held
+  const registryDir = resolve(opts.registryDir);
+  let registration: Awaited<ReturnType<typeof registerHub>> | undefined;
+  let opened: { hub: Hub; store: Store; secret: string; control: WebControl; authenticate: ReturnType<typeof createBridgeAuthenticator> } | undefined;
   let closing: Promise<void> | undefined;
   let port = 0;   // known after listen
   const server = createServer((req, res) => {
@@ -184,10 +191,25 @@ export async function startHub(opts: StartOptions) {
       res.writeHead(503, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'hub is starting' }));
       return;
     }
-    const { hub, secret, control } = opened;
-    const handled = path === '/mcp' ? handleMcp(hub, secret, req, res)
-      : path.startsWith('/bridge/') ? handleBridge(hub, secret, req, res)
-      : handleWeb(hub, req, res, control);
+    const { hub, secret, control, authenticate } = opened;
+    const handled = (async () => {
+      if (path !== '/mcp' && !path.startsWith('/bridge/')) return handleWeb(hub, req, res, control);
+      const auth = await authenticate(req);
+      if (auth.kind === 'rejected' && (req.headers[SIGNATURE_HEADER] !== undefined || path === '/bridge/whoami')) {
+        res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'unauthorized', reason: auth.reason ?? 'mac' }));
+        return;
+      }
+      if (path === '/bridge/whoami') {
+        if (auth.kind !== 'signed') { res.writeHead(401, { 'content-type': 'application/json' }).end('{"error":"unauthorized"}'); return; }
+        if (req.method !== 'GET') { res.writeHead(405, { allow: 'GET' }).end(); return; }
+        const { hubId, claim, name, role } = registration!.record;
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+          .end(JSON.stringify({ hubId, claim, name, role }));
+        return;
+      }
+      const authorized = auth.kind !== 'rejected';
+      return path === '/mcp' ? handleMcp(hub, secret, req, res, authorized) : handleBridge(hub, secret, req, res, authorized);
+    })();
     handled.catch((e) => {
       console.error('request failed:', e instanceof Error ? e.message : e);
       if (!res.headersSent) res.writeHead(500).end();
@@ -206,7 +228,8 @@ export async function startHub(opts: StartOptions) {
     const build = <T>(factories: Record<string, () => T>) => Object.fromEntries(Object.entries(factories).map(([k, make]) => [k, make()]));
     const nativeAdapters = opts.nativeAdapters ?? build(registries(opts.withMock ?? false));
     mkdirSync(home, { recursive: true });
-    const secret = loadSecret(join(home, 'secret'), /^[0-9a-f]{64}$/, () => randomBytes(32).toString('hex'));
+    registration = await registerHub(registryDir, { home, url, name: opts.name ?? 'Orrery', secondary: opts.secondary });
+    const { secret, record, keyPath } = registration;
     const apiToken = opts.apiToken ?? loadSecret(join(home, 'api-token'), API_TOKEN_RE, () => randomBytes(32).toString('base64url'));
     const base = opts.plugins ?? officialPlugins;
     const builtInIds = base.map((p) => p.id);
@@ -260,10 +283,10 @@ export async function startHub(opts: StartOptions) {
     // own files under any name (docs/files.md).
     const files = {
       dir: join(home, 'files'), outbox: join(home, 'outbox'),
-      protectedFiles: [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`, join(home, 'secret'), join(home, 'api-token'), join(home, 'hub.json'), join(home, 'tool-list.json')],
+      protectedFiles: [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`, join(home, 'secret'), keyPath, join(home, 'api-token'), join(home, 'hub.json'), join(home, 'tool-list.json')],
     };
     const hub = new Hub({
-      store, nativeAdapters, limits: opts.limits, files,
+      store, nativeAdapters, limits: opts.limits, files, bridgeHubId: record.hubId, secondary: record.role === 'secondary',
       skillsDir: opts.skillsDir, avatarPresets: opts.avatarDir ? loadAvatarPresets(opts.avatarDir) : undefined,
       toolList: new ToolListMemory(join(home, 'tool-list.json')),
     });
@@ -289,12 +312,23 @@ export async function startHub(opts: StartOptions) {
     }
     const getToolLists = cacheToolFingerprints(() => toolLists(hub, secret, `${url}/mcp`));
     // This start of the Hub: a restart gets a new one even when Windows hands the new process the old pid.
-    const instance = randomBytes(16).toString('hex');
+    const instance = record.claim;
+    let allowLegacy = store.getSavedNumber('allow_plaintext_bridge') !== 0;
+    const settingsStore = store;
     const control: WebControl = {
       health: () => ({ app: 'orrery', pid: process.pid, instance, state: closing ? 'stopping' : 'running', home, db: dbPath, executable: process.execPath }),
       shutdown: opts.onShutdown,
       // Cookies are not port-scoped: the port in the name keeps two Hubs open in one browser apart.
       auth: { token: apiToken, cookie: `orrery_${port}` },
+      bridgeSettings: {
+        snapshot: () => ({ role: record.role, allowLegacy, nativeDelivery: hub.nativeDeliveryEnabled(), keyMigrated: registration!.keyMigrated }),
+        setAllowLegacy: (enabled) => {
+          settingsStore.saveNumber('allow_plaintext_bridge', enabled ? 1 : 0);
+          allowLegacy = enabled;
+        },
+        setNativeDelivery: (enabled) => hub.setSecondaryNativeDelivery(enabled),
+        reveal: () => secret,
+      },
       toolFingerprints: () => getToolLists().then(fingerprintsOf),
       plugins: new PluginSettings(pluginHost, envDisabled, fileDisabled, (disabled) => writeDisabledPlugins(home, disabled),
         trusted.manifests().filter((m) => !pluginHost.installed.some((p) => p.id === m.id))),
@@ -305,8 +339,8 @@ export async function startHub(opts: StartOptions) {
       trusted,
       extensions: new AppExtensions({ home: opts.appHome, env: opts.appEnv, sharedDir: opts.skillsDir }),
     };
-    opened = { hub, store, secret, control };
-    await writeDiscovery(home, { url, secret, pid: process.pid });
+    opened = { hub, store, secret, control, authenticate: createBridgeAuthenticator(secret, record, () => allowLegacy) };
+    await writeDiscovery(home, { url, secret, pid: process.pid, hubId: record.hubId });
     discoveryWritten = true;
     // The members are taken here, with no await before hub.start: one added while the lists are computed is not told.
     const checkToolList = hub.checkToolList();
@@ -326,6 +360,7 @@ export async function startHub(opts: StartOptions) {
     server.closeAllConnections();
     await new Promise<void>((ok) => server.close(() => ok()));
     if (discoveryWritten) removeDiscovery(home, url);
+    await registration?.close().catch(() => {});
     throw e;
   }
   const { hub } = opened;
@@ -335,6 +370,7 @@ export async function startHub(opts: StartOptions) {
     hub,
     store: ready,
     home,
+    registry: registration!.record,
     /**
      * Once only: Ctrl+C, the web exit and tests share it; /api/health says 'stopping' from the first call until the
      * server closes. hub.json goes last, so a launcher keeps finding this Hub (stopping) until the data is released.
@@ -349,6 +385,7 @@ export async function startHub(opts: StartOptions) {
         server.closeAllConnections();
         await new Promise<void>((ok) => server.close(() => ok()));
         removeDiscovery(home, url);
+        await registration!.close().catch((e) => console.error('Orrery registry cleanup failed:', e instanceof Error ? e.message : e));
       })();
       return closing;
     },
@@ -357,6 +394,12 @@ export async function startHub(opts: StartOptions) {
 
 if (import.meta.main) {
   const config = resolveConfig(process.env);
+  const packagedHome = process.env.APPDATA ? join(process.env.APPDATA, 'Orrery Beta', 'hub') : '';
+  const pathKey = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
+  if (pathKey(config.registryDir) === pathKey(defaultRegistryDir())
+    && ![join(homedir(), '.orrery'), packagedHome].some((p) => pathKey(p) === pathKey(config.home))) {
+    console.warn('Using the default Orrery registry with a custom home. Set ORRERY_REGISTRY to an isolated directory for development or tests.');
+  }
   let app: Awaited<ReturnType<typeof startHub>> | undefined;
   let stopRequested = false;
   // Up before startHub: /api/shutdown already answers while plugins initialize. Until app exists, only note the request.
@@ -371,6 +414,9 @@ if (import.meta.main) {
     dbPath: config.dbPath,
     port: config.port,
     home: config.home,
+    registryDir: config.registryDir,
+    secondary: process.env.ORRERY_SECONDARY === '1',
+    name: pathKey(config.home) === pathKey(packagedHome) ? 'Orrery Beta' : 'Orrery',
     apiToken: config.apiToken,
     withMock: process.env.ORRERY_MOCK === '1',
     enableUpdateChecks: updateChecksOf(process.env),

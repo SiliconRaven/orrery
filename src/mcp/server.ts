@@ -34,7 +34,7 @@ import { isPluginToolName } from '../core/external-plugin-tools.ts';
 import type { ToolListSnapshot } from '../core/tool-list.ts';
 import { WORKBUDDY_WAIT, ZCODE_WAIT, type Member, type ToolProfile, type WaitHarness } from '../core/types.ts';
 import { ANTIGRAVITY, CALLER_ARG, CALLER_ARG_HELP, signedConversation } from './antigravity.ts';
-import { hasSecret, SECRET_HEADER } from './bridge.ts';
+import { signedBridgeBody } from './request-body.ts';
 import { hubUrlOf, ticketFor, waitCommand, WAIT_DESCRIPTION, waitsOf, ZCODE, zcodeCaller } from './zcode.ts';
 import { QODER, QODER_WAIT_TOOL, qoderSession, qoderWaitReply } from './qoder.ts';
 import { WORKBUDDY, ticketFor as workbuddyTicketFor, waitCommand as workbuddyWaitCommand, waitsOf as workbuddyWaitsOf } from './workbuddy.ts';
@@ -80,8 +80,7 @@ type Caller =
   | { kind: 'nobody' };                      // another harness header without a session: no conversation can be named
 
 /** Who is calling, from the headers; null → 401. */
-function callerOf(secret: string, req: IncomingMessage): Caller | null {
-  if (req.headers[SECRET_HEADER] === undefined || !hasSecret(req, secret)) return null;
+function callerOf(req: IncomingMessage): Caller | null {
   if (req.headers[HARNESS_HEADER] === QODER) return { kind: 'qoder' };   // before the session header: Qoder's identity is _meta only
   const session = req.headers[SESSION_HEADER];
   if (session === undefined) {
@@ -381,7 +380,7 @@ function buildServer(hub: Hub, secret: string, caller: Caller, hubUrl: string): 
   const waitTool = (h: WaitHarness, o: {
     description: string;
     who: (meta: Record<string, unknown> | undefined) => { sessionId: string } | ToolError;
-    ticket: (secret: string, sessionId: string) => string;
+    ticket: (secret: string, sessionId: string, hubId: string) => string;
     command: (ticket: string, hubUrl: string) => string;
     waitsOf: (hub: Hub, secret: string) => { count(sessionId: string): number };
     instructions: (running: number) => string;
@@ -392,7 +391,7 @@ function buildServer(hub: Hub, secret: string, caller: Caller, hubUrl: string): 
     if (!callers.length) return NOT_MEMBER;
     if (callers.every((m) => m.hiddenAt)) return HIDDEN;
     try {
-      const command = o.command(o.ticket(secret, who.sessionId), hubUrl);
+      const command = o.command(o.ticket(secret, who.sessionId, hub.bridgeHubId), hubUrl);
       const running = o.waitsOf(hub, secret).count(who.sessionId);
       return text({ command, run_in_background: true, description: WAIT_DESCRIPTION, running, instructions: o.instructions(running) });
     } catch (e) {
@@ -624,8 +623,9 @@ export async function toolLists(hub: Hub, secret: string, hubUrl: string): Promi
   return lists;
 }
 
-export async function handleMcp(hub: Hub, secret: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const caller = callerOf(secret, req);
+export async function handleMcp(hub: Hub, secret: string, req: IncomingMessage, res: ServerResponse,
+  authorized: boolean): Promise<void> {
+  const caller = authorized ? callerOf(req) : null;
   if (!caller) {
     res.writeHead(401, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'unauthorized' }));
@@ -635,6 +635,16 @@ export async function handleMcp(hub: Hub, secret: string, req: IncomingMessage, 
     // Stateless mode: no standalone GET stream, no session DELETE.
     res.writeHead(405, { allow: 'POST' }).end();
     return;
+  }
+  const signedBody = signedBridgeBody(req);
+  let parsed: unknown;
+  if (signedBody !== undefined) {
+    try { parsed = JSON.parse(signedBody.toString('utf8')); }
+    catch {
+      res.writeHead(400, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }));
+      return;
+    }
   }
   const server = buildServer(hub, secret, caller, hubUrlOf(req));
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -676,5 +686,5 @@ export async function handleMcp(hub: Hub, secret: string, req: IncomingMessage, 
     } catch { /* diagnostics must never affect the request */ }
     receive?.(message, extra);
   };
-  await transport.handleRequest(req, res);
+  await transport.handleRequest(req, res, parsed);
 }

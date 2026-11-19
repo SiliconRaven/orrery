@@ -4,7 +4,7 @@
 // fake agentapi (a node script). Nothing here runs agy, agentapi, language_server.exe or Antigravity.exe.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -16,7 +16,7 @@ import { goTime, workspacePaths } from '../src/adapters/antigravity/store.ts';
 import { callerTag, signedConversation } from '../src/mcp/antigravity.ts';
 import { REPO_ROOT } from '../src/main.ts';
 import type { BridgePort, Member, NativeDeliverContext } from '../src/core/types.ts';
-import { startTestHub, tempDir, waitFor, type TestHub } from './helpers.ts';
+import { startTestHub, tempDir, waitFor, writeRegistry, type TestHub } from './helpers.ts';
 
 const PLUGIN_DIR = join(REPO_ROOT, 'plugins', 'antigravity-orrery');
 const HOOK = join(PLUGIN_DIR, 'hook.mjs');
@@ -301,27 +301,31 @@ test('antigravity hook + Hub: the real hook process signs a call that the Hub th
   const app = await agHub();
   try {
     const { cluster, g2 } = await agCluster(app);
-    const runHook = (payload: string, home: string) =>
-      JSON.parse(execFileSync(process.execPath, [HOOK], { input: payload, env: { ...process.env, ORRERY_HOME: home }, encoding: 'utf8' }));
+    // The hook reads K from the registry only: ORRERY_HOME (and a hub.json there) plays no part.
+    const runHook = (payload: string, registry: string) =>
+      JSON.parse(execFileSync(process.execPath, [HOOK], { input: payload, env: { ...process.env, ORRERY_REGISTRY: registry, ORRERY_HOME: app.home }, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }));
     const args = { body: 'hello from G2', orreryCaller: signed(app.secret, C1) };   // the model claims to be G1
-    const out = runHook(JSON.stringify({ conversationId: C2, toolCall: { name: 'mcp_orrery_send_message', args }, stepIdx: 3 }), app.home);
+    const out = runHook(JSON.stringify({ conversationId: C2, toolCall: { name: 'mcp_orrery_send_message', args }, stepIdx: 3 }), app.registryDir);
     assert.equal(out.decision, 'ask');
     const r = await call(app, 'send_message', { ...args, ...out.overwrite });
     assert.equal(r.isError, undefined, JSON.stringify(r));
     assert.equal((await app.messages(cluster.id)).at(-1)!.from, g2.id, 'the conversation the hook named, not the one the model wrote');
     const msg = await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: 'ack me' });
     const ackArgs = { messageIds: [msg.id], orreryCaller: signed(app.secret, C1) };
-    const ackHook = runHook(JSON.stringify({ conversationId: C2, toolCall: { name: 'mcp_orrery_ack_messages', args: ackArgs } }), app.home);
+    const ackHook = runHook(JSON.stringify({ conversationId: C2, toolCall: { name: 'mcp_orrery_ack_messages', args: ackArgs } }), app.registryDir);
     const ack = await call(app, 'ack_messages', { ...ackArgs, ...ackHook.overwrite });
     assert.deepEqual(JSON.parse(ack.content[0].text), { acknowledged: [msg.id] });
     assert.deepEqual(app.store.acknowledgementsOf(msg.id).map((a) => a.memberId), [g2.id]);
     const taskArgs = { operationId: 'ag-create', title: 'Task', scope: 'Scope', acceptance: 'Done', orreryCaller: signed(app.secret, C1) };
-    const taskHook = runHook(JSON.stringify({ conversationId: C2, toolCall: { name: 'mcp_orrery_create_task', args: taskArgs } }), app.home);
+    const taskHook = runHook(JSON.stringify({ conversationId: C2, toolCall: { name: 'mcp_orrery_create_task', args: taskArgs } }), app.registryDir);
     const task = await call(app, 'create_task', { ...taskArgs, ...taskHook.overwrite });
     assert.equal(JSON.parse(task.content[0].text).task.createdBy, g2.id);
-    assert.deepEqual(runHook('not json', app.home), { decision: 'ask' });
-    assert.deepEqual(runHook(JSON.stringify({ conversationId: C2, toolCall: { name: 'mcp_orrery_list_agents', args: {} } }), tempDir()),
-      { decision: 'ask', overwrite: { orreryCaller: '' } }, 'no hub.json');
+    assert.deepEqual(runHook('not json', app.registryDir), { decision: 'ask' });
+    const noKey = spawnSync(process.execPath, [HOOK], { input: JSON.stringify({ conversationId: C2, toolCall: { name: 'mcp_orrery_list_agents', args: {} } }),
+      env: { ...process.env, ORRERY_REGISTRY: tempDir(), ORRERY_HOME: app.home }, encoding: 'utf8' });
+    assert.deepEqual(JSON.parse(noKey.stdout), { decision: 'ask', overwrite: { orreryCaller: '' } }, 'no registry key: unsigned, never a hub.json key');
+    assert.match(noKey.stderr, /接入件没有发送请求：读不到接入密钥/);
+    assert.ok(!noKey.stderr.includes(app.secret));
   } finally {
     await done(app);
   }
@@ -353,11 +357,11 @@ function quietLog() {
 }
 
 /** The sidecar with the fake agentapi; `calls()` = the argv each agentapi run got (after the executable). */
-function fakeSidecar(home: string, extraEnv: Record<string, string> = {}) {
+function fakeSidecar(registry: string, extraEnv: Record<string, string> = {}) {
   const logFile = join(tempDir(), 'agentapi.log');
   const log = quietLog();
-  const env = { ...process.env, ANTIGRAVITY_CSRF_TOKEN: CSRF, ANTIGRAVITY_LS_VERSION: '2.28.2', FAKE_AGENTAPI_LOG: logFile, ...extraEnv };
-  const sc = sidecar.start({ home, env, retryMs: RETRY_MS, log, agentapi: { file: process.execPath, args: [FAKE_AGENTAPI, 'agentapi'] } });
+  const env = { ...process.env, ANTIGRAVITY_CSRF_TOKEN: CSRF, ANTIGRAVITY_LS_VERSION: '2.28.2', FAKE_AGENTAPI_LOG: logFile, ORRERY_REGISTRY: registry, ...extraEnv };
+  const sc = sidecar.start({ env, retryMs: RETRY_MS, log, agentapi: { file: process.execPath, args: [FAKE_AGENTAPI, 'agentapi'] } });
   const calls = (): string[][] => {
     try {
       return readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -370,7 +374,7 @@ function fakeSidecar(home: string, extraEnv: Record<string, string> = {}) {
 
 test('antigravity sidecar: online while connected, reports the version; a delivery runs agentapi send-message and is acked; a failure is scrubbed of the token', async () => {
   const app = await agHub();
-  const sc = fakeSidecar(app.home);
+  const sc = fakeSidecar(app.registryDir);
   try {
     const { cluster, g1, g2 } = await agCluster(app);
     await waitFor(async () => (await statusOf(app, g1.id)) === 'idle' && (await statusOf(app, g2.id)) === 'idle', 'both online');
@@ -437,9 +441,9 @@ test('antigravity sidecar: refuses a non-UUID conversation or a NUL text without
     res.writeHead(200, { 'content-type': 'application/json' }).end('{"acked":true}');
   });
   await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
-  const home = tempDir();
-  writeFileSync(join(home, 'hub.json'), JSON.stringify({ url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, secret: 'fake-secret' }));
-  const sc = fakeSidecar(home, { ANTIGRAVITY_LS_VERSION: 'bad version!' });
+  const registry = join(tempDir(), 'registry');
+  const reg = writeRegistry(registry, `http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+  const sc = fakeSidecar(registry, { ANTIGRAVITY_LS_VERSION: 'bad version!' });
   try {
     await waitFor(() => acks.length === 4, 'all acked');
     const byId = Object.fromEntries(acks.map((a) => [a.deliveryId, a]));
@@ -454,6 +458,8 @@ test('antigravity sidecar: refuses a non-UUID conversation or a NUL text without
       'agentapi ran only for the UUID and the good texts');
     assert.equal(seen[0].url, '/bridge/stream?harness=antigravity', 'an unusable version is not reported');
     assert.ok(seen.every((r) => !r.headers.includes(CSRF) && !r.body.includes(CSRF)), 'the token is never sent');
+    assert.ok(seen.every((r) => !r.headers.includes(reg.key) && !r.headers.includes('x-orrery-bridge') && r.headers.includes('x-orrery-sig')),
+      'signed requests only: the registry key is never sent');
   } finally {
     sc.stop();
     server.closeAllConnections();
@@ -475,7 +481,8 @@ test('antigravity sidecar: how agentapi is run; the folder is a self-contained s
   for (const file of ['sidecar.mjs', 'hook.mjs', 'hook-dump.mjs']) {
     const code = readFileSync(join(PLUGIN_DIR, file), 'utf8');
     const imports = [...code.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
-    assert.deepEqual(imports.filter((s) => !s.startsWith('node:')), [], `${file}: Node built-ins only`);
+    // Its own copy of the shared discovery module (test/hub-discovery-client.test.ts checks the copy), else Node built-ins.
+    assert.deepEqual(imports.filter((s) => !s.startsWith('node:') && s !== './hub-discovery.mjs'), [], `${file}: Node built-ins only`);
     assert.doesNotMatch(code, /\bfetch\(/, `${file}: no fetch (it would honour NODE_USE_ENV_PROXY)`);
     assert.doesNotMatch(code, /shell\s*:|\bexec\(|execSync|\bspawn\(|antigravity:\/\/|vscode:\/\/|openExternal/, `${file}: no shell, no other program, no links`);
   }

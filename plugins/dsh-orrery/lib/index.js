@@ -10,9 +10,10 @@
 //   - unread hint: after every tool call, asks the Hub (POST /bridge/unread-hint) whether this conversation's unread
 //     count changed; a one-line answer becomes one additional context for the next step. The tool result itself is
 //     never changed, and every failure leaves the downstream tools/post-execute decision untouched.
-// Standalone: Node built-ins only, no dependencies, nothing from the orrery repository at run time. It reads only
-// <ORRERY_HOME or ~/.orrery>/hub.json, talks only to the loopback address in it, never logs the secret, never reads
-// DSH credentials and never writes anything. Disabling the plugin (Cordis dispose) closes the stream, stops
+// Standalone: Node built-ins only, no dependencies, nothing from the orrery repository at run time. Which Hub and how
+// to talk to it: ./hub-discovery.mjs, a byte-identical copy of orrery's plugins/shared/hub-discovery.mjs (the account's
+// Hub registry, requests signed with x-orrery-sig, the key never sent; no valid record: nothing is sent). It talks only
+// to the loopback address there, never logs the key, never reads DSH credentials and never writes anything. Disabling the plugin (Cordis dispose) closes the stream, stops
 // reconnecting, aborts tool calls in progress, sends no further Hub request and unregisters the tools. Contract: docs/adapters/deepseek.md in the orrery repository.
 //
 // DSH APIs used, checked against upstream github.com/deepseek-ai/deepseek-harness at tag dsh-v0.2.1-rc.2:
@@ -41,12 +42,10 @@
 //   - tool names: DSH's base bundle already registers global `send_message` and `list_agents` (subagent control), so the
 //     Hub's tool names get the prefix dsh-mcp-client would give an MCP server named orrery (mcp-client tools.ts:81-87)
 import { randomUUID } from 'node:crypto';
-import { Agent, request } from 'node:http';
+import { Agent } from 'node:http';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { callOutcome, HubError, hubFetch, hubStream } from './hub-discovery.mjs';
 
 export const name = 'dsh-orrery';
 export const inject = ['sessionController', 'tools'];
@@ -78,10 +77,8 @@ const RETRY_MS = 5000;
 const ACTIVITY_HEARTBEAT_MS = 15_000;
 const TURN_WAIT_MS = 30 * 60_000;   // stop watching a turn after this long (the Hub stops waiting after the same time)
 const KEEP_FINISHED = 1000;         // recently observed results, remembered if a Hub redoes a delivery
-const HUB_DOWN = 'orrery Hub 未运行';
 const HINT_TIMEOUT_MS = 500;        // a hung Hub must not hold up a tool result
 const HINT_SOURCE = { kind: 'dsh-orrery', form: 'notice', summary: 'orrery unread hint' };
-const LOOPBACK_URL = /^http:\/\/(127\.0\.0\.1|localhost):\d{1,5}$/;
 
 // BEGIN GENERATED MCP TOOLS
 export const TOOLS = [
@@ -149,12 +146,12 @@ export function apply(ctx) {
 }
 
 /**
- * The plugin's work, with test-only options: `home` (where hub.json is), `retryMs`, `turnWaitMs`,
+ * The plugin's work, with test-only options: `env` (default process.env: ORRERY_REGISTRY, ORRERY_HUB, ORRERY_LEGACY_HUB), `retryMs`, `turnWaitMs`,
  * `activityHeartbeatMs` and `hintTimeoutMs`.
  * Everything it starts lives in one ctx.effect, so Cordis disposing the plugin ends all of it.
  */
 export function start(ctx, opts = {}) {
-  const home = opts.home ?? (process.env.ORRERY_HOME || join(homedir(), '.orrery'));
+  const env = opts.env ?? process.env;
   const retryMs = opts.retryMs ?? RETRY_MS;
   const turnWaitMs = opts.turnWaitMs ?? TURN_WAIT_MS;
   const hintTimeoutMs = opts.hintTimeoutMs ?? HINT_TIMEOUT_MS;
@@ -162,41 +159,20 @@ export function start(ctx, opts = {}) {
 
   ctx.effect(() => {
     const stop = new AbortController();
-    // Every Hub request goes straight to the loopback address in hub.json on an agent of our own: with
-    // NODE_USE_ENV_PROXY=1, fetch and the global agent would send it (secret included) to HTTP_PROXY.
-    // node:http never follows redirects; a 3xx is an error.
+    // Every Hub request goes straight to the loopback address the registry names, on an agent of our own: with
+    // NODE_USE_ENV_PROXY=1, fetch and the global agent would send it to HTTP_PROXY. node:http never follows redirects.
     const direct = new Agent();
+    const hubLog = (m) => log.info(m);
     // ───────────── Hub ─────────────
 
-    /** The Hub from hub.json, read fresh every time (it may restart on another port). Null when there is none. */
-    async function findHub() {
-      try {
-        const d = JSON.parse(await readFile(join(home, 'hub.json'), 'utf8'));
-        if (typeof d?.url === 'string' && LOOPBACK_URL.test(d.url) && typeof d.secret === 'string' && d.secret) return { url: d.url, secret: d.secret };
-      } catch { /* no Hub */ }
-      return null;
-    }
-
     /** Every Hub request goes through here with a signal that stop aborts, so none starts after dispose. */
-    function hubRequest(hub, method, path, headers, body, signal) {
-      return new Promise((ok, fail) => {
-        if (signal.aborted) return fail(signal.reason);
-        const req = request(`${hub.url}${path}`, { method, headers, agent: direct, signal }, ok);
-        req.on('error', fail);
-        req.end(body);
-      });
+    async function hubPost(path, headers, body, signal, hub) {
+      await null;   // a call started just before dispose finds the signal aborted here and sends nothing
+      signal.throwIfAborted();
+      return hubFetch('POST', path, { headers, body, signal, env, log: hubLog, agent: direct, ...(hub ? { hub } : {}) });
     }
 
-    async function readAll(res) {
-      let s = '';
-      res.setEncoding('utf8');
-      for await (const chunk of res) s += chunk;
-      return s;
-    }
-
-    function isOk(res) {
-      return res.statusCode >= 200 && res.statusCode < 300;
-    }
+    const isOk = (status) => status >= 200 && status < 300;
 
     let bridgeToolVersion = null;
     // ───────────── tools ─────────────
@@ -217,26 +193,23 @@ export function start(ctx, opts = {}) {
       if (typeof sessionId !== 'string' || !sessionId) throw new Error('orrery 插件拿不到调用方会话的 ID，无法代表它调用 orrery');
       // Aborted by the caller or by disabling the plugin, whichever comes first.
       const signal = exec?.signal ? AbortSignal.any([stop.signal, exec.signal]) : stop.signal;
-      const hub = await findHub();
       signal.throwIfAborted();
-      if (!hub) throw new Error(HUB_DOWN);
       const call = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args && typeof args === 'object' ? args : {}, _meta: { 'orrery/bridgeToolVersion': bridgeToolVersion } } };
-      let res;
+      let status;
       let body;
       try {
-        res = await hubRequest(hub, 'POST', '/mcp', {
+        ({ status, text: body } = await hubPost('/mcp', {
           'content-type': 'application/json',
           accept: 'application/json, text/event-stream',
-          'x-orrery-bridge': hub.secret,
           'x-orrery-session': sessionId,
           'x-orrery-harness': HARNESS,
-        }, JSON.stringify(call), signal);
-        body = await readAll(res);
+        }, JSON.stringify(call), signal));
       } catch (e) {
         if (signal.aborted) throw e;
-        throw new Error(HUB_DOWN);
+        // Says whether the plugin sent nothing, the Hub refused, or the Hub could not be reached.
+        throw new Error(callOutcome(e));
       }
-      if (!isOk(res)) throw new Error(`orrery Hub 拒绝了请求（HTTP ${res.statusCode}）`);
+      if (!isOk(status)) throw new Error(`orrery Hub 拒绝了请求（HTTP ${status}）`);
       let reply;
       try {
         reply = JSON.parse(body);
@@ -259,15 +232,9 @@ export function start(ctx, opts = {}) {
      */
     async function unreadHint(sessionId, signal) {
       try {
-        const hub = await findHub();
-        if (!hub) return null;
-        const res = await hubRequest(hub, 'POST', '/bridge/unread-hint', {
-          'content-type': 'application/json',
-          'x-orrery-bridge': hub.secret,
-        }, JSON.stringify({ harness: HARNESS, session: sessionId }),
-        AbortSignal.any([signal, AbortSignal.timeout(hintTimeoutMs)]));
-        const body = await readAll(res);
-        if (!isOk(res)) return null;
+        const { status, text: body } = await hubPost('/bridge/unread-hint', { 'content-type': 'application/json' },
+          JSON.stringify({ harness: HARNESS, session: sessionId }), AbortSignal.any([signal, AbortSignal.timeout(hintTimeoutMs)]));
+        if (!isOk(status)) return null;
         const reply = JSON.parse(body);
         return typeof reply?.hint === 'string' && reply.hint ? reply.hint : null;
       } catch {
@@ -305,11 +272,10 @@ export function start(ctx, opts = {}) {
 
     // ───────────── delivery: Hub stream → DSH sessions ─────────────
 
+    /** To the Hub whose stream this belongs to: never to another Hub the registry may name by now. */
     async function post(hub, path, body, signal = stop.signal) {
-      const res = await hubRequest(hub, 'POST', path, { 'content-type': 'application/json', 'x-orrery-bridge': hub.secret },
-        JSON.stringify(body), signal);
-      res.resume();
-      if (!isOk(res)) throw new Error(`HTTP ${res.statusCode}`);
+      const { status } = await hubPost(path, { 'content-type': 'application/json' }, JSON.stringify(body), signal, hub);
+      if (!isOk(status)) throw new Error(`HTTP ${status}`);
     }
 
     // Only the Hub's current target list is observed. Raw calls stay in memory and are never serialized.
@@ -468,16 +434,18 @@ export function start(ctx, opts = {}) {
     }
 
     /** One stream connection: resolves when it ends. Deliveries for different sessions are handled side by side. */
-    async function stream(hub, signal) {
+    async function stream(signal) {
       const connection = new AbortController();
       const streamSignal = AbortSignal.any([signal, connection.signal]);
       try {
-        const res = await hubRequest(hub, 'GET', `/bridge/stream?harness=${HARNESS}${offOn ? '&activity=1' : ''}`, { 'x-orrery-bridge': hub.secret }, undefined, streamSignal);
-        if (!isOk(res)) {
+        signal.throwIfAborted();
+        const { res, hub } = await hubStream(`/bridge/stream?harness=${HARNESS}${offOn ? '&activity=1' : ''}`,
+          { signal: streamSignal, env, log: hubLog, agent: direct });
+        if (!isOk(res.statusCode)) {
           res.resume();
           throw new Error(`stream refused (HTTP ${res.statusCode})`);
         }
-        log.info('connected to the orrery Hub');
+        log.info(`connected to the orrery Hub「${hub.name}」`);
         res.setEncoding('utf8');
         let buf = '';
         for await (const chunk of res) {
@@ -512,20 +480,20 @@ export function start(ctx, opts = {}) {
       }
     }
 
-    /** Keeps a stream open until disposed, retrying every retryMs with a fresh hub.json. */
+    /** Keeps a stream open until disposed, retrying every retryMs with a fresh look at the registry. */
     async function streamLoop(signal) {
-      let reported = false;
+      let reported = '';
       while (!signal.aborted) {
-        const hub = await findHub();
         try {
-          if (!hub) throw new Error('no hub.json');
-          await stream(hub, signal);
-          reported = false;
+          await stream(signal);
+          reported = '';
           if (!signal.aborted) log.info('orrery Hub stream ended, reconnecting');
         } catch (e) {
           if (signal.aborted) return;
-          if (!reported) log.info(`orrery Hub not reachable (${errText(e)}), retrying every ${retryMs} ms`);
-          reported = true;
+          // Once per kind of trouble: another reason (a refusal after a restart, another Hub) is logged again.
+          const why = e instanceof HubError ? e.message : `orrery Hub not reachable (${errText(e)})`;
+          if (why !== reported) log.info(`${why}; retrying every ${retryMs} ms`);
+          reported = why;
         }
         // Removes its abort listener when the time is up, so waiting while the Hub is down does not pile them up.
         await sleep(retryMs, undefined, { signal }).catch(() => {});

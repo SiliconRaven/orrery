@@ -75,7 +75,7 @@ function postId(output: string): string | undefined {
   return undefined;
 }
 
-const WAIT_TICKET_RE = /\b[a-z]1\.[A-Za-z0-9._-]{1,128}\.[0-9a-f]{64}\b/g;
+const WAIT_TICKET_RE = /\b[a-z](?:1\.|2\.[0-9a-f-]{36}\.)[A-Za-z0-9._-]{1,128}\.[0-9a-f]{64}\b/g;
 const redactWaitTickets = (text: string) => text.replace(WAIT_TICKET_RE, '[redacted]');
 
 function waitCommandRegex(sessionId: string): RegExp {
@@ -83,7 +83,7 @@ function waitCommandRegex(sessionId: string): RegExp {
   //   node "<script>/wait.mjs" w1.<sessionId>.<64hex> http://127.0.0.1:<port> workbuddy [WorkBuddy.exe]
   const scriptPath = `(?:"[^"$\`%!\\\\\\r\\n]*wait\\.mjs"|[^\\s"'$\`%!;&|<>()\\r\\n]*wait\\.mjs)`;
   return new RegExp(
-    `^node(?:\\.exe)?\\s+${scriptPath}\\s+w1\\.${escapeRegex(sessionId)}\\.[0-9a-f]{64}\\s+http:\\/\\/127\\.0\\.0\\.1:\\d{1,5}\\s+workbuddy(?:\\s+WorkBuddy\\.exe)?$`,
+    `^node(?:\\.exe)?\\s+${scriptPath}\\s+w(?:1\\.|2\\.[0-9a-f-]{36}\\.)${escapeRegex(sessionId)}\\.[0-9a-f]{64}\\s+http:\\/\\/127\\.0\\.0\\.1:\\d{1,5}\\s+workbuddy(?:\\s+WorkBuddy\\.exe)?$`,
   );
 }
 

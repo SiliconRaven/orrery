@@ -85,13 +85,13 @@ const apiUrl = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
 
 // ── Hub ──
 const app = await startHub({
-  dbPath: join(S, 'hub.db'), port: 0, home: join(S, 'home'),
+  dbPath: join(S, 'hub.db'), port: 0, home: join(S, 'home'), registryDir: join(S, 'registry'),
   nativeAdapters: { claude: createClaudeNativeAdapter({ claudeDir: config }) },
   limits: { startupGraceMs: 0 },   // the offline step below must not fall into the start-up grace
 });
 log(`hub ${app.url}`);
 writeFileSync(join(project, '.mcp.json'), JSON.stringify({
-  mcpServers: { orrery: { type: 'stdio', command: process.execPath, args: [BRIDGE], env: { ORRERY_HOME: join(S, 'home') } } },
+  mcpServers: { orrery: { type: 'stdio', command: process.execPath, args: [BRIDGE], env: { ORRERY_REGISTRY: join(S, 'registry') } } },
 }, null, 2));
 
 // ── claude ──

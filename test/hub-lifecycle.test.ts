@@ -64,7 +64,7 @@ test('startup: a discovery write failure releases the Hub, database and port wit
     const native = { close: async () => { nativeCloses++; clearInterval(timer); } };
     let failure;
     try {
-      await startHub({ home, dbPath: join(dir, 'test.db'), port: Number(rawPort),
+      await startHub({ home, registryDir: join(dir, 'registry'), dbPath: join(dir, 'test.db'), port: Number(rawPort),
         apiToken: 'test-token-0123456789abcdefghijklmnopqrstuvwxyz', nativeAdapters: { first: adapter, fake: native } });
     } catch (error) { failure = error; }
     assert.equal(failure?.syscall, 'rename', 'the original discovery error is returned');

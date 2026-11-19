@@ -6,10 +6,13 @@
 
 ## 运行边界与信任前提
 
+签名接入的共享密钥存于私有登记处，Windows 核对 DACL，POSIX 核对所有者和权限位。签名绑定实际端口、路由、身份、正文和启动 claim，并在状态变更前检查时效及重放。设置可关闭 Hub 对明文的接收。静态 HTTP 宿主仍可能把明文发给占用端口的其他进程。回应未签名，残留锁回收有已知竞态。 [原生模式](native-mode.md)
+
+
 - **仅绑定回环网络**：Hub Web 服务与 MCP 端点只监听 `127.0.0.1`，不向局域网或公网开放。
 - **认证隔离**：
   - Web 页面静态资源可访问，而包括 `GET /api/health` 在内的 `/api/*` 与 `/api/stream` 均受 API Bearer 令牌或 `POST /api/session` 建立的 `HttpOnly` Cookie 保护，未认证返回 `401`。
-  - 原生 `/mcp` 调用方经 `x-orrery-bridge` 密钥配合宿主可控上下文认证（Codex 仅传桥密钥与运行时 `_meta.threadId`，**不传** `x-orrery-session` 或 `x-orrery-harness`；Claude/DSH/WorkBuddy/Cursor 经桥或 Hook 传会话头；ZCode/Qoder 依赖运行时 `_meta`；Antigravity 依赖 Hook HMAC 签名 `orreryCaller`）。`Authorization` 头在 `/mcp` 上不代表任何人。
+  - 原生 `/mcp` 调用方先过请求认证：orrery 自己的桥和插件发签名 `x-orrery-sig`（绑定 Hub、这次启动、端口、身份头和正文，不发密钥原文）；没法签名的静态 HTTP 配置（Codex、ZCode、Antigravity 的 MCP 配置）发明文 `x-orrery-bridge`，Hub 的投递设置可关闭这种兼容。再配合宿主可控上下文认人（Codex 仅传密钥与运行时 `_meta.threadId`，**不传** `x-orrery-session` 或 `x-orrery-harness`；Claude/DSH/WorkBuddy/Cursor 经桥或 Hook 传会话头；ZCode/Qoder 依赖运行时 `_meta`；Antigravity 依赖 Hook HMAC 签名 `orreryCaller`）。`Authorization` 头在 `/mcp` 上不代表任何人。
 - **零侵入原则**：
   - 不自动安装、启用、修改第三方应用（Claude、Codex、Cursor、DSH、Kimi、ZCode、Qoder、WorkBuddy、Antigravity）的用户配置、插件或登录状态。
   - 只往集群明确接入的目标会话写入投递；读取本地列表采用只读访问或临时副本，不修改原始会话库（原生对话自身运行仍会按目标应用机制落盘其会话历史）。
@@ -74,7 +77,7 @@
 
 ## 不在防护范围内（Non-goals）
 
-- **拥有同操作系统用户权限的恶意本机程序**：能直接读取 `~/.orrery/secret`、`api-token`、`hub.json` 或篡改插件文件、`plugins.json` 的本机程序与当前用户同权，不属于本威胁模型防护范围。
+- **拥有同操作系统用户权限的恶意本机程序**：能直接读取登记处的 `bridge-secret`（默认 `~/.orrery/registry/`）、`~/.orrery/secret`、`api-token`、`hub.json` 或篡改插件文件、`plugins.json` 的本机程序与当前用户同权，不属于本威胁模型防护范围。
 - **用户自行开启的全自动审批**：若用户在原桌面端开启自动运行命令/工具，来自集群的 `@` 将自动执行。
 - **用户自己安装的插件**：受限插件的进程和完全信任插件的代码按上面两节的说明运行；它们按“不保证的”做了坏事，不算 orrery 的问题。
 - **第三方应用合规与云端行为**：各外部客户端服务条款（如 Antigravity 风险提示）与供应商服务端行为由用户自行评估。

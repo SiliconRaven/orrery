@@ -18,7 +18,8 @@ import { freePort, startTestHub, tempDir, TEST_TOKEN, waitFor } from './helpers.
 import type { MockScript } from './mock.ts';
 
 function hubEnv(dir: string, port: number): Record<string, string | undefined> {
-  return { ...process.env, ORRERY_PORT: String(port), ORRERY_HOME: join(dir, 'home'), ORRERY_DB: join(dir, 'h.db'), ORRERY_API_TOKEN: TEST_TOKEN };
+  return { ...process.env, ORRERY_PORT: String(port), ORRERY_HOME: join(dir, 'home'), ORRERY_DB: join(dir, 'h.db'),
+    ORRERY_REGISTRY: join(dir, 'registry'), ORRERY_API_TOKEN: TEST_TOKEN };
 }
 
 /** Real Hub processes and health checks; fake browser and dialog. */
@@ -217,10 +218,19 @@ test('launcher 5: a port held by another program is reported; the holder keeps r
     await new Promise<void>((ok) => holder.listen(0, '127.0.0.1', ok));
     const port = (holder.address() as { port: number }).port;
     const r = realDeps(hubEnv(dir, port));
+    if (kind === 'silent') {
+      // A port that never answers is waited for until the start deadline (it might be a Hub still starting). Shortened
+      // here: health gives up after 100 ms and, once the launcher's own Hub has exited, every wait counts as 2 s on the
+      // launcher's clock. Before that the clock is real, so a slow Hub start under load does not use up the deadline.
+      let skew = 0;
+      r.deps.health = (p) => getHealth(p, TEST_TOKEN, 100);
+      r.deps.now = () => Date.now() + skew;
+      r.deps.sleep = async (ms) => { if (r.spawned[0]?.exited()) skew += 2000; await sleep(ms); };
+    }
     try {
       assert.equal(await launch(r.deps), 1, kind);
       assert.equal(r.errors.length, 1);
-      assert.match(r.errors[0], new RegExp(`端口 ${port} 被别的程序占用`), kind);
+      assert.match(r.errors[0], kind === 'answers' ? new RegExp(`端口 ${port} 被别的程序占用`) : new RegExp(`端口 ${port} 上的程序 20 秒内没有回答`), kind);
       assert.deepEqual(r.opened, []);
       assert.ok(holder.listening, 'the holder is still running');
       assert.equal(r.spawned.length, 1);
@@ -295,6 +305,67 @@ test('launcher 7: a Hub still stopping after 20 s is reported; nothing is starte
   assert.equal(await launch(f.deps), 1);
   assert.deepEqual(f.spawns, []);
   assert.match(f.errors[0], /一个 orrery Hub 正在退出，20 秒内没有退完，请稍后再试/);
+});
+
+test('launcher 3: a Hub that lost the port to one still starting (503 "hub is starting") waits for that one, starts no other', async () => {
+  const starting: HealthResult = { kind: 'answer', status: 503, body: { error: 'hub is starting' } };
+  for (const ready of [true, false]) {
+    const c = fakeConfig();
+    let asked = 0;
+    const f = fakeDeps(c, {
+      // The other launcher's Hub took the port first and is registering: a few 503s, then (if ready) running.
+      health: async () => (++asked <= 3 || !ready ? starting : orrery(c, 202)),
+      spawnHub: (log) => { f.spawns.push(log); return { pid: 201, exited: () => true }; },   // EADDRINUSE
+    });
+    const code = await launch(f.deps);
+    assert.equal(f.spawns.length, 1, 'no second Hub started next to the starting one');
+    if (ready) {
+      assert.equal(code, 0, f.errors.join(' | '));
+      assert.deepEqual(f.opened, [hubUrl(c.port)]);
+    } else {
+      assert.equal(code, 1);
+      assert.match(f.errors[0], /没有启动完/);
+      assert.doesNotMatch(f.errors[0], /别的程序占用/);
+    }
+  }
+});
+
+test('launcher 3: a port that gives no answer after the Hub lost it is waited for: silent → 503 → 200, silent → 200, silent until the deadline', async () => {
+  const starting: HealthResult = { kind: 'answer', status: 503, body: { error: 'hub is starting' } };
+  const silent: HealthResult = { kind: 'silent' };
+  const cases: { name: string; answers: (c: Config) => HealthResult[] }[] = [
+    { name: 'silent → 503 → 200', answers: (c) => [silent, silent, starting, starting, orrery(c, 302)] },
+    { name: 'silent → 200', answers: (c) => [silent, silent, silent, orrery(c, 302)] },
+    { name: 'silent until the deadline', answers: () => [silent] },
+  ];
+  for (const { name, answers } of cases) {
+    const c = fakeConfig();
+    const list = answers(c);
+    let asked = 0;
+    const f = fakeDeps(c, {
+      health: async () => list[Math.min(asked++, list.length - 1)],   // the last answer repeats
+      spawnHub: (log) => { f.spawns.push(log); return { pid: 301, exited: () => true }; },   // EADDRINUSE
+    });
+    const code = await launch(f.deps);
+    assert.equal(f.spawns.length, 1, `${name}: no second Hub started`);
+    if (name === 'silent until the deadline') {
+      assert.equal(code, 1, name);
+      assert.match(f.errors[0], /秒内没有回答/, name);
+      assert.doesNotMatch(f.errors[0], /别的程序占用/, name);
+    } else {
+      assert.equal(code, 0, `${name}: ${f.errors.join(' | ')}`);
+      assert.deepEqual(f.opened, [hubUrl(c.port)], name);
+    }
+  }
+  // A 200 from another data directory after the wait is still refused as other data.
+  const c = fakeConfig();
+  let n = 0;
+  const other = fakeDeps(c, {
+    health: async () => (n++ < 2 ? silent : orrery(c, 303, 'running', { home: 'C:\elsewhere' })),
+    spawnHub: () => ({ pid: 304, exited: () => true }),
+  });
+  assert.equal(await launch(other.deps), 1);
+  assert.match(other.errors[0], /另一个数据目录/);
 });
 
 test('launcher 7: a started Hub that meets a stopping one on the configured port waits for it, then starts again', async () => {

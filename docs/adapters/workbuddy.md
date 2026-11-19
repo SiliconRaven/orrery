@@ -11,9 +11,10 @@ WorkBuddy 适配器结合“独立 stdio MCP 桥（识别会话 ID）”与 [共
 1. **独立 stdio 桥识别会话（`plugins/workbuddy-orrery/bridge.mjs`）**：
    - 由于 WorkBuddy 的 channel 通知不会拉起新对话轮次且也不向 MCP 子进程传递 `CODEBUDDY_SESSION_ID`，因此桥启动时先检查该环境变量（若未来版本开始透传则优先使用），在缺失且位于 Windows 上时只读探测一次直接父进程：确认父进程映像名严格为 `WorkBuddy.exe` 并扫描命令行中的所有 `--session-id` 参数值（须全部一致且匹配白名单正则，禁止经 `cmd` 等中间壳包装启动）。
    - 该机制防止模型在工具参数内伪造身份，且整个探测在回答 MCP `initialize` 前同步完成；若取不到合法 ID，桥直接返回空工具清单且不向 Hub 发任何请求。
+   - 桥每次请求都经 `plugins/shared/hub-discovery.mjs` 读账户的 Hub 登记处（`ORRERY_REGISTRY`），连活动 Hub 或 `ORRERY_HUB` 钉住的那个，用 `x-orrery-sig` 签名（会话头和正文都在签名里），不读 `hub.json`、不发密钥原文（见[接入件：找 Hub、签名、报错](../native-mode.md#接入件找-hub签名报错)）。桥按路径引用，更新 orrery 后在 WorkBuddy 里重启 MCP 连接即可。
    - **重要**：每次先启动 `npm start` / Hub 再打开 WorkBuddy 对话；若 Hub 未启动导致取工具列表失败，须重开对话重新拉取。
 2. **后台静默等待与安全信封**：
-   - 模型调用 `wait_for_messages` 获得 `w1` 票据命令并后台运行 `wait.mjs`。为兼容 WorkBuddy 的“AI 安全防护”扫描，下发信封仅含纯群聊内容，不包含“再次运行命令”提示文本；`SKILL.md` 与工具说明承担流程指引。
+   - 模型调用 `wait_for_messages` 获得 `w2` 票据命令并后台运行 `wait.mjs`。为兼容 WorkBuddy 的“AI 安全防护”扫描，下发信封仅含纯群聊内容，不包含“再次运行命令”提示文本；`SKILL.md` 与工具说明承担流程指引。
    - 对话进程空闲约 15 分钟后可能被 WorkBuddy 回收进程，届时群员转为离线且停止投递，不会自动补发。
 
 ## 用户一次性设置与权限提醒

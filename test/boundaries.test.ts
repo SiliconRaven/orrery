@@ -44,7 +44,8 @@ export function checkBoundaries(sources: Source[]): string[] {
           || (path === 'web/public/plugin-slots.js' && spec === '`/plugin-web/${id}/`');
       } else if (area === 'main.ts') ok = true;
       else if (area === 'config.ts') ok = false;                  // node built-ins only
-      else if (area === 'launcher.ts') ok = target === 'config.ts';   // talks to the Hub over hub.json and HTTP only
+      else if (area === 'launcher.ts') ok = target === 'config.ts' || target === 'hub-registry.ts'; // local discovery and HTTP only
+      else if (area === 'hub-registry.ts') ok = target === 'bridge-protocol.ts';
       else if (area === 'backup.ts') ok = target === 'config.ts';     // standalone backup CLI: config plus node built-ins
       else if (area === 'update-check.ts') ok = false;
       else if (area === 'plugin-install.ts') ok = target === 'plugin-install-archive.ts' || Boolean(target?.startsWith('core/'));
@@ -61,9 +62,11 @@ export function checkBoundaries(sources: Source[]): string[] {
           || (dir !== 'adapters' && posix.dirname(target) === dir)
           || (dir !== 'adapters' && dir !== 'adapters/shared' && posix.dirname(target) === 'adapters/shared');
       } else if (area === 'bridge') {
-        ok = target === null;   // a standalone program: node built-ins and npm packages only
+        // A standalone program: node built-ins, npm packages and the plug-ins' shared Hub discovery module only.
+        ok = target === null || target === '../plugins/shared/hub-discovery.mjs';
       } else if (area === 'mcp' || area === 'web') {
-        ok = target === null || target.startsWith('core/') || target.startsWith(`${area}/`);
+        ok = target === null || target.startsWith('core/') || target.startsWith(`${area}/`)
+          || (area === 'mcp' && target === 'bridge-protocol.ts');
       } else if (area === 'plugins') {
         // plugins/<id>/* may import core, its own folder and npm packages; only the registry (plugins/index.ts) imports
         // plugin folders, and only the composition root (main.ts) imports the registry.
@@ -190,9 +193,11 @@ test('the core\'s event channel names no task, bookmark or coordinator type or f
   assert.ok(owned.test("type: 'task.approved'") && owned.test('data.taskId') && owned.test('"bookmark.saved"'));
 });
 
-test('launcher 8: the launcher imports only node built-ins and config.ts; config.ts only node built-ins', () => {
+test('launcher 8: the launcher uses configuration and local discovery, with no Hub internals', () => {
   const src = join(REPO_ROOT, 'src');
   const specs = (file: string) => [...readFileSync(join(src, file), 'utf8').matchAll(IMPORT_RE)].map((m) => m[1] ?? m[2]);
-  assert.deepEqual(specs('launcher.ts').filter((s) => !s.startsWith('node:')), ['./config.ts']);
+  assert.deepEqual(specs('launcher.ts').filter((s) => !s.startsWith('node:')), ['./config.ts', './hub-registry.ts']);
   assert.deepEqual(specs('config.ts').filter((s) => !s.startsWith('node:')), []);
+  assert.deepEqual(specs('hub-registry.ts').filter((s) => !s.startsWith('node:')), ['./bridge-protocol.ts']);
+  assert.deepEqual(specs('bridge-protocol.ts').filter((s) => !s.startsWith('node:')), []);
 });

@@ -13,7 +13,7 @@ Kimi Code 适配器接入用户已经在运行的 Kimi Code 桌面应用或本�
    - 仅当 `triggerPromptId === deliveryId` 的那一轮以 `completed` 终态结束时，适配器提取主代理的助手文字帧，按该群员身份正常发入群聊（遵循 `@路由`、防循环上限与暂停）。用户自己开启的轮次、空回复与失败/取消轮次**绝不**发出。
    - **局限**：默认模式下 Kimi 群员无法主动调用 `send_message`、`read_messages` 或 `ack_messages`。
 2. **可选直连模式（`_meta["kimi/sessionId"]`）**：
-   - 仅在用户自行运行的含 `sendSessionId: true` 修改版分支上，于 `mcp.json` 手动写入 `x-orrery-bridge` 与 `x-orrery-harness: kimi`（**绝不要配置静态 `x-orrery-session`**），Hub 凭运行时 `_meta["kimi/sessionId"]` 认人并开放全套 MCP 工具，同一轮经 MCP 发言后不再代发末尾回答。
+   - 仅在用户自行运行的含 `sendSessionId: true` 修改版分支上，于 `mcp.json` 手动写入 `x-orrery-bridge: <共享接入密钥 K>`（Kimi Code 自己发 HTTP、没法签名，属明文兼容；K 在设置 → 投递 → 原生接入里点显示，或读 `<ORRERY_REGISTRY>/bridge-secret`，从旧版升级时一次性换成 K）与 `x-orrery-harness: kimi`（**绝不要配置静态 `x-orrery-session`**），Hub 凭运行时 `_meta["kimi/sessionId"]` 认人并开放全套 MCP 工具，同一轮经 MCP 发言后不再代发末尾回答。
 
 ## 在线核验与令牌内存安全
 

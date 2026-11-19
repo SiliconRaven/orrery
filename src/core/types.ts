@@ -87,6 +87,7 @@ export interface Member {
   cwd: string;
   origin: 'attached' | 'created';  // 接入已有对话，还是由 orrery 新建
   status: MemberStatus;
+  deliveryDisabled?: 'secondary';
   removedAt: string | null; // null: active; timestamp: historical membership only
   /** v28: set while the member is hidden (隐身): no delivery, invisible to other members, its tools refuse. Absent = null. */
   hiddenAt: string | null;

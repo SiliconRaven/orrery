@@ -6,9 +6,9 @@ ZCode 桌面应用的原生模式接入件。只依赖 Node 内置模块，orrer
 
 > **Beta 版本提示**：本接入件随 `orrery v0.10.0-beta.2`（Beta 测试版）提供，接口与配置格式仍可能变化。
 
-安装版用户请使用内置 Node 路径，并为宿主插件设置 `ORRERY_HOME`，见[安装版接入说明](../../docs/desktop.md)。
+安装版用户请使用内置 Node 路径，见[安装版接入说明](../../docs/desktop.md)。接入件经账户的 Hub 登记处（`ORRERY_REGISTRY`，默认 `~/.orrery/registry/`）找 Hub，不再需要为宿主设置 `ORRERY_HOME`。
 
-- `wait.mjs`：由 ZCode 会话调用 `wait_for_messages` 后通过 Bash 在后台运行。它只连向命令行参数中签发 Hub 对应的本机回环地址，不读取 Hub 桥密钥；收到消息时输出内容并退出，唤醒 ZCode 对话。
+- `wait.mjs`：由 ZCode 会话调用 `wait_for_messages` 后通过 Bash 在后台运行。它只连向命令行参数中签发 Hub 对应的本机回环地址，凭命令里的 v2 票据等待，不读取 Hub 桥密钥；只有没写地址的旧命令才经账户的 Hub 登记处查地址（只取地址）。别的 Hub 签发的或旧版的票据会被作废，重新调用 `wait_for_messages` 领取即可；收到消息时输出内容并退出，唤醒 ZCode 对话。
 - `skill/SKILL.md`（可选）：复制到 `~/.zcode/skills/orrery/SKILL.md`，可在对话里通过“加入 orrery”或 `$orrery` 指引模型按规矩挂接与重挂。
 
 完整配置、审批说明、防循环与离开方式见 [docs/adapters/zcode.md](../../docs/adapters/zcode.md)。

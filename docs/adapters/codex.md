@@ -14,7 +14,7 @@
 
 ## 身份认证、在线探测与唤醒
 
-- **原生 Codex MCP 认证（单独契约）**：用户在 Codex 配置 orrery HTTP MCP 时，请求头**只配置 `x-orrery-bridge: <secret>`**，**绝不传 `x-orrery-session`，也不传 `x-orrery-harness`**（如果带了 `x-orrery-harness: codex` 而没有 `x-orrery-session`，Hub 会按 `nobody` 拒绝）。Hub 在这种桥密钥无额外头部的调用上专门从运行时 `_meta.threadId` 识别群员（`src/mcp/server.ts`）。
+- **原生 Codex MCP 认证（单独契约）**：用户在 Codex 配置 orrery HTTP MCP 时，请求头**只配置 `x-orrery-bridge: <secret>`**，**绝不传 `x-orrery-session`，也不传 `x-orrery-harness`**（如果带了 `x-orrery-harness: codex` 而没有 `x-orrery-session`，Hub 会按 `nobody` 拒绝）。Hub 在这种桥密钥无额外头部的调用上专门从运行时 `_meta.threadId` 识别群员（`src/mcp/server.ts`）。Codex 自己发 HTTP、没法签名，这里的密钥是登记处的共享接入密钥 K（明文兼容，投递设置里可关）：设置 → 投递 → 原生接入里点显示接入密钥，或读 `<ORRERY_REGISTRY>/bridge-secret`。从旧版升级时，把 `config.toml` 里的值一次性换成 K 并重启 Codex（见[接入件的升级和回退](../native-mode.md#接入件的升级和回退)）。
 - **只认桌面主进程存活**：Windows 上通过 `tasklist /APPS /FO CSV /NH` 检查包名 `OpenAI.Codex_*` 下映像为 `ChatGPT.exe` 的主进程（`appCheckMs` 缓存 10 秒，忽略退出后可能残留的 `RuntimeBroker.exe` 进程，也不把 Hub 自己的短命 `codex.exe` 误判为桌面应用）。
 - **唤醒前置实时现查**：入队后打开 `codex://threads/wake/<threadId>` 前跳过缓存现查一次桌面应用是否在运行；若此时已退出则尝试撤出队列并返回 `unknown`，绝不主动拉起关闭的应用（系统查询到打开链接之间的极短时间窗口仍为已知可接受剩余风险）。
 - **轮次观察与用量**：默认每 3 秒轮询一次（连续 3 次看到目标轮次仍在跑后降为 6 秒），排在另一运行中轮次后面的时间不计入 30 分钟空闲取件超时；读取 `$CODEX_HOME/thread-writer-locks/<threadId>.lock` 遇 `EBUSY` 继续等待，缺失队列项持续 3 次轮询且超 15 秒报 `unknown`。额度与按轮/会话 token 从本地最新 `rollout-*.jsonl` 只读提取（仅手动刷新额度调 `account/rateLimits/read`）。

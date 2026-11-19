@@ -32,6 +32,8 @@ secrets/
 external-plugins.json
 plugin-packages/
 updates.json
+bridge-secret
+hub-id
 
 # 编辑器与系统文件
 .vscode/

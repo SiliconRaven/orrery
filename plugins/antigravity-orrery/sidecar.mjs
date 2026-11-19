@@ -8,22 +8,21 @@
 // It does nothing else with Antigravity: no other agentapi command, no private RPC, never opens a link or starts a
 // program other than agentapi. The language server's CSRF token, which Antigravity puts in this process's environment
 // for agentapi, stays there: it is never sent to the Hub and never logged (error texts are scrubbed of it).
-// Standalone: Node built-ins only, nothing from the orrery repository at run time. It reads only
-// <ORRERY_HOME or ~/.orrery>/hub.json and talks only to the loopback address in it. Contract: docs/adapters/antigravity.md.
+// Standalone: Node built-ins only, nothing from the orrery repository at run time. Which Hub and how: ./hub-discovery.mjs,
+// a byte-identical copy of orrery's plugins/shared/hub-discovery.mjs (the account's Hub registry, read for every
+// connection; requests signed with x-orrery-sig, the key itself never sent; no valid record: nothing is sent). It talks
+// only to the loopback address there. Contract: docs/adapters/antigravity.md.
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { Agent, request } from 'node:http';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { Agent } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
+import { HubError, hubFetch, hubStream } from './hub-discovery.mjs';
 
 const HARNESS = 'antigravity';
 const RETRY_MS = 5000;
 const PARENT_CHECK_MS = 5000;
 const SEND_TIMEOUT_MS = 60_000;
 const MAX_TEXT = 30_000;   // a Windows command line ends at 32 767 characters
-const LOOPBACK_URL = /^http:\/\/(127\.0\.0\.1|localhost):\d{1,5}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VERSION_RE = /^[\w.+-]{1,40}$/;
 
@@ -50,12 +49,12 @@ export function sendMessageArgs(conversationId, text) {
 }
 
 /**
- * Runs the sidecar until stop(). Options: `home` (where hub.json is), `env` (default process.env), `agentapi`
+ * Runs the sidecar until stop(). Options: `env` (default process.env; ORRERY_REGISTRY, ORRERY_HUB and ORRERY_LEGACY_HUB
+ * choose the Hub), `agentapi`
  * ({ file, args }, default from env), `retryMs`, `log` ({ info, warn }).
  */
 export function start(opts = {}) {
   const env = opts.env ?? process.env;
-  const home = opts.home ?? (env.ORRERY_HOME || join(homedir(), '.orrery'));
   const retryMs = opts.retryMs ?? RETRY_MS;
   const log = opts.log ?? console;
   const agentapi = opts.agentapi ?? agentapiCommand(env);
@@ -63,27 +62,10 @@ export function start(opts = {}) {
   const token = env.ANTIGRAVITY_CSRF_TOKEN;
   const scrub = (s) => (token ? s.split(token).join('[redacted]') : s);
   const stop = new AbortController();
-  // Every Hub request goes straight to the loopback address in hub.json on an agent of our own: with
-  // NODE_USE_ENV_PROXY=1, fetch and the global agent would send it (secret included) to HTTP_PROXY.
+  // Every Hub request goes straight to the loopback address the registry names, on an agent of our own: with
+  // NODE_USE_ENV_PROXY=1, fetch and the global agent would send it to HTTP_PROXY.
   const direct = new Agent();
-
-  /** The Hub from hub.json, read fresh every time (it may restart on another port). Null when there is none. */
-  async function findHub() {
-    try {
-      const d = JSON.parse(await readFile(join(home, 'hub.json'), 'utf8'));
-      if (typeof d?.url === 'string' && LOOPBACK_URL.test(d.url) && typeof d.secret === 'string' && d.secret) return { url: d.url, secret: d.secret };
-    } catch { /* no Hub */ }
-    return null;
-  }
-
-  function hubRequest(hub, method, path, headers, body) {
-    return new Promise((ok, fail) => {
-      if (stop.signal.aborted) return fail(stop.signal.reason);
-      const req = request(`${hub.url}${path}`, { method, headers, agent: direct, signal: stop.signal }, ok);
-      req.on('error', fail);
-      req.end(body);
-    });
-  }
+  const hubOpts = { env, agent: direct, signal: stop.signal, log: (m) => log.info(m) };
 
   /** agentapi send-message for one delivery; resolves with null or the error text, never rejects. */
   function send(conversationId, text) {
@@ -108,11 +90,12 @@ export function start(opts = {}) {
     });
   }
 
+  /** To the Hub whose stream delivered it: never to another Hub the registry may name by now. */
   async function ack(hub, deliveryId, error) {
-    const res = await hubRequest(hub, 'POST', '/bridge/ack', { 'content-type': 'application/json', 'x-orrery-bridge': hub.secret },
-      JSON.stringify(error === null ? { deliveryId, ok: true } : { deliveryId, ok: false, error }));
-    res.resume();
-    if (res.statusCode < 200 || res.statusCode >= 300) throw new Error(`HTTP ${res.statusCode}`);
+    stop.signal.throwIfAborted();
+    const { status } = await hubFetch('POST', '/bridge/ack', { ...hubOpts, hub, headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(error === null ? { deliveryId, ok: true } : { deliveryId, ok: false, error }) });
+    if (status < 200 || status >= 300) throw new Error(`HTTP ${status}`);
   }
 
   async function deliver(hub, data) {
@@ -135,14 +118,15 @@ export function start(opts = {}) {
   }
 
   /** One stream connection: resolves when it ends. Deliveries for different conversations run side by side. */
-  async function stream(hub) {
+  async function stream() {
     const query = `harness=${HARNESS}${version ? `&version=${encodeURIComponent(version)}` : ''}`;
-    const res = await hubRequest(hub, 'GET', `/bridge/stream?${query}`, { 'x-orrery-bridge': hub.secret });
+    stop.signal.throwIfAborted();
+    const { res, hub } = await hubStream(`/bridge/stream?${query}`, hubOpts);
     if (res.statusCode !== 200) {
       res.resume();
       throw new Error(`stream refused (HTTP ${res.statusCode})`);
     }
-    log.info('connected to the orrery Hub');
+    log.info(`connected to the orrery Hub「${hub.name}」`);
     res.setEncoding('utf8');
     let buf = '';
     for await (const chunk of res) {
@@ -163,18 +147,18 @@ export function start(opts = {}) {
   }
 
   async function loop() {
-    let reported = false;
+    let reported = '';
     while (!stop.signal.aborted) {
-      const hub = await findHub();
       try {
-        if (!hub) throw new Error('no hub.json');
-        await stream(hub);
-        reported = false;
+        await stream();
+        reported = '';
         if (!stop.signal.aborted) log.info('orrery Hub stream ended, reconnecting');
       } catch (e) {
         if (stop.signal.aborted) return;
-        if (!reported) log.info(`orrery Hub not reachable (${errText(e)}), retrying every ${retryMs} ms`);
-        reported = true;
+        // Once per kind of trouble: another reason (a refusal after a restart, another Hub) is logged again.
+        const why = e instanceof HubError ? e.message : `orrery Hub not reachable (${errText(e)})`;
+        if (why !== reported) log.info(`${why}; retrying every ${retryMs} ms`);
+        reported = why;
       }
       await sleep(retryMs, undefined, { signal: stop.signal }).catch(() => {});
     }

@@ -15,10 +15,13 @@
 
 ## 配置解析与端口复用机制
 
+启动器解析并传递 `ORRERY_REGISTRY`。端口冲突时，经签名 `/bridge/whoami` 核对活动登记，匹配时显示另一个 Hub 的名字和数据目录。两个启动器同时启动时，没抢到端口的一方会在 20 秒内等另一个 Hub 启动完（它回答 503 或暂时不回答时都等），不会误报端口被占用。
+
+
 `resolveConfig()` 读取 `ORRERY_PORT`（默认 `4317`）、`ORRERY_HOME`（默认 `~/.orrery`）与 `ORRERY_DB`（默认 `<仓库>/.tmp/orrery.db`）。测试须自行覆盖端口与目录，以免碰及 `4317` 上的日常 Hub。
 
 - **无目录锁文件**：启动器不使用目录锁文件，也不主动检查或清理所谓的“死 PID”或锁文件；进程互斥依靠 Hub 绑定回环端口。
-- **跨端口同数据目录复用**：启动器读取 `<ORRERY_HOME>/hub.json` 中的回环地址与 PID，带上 API 令牌请求该端口的 `GET /api/health`（未带令牌会被 `401` 拒绝，见下节）：
+- **跨端口同数据目录复用**：启动器读取自己的 `<ORRERY_HOME>/hub.json` 中的回环地址与 PID（只为核对是否同一套数据；桥和插件不读这个文件，改读账户的 Hub 登记处），带上 API 令牌请求该端口的 `GET /api/health`（未带令牌会被 `401` 拒绝，见下节）：
   1. 响应来自 orrery、PID 与 `hub.json` 一致，且返回的 `(home, db)` 路径与当前配置完全相同时，直接复用该现存 Hub（**即使其监听端口不同于当前的 `ORRERY_PORT`**，也会复用它并打开它所在的端口）；
   2. 若 `hub.json` 指向另一组 `(home, db)` 的存活 Hub（`other-data`）、返回 `401`（`unauthorized`）或超时/未知状态（`unknown`），均直接拒绝启动，绝不接管或强杀其他进程；
   3. 确认未运行（`none`：无合法 `hub.json`、端口拒绝连接、非 orrery 或 PID 不符）时才在后台拉起新 Hub，并在最长 **20 秒（`START_TIMEOUT_MS`）**内轮询 `/api/health`。若超时仍未就绪，启动器报错退出并提示日志位置（`<ORRERY_HOME>/hub.log`），**不会结束已在后台运行的 Hub 进程**（它可能仍在启动途中）。

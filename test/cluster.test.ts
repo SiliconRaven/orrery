@@ -44,7 +44,7 @@ test('1: attach / project specs, default names with suffixes, all persisted', as
     await app.close();
   }
 
-  const again = await startHub({ dbPath: join(app.dir, 'test.db'), port: 0, home: join(app.dir, 'home'),
+  const again = await startHub({ dbPath: join(app.dir, 'test.db'), port: 0, home: join(app.dir, 'home'), registryDir: join(app.dir, 'registry'),
     nativeAdapters: { mock: fixtureNativeMock(app.dir) }, apiToken: TEST_TOKEN });
   try {
     const state = await (await fetch(again.url + '/api/state')).json();

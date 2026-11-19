@@ -9,9 +9,9 @@ import * as core from './wait-core.ts';
 
 export const WORKBUDDY = WORKBUDDY_WAIT.harness;
 
-export const ticketFor = (secret: string, sessionId: string): string => core.ticketFor(WORKBUDDY_WAIT, secret, sessionId);
+export const ticketFor = (secret: string, sessionId: string, hubId: string): string => core.ticketFor(WORKBUDDY_WAIT, secret, sessionId, hubId);
 
-export const ticketSession = (secret: string, ticket: unknown): string | null => core.ticketSession(WORKBUDDY_WAIT, secret, ticket);
+export const ticketSession = (secret: string, ticket: unknown, hubId: string): string | null => core.ticketSession(WORKBUDDY_WAIT, secret, ticket, hubId);
 
 export const waitCommand = (ticket: string, hubUrl: string, script?: string): string => core.waitCommand(WORKBUDDY_WAIT, ticket, hubUrl, script);
 

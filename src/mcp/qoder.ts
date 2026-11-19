@@ -25,7 +25,7 @@ export const QODER_WAIT_TOOL = 'Join your orrery cluster chat from this Qoder co
 export function qoderWaitReply(hub: Hub, secret: string, sessionId: string, hubUrl: string) {
   const running = core.waitsOf(QODER_WAIT, hub, secret).count(sessionId);
   return {
-    command: core.waitCommand(QODER_WAIT, core.ticketFor(QODER_WAIT, secret, sessionId), hubUrl),
+    command: core.waitCommand(QODER_WAIT, core.ticketFor(QODER_WAIT, secret, sessionId, hub.bridgeHubId), hubUrl),
     run_in_background: true, description: core.WAIT_DESCRIPTION, running,
     ...(running ? { instructions: `这个对话现在已经有 ${running} 条这样的命令连着 orrery：不要再运行，照常结束这一轮。` } : {}),
   };

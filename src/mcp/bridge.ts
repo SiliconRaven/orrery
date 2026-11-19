@@ -1,4 +1,4 @@
-// Hub side of the bridge protocol (docs/native-mode.md, "桥协议"). Every request carries x-orrery-bridge: <secret>.
+// Hub side of the bridge protocol. Authentication of signed and legacy traffic is performed before native dispatch.
 //   GET  /bridge/stream?harness=<h>&session=<id>   SSE; connected = online; events `deliver` { deliveryId, sessionId, text },
 //                                                  and `tools-changed` {} when third-party plugin tools came or went
 //   GET  /bridge/stream?harness=<h>                the harness's shared stream: every session of <h> is online through it
@@ -13,25 +13,15 @@
 //   GET  /bridge/<h>-park, POST /bridge/<h>-turn   a turn-hook harness's parked stop hook and turn reports, see ./hook-park.ts
 //   plugin routes (OfficialPlugin.bridgeRoutes, before the secret check: each authenticates itself), e.g. the tasks plugin's
 //   POST /bridge/ship-verify and /bridge/ship-result
-import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Hub } from '../core/hub.ts';
 import { parksOf } from './hook-park.ts';
+import { readBridgeBody } from './request-body.ts';
 import { waitsOf } from './wait-core.ts';
 
-export const SECRET_HEADER = 'x-orrery-bridge';
 const MAX_BODY = 64 * 1024;
 const MAX_ID = 200;
 const VERSION_RE = /^[\w.+-]{1,40}$/;
-
-/** Whether the request carries the Hub's bridge secret. Constant-time compare; never logged. */
-export function hasSecret(req: IncomingMessage, secret: string): boolean {
-  const given = req.headers[SECRET_HEADER];
-  if (typeof given !== 'string') return false;
-  const a = Buffer.from(given);
-  const b = Buffer.from(secret);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
 
 function json(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(data));
@@ -40,17 +30,11 @@ function json(res: ServerResponse, status: number, data: unknown): void {
 const isId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= MAX_ID;
 
 async function readJson(req: IncomingMessage): Promise<any> {
-  let size = 0;
-  const chunks: Buffer[] = [];
-  for await (const c of req) {
-    size += c.length;
-    if (size > MAX_BODY) throw new Error('body too large');
-    chunks.push(c);
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+  return JSON.parse((await readBridgeBody(req, MAX_BODY)).toString('utf8') || '{}');
 }
 
-export async function handleBridge(hub: Hub, secret: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleBridge(hub: Hub, secret: string, req: IncomingMessage, res: ServerResponse,
+  authorized: boolean): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   // A wait command authenticates by its ticket alone, never the secret (./wait-core.ts).
   const waitRoute = /^\/bridge\/([a-z0-9-]+)-(wait|ack)$/.exec(url.pathname);
@@ -64,7 +48,7 @@ export async function handleBridge(hub: Hub, secret: string, req: IncomingMessag
     const match = req.method === route.method ? route.pattern.exec(url.pathname) : null;
     if (match) return route.handle({ hub, secret, params: match.slice(1), req, res });
   }
-  if (!hasSecret(req, secret)) return json(res, 401, { error: 'unauthorized' });
+  if (!authorized) return json(res, 401, { error: 'unauthorized' });
 
   // A turn-hook harness's parked stop hook and turn reports (./hook-park.ts); any other name falls through to 404.
   const hookRoute = /^\/bridge\/([a-z0-9-]+)-(park|turn)$/.exec(url.pathname);

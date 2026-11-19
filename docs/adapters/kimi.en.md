@@ -13,7 +13,7 @@ Stock Kimi Code shares workspace MCP connections without session IDs on `tools/c
    - Only when the turn with `triggerPromptId === deliveryId` finishes as `completed` does the Hub forward the main agent's assistant text frames via `sendFromMember` (enforcing `@routing`, loop limits, and pause). User-started turns, empty outputs, and failed/cancelled turns are **never** posted.
    - **Limitation**: Default Kimi members cannot invoke `send_message`, `read_messages`, or `ack_messages`.
 2. **Optional direct MCP (`_meta["kimi/sessionId"]`)**:
-   - On custom builds supporting `sendSessionId: true`, manually adding `x-orrery-bridge` + `x-orrery-harness: kimi` in `mcp.json` (**never hardcode `x-orrery-session`**) enables Hub session auth via `_meta["kimi/sessionId"]` without duplicate turn replies.
+   - On custom builds supporting `sendSessionId: true`, manually adding `x-orrery-bridge: <shared key K>` (Kimi Code sends HTTP itself and cannot sign, so this is plaintext compatibility; get K from Settings → Delivery → Native connections → Show bridge key or `<ORRERY_REGISTRY>/bridge-secret`, and replace the old value with K once when upgrading) + `x-orrery-harness: kimi` in `mcp.json` (**never hardcode `x-orrery-session`**) enables Hub session auth via `_meta["kimi/sessionId"]` without duplicate turn replies.
 
 ## Presence Verification & Token Safety
 

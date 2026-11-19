@@ -13,7 +13,7 @@ import type { ActivityObservation, Cluster, ClusterListing, Delivery, DeliveryRe
 import type { CollectionItem, MemberRoles, Role } from './collaboration-types.ts';
 import { kindsOf } from './system-kinds.js';
 
-export type StoredMember = Omit<Member, 'status'>;
+export type StoredMember = Omit<Member, 'status' | 'deliveryDisabled'>;
 const PURGED_CHAIN_TURNS = 'purged_chain_turns:';
 const V30_SENDER_NOTICE = 'v30_sender_notice:';
 // JSON distinguishes the global null from every cluster ID and delimits even IDs containing ':' or SQL wildcards.

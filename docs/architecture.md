@@ -62,6 +62,9 @@ Windows 安装版由 `desktop/lib/runtime.mjs` 选择内置 Node、外置 Hub �
 
 ## 原生数据流与成员创建边界
 
+`src/hub-registry.ts` 管理账户登记处，`src/bridge-protocol.ts` 定义签名格式，`src/mcp/bridge-auth.ts` 在进入处理器前校验。第二实例默认不投递。[原生模式](native-mode.md)
+
+
 1. **单一原生模式**：适配器通过 `nativeAdapters` 注册。新建对话的成员规格须明确传 `mode: "native"` 和非空的 `projectPath`，接入已有对话时用 `sessionId`。界面不需要切换模式，成员输出不带 `mode`。
 2. **新建 vs 接入的目录来源**：
    - **新建原生会话（`createSession`）**：在支持新建的适配器上**必须显式传入 `projectPath`**，不存在默认沙箱目录回退；

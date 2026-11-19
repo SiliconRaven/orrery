@@ -6,9 +6,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { findHub, HARNESS, PLACEHOLDER, post } from './lib/hub.mjs';
+import { findHub, HARNESS, PLACEHOLDER, post, warn } from './lib/hub.mjs';
 
-const RETRY_MS = 5000;
+// ORRERY_CURSOR_MCP_RETRY_MS is a test knob (orrery's own variable); Cursor never sets it.
+const RETRY_MS = Number(process.env.ORRERY_CURSOR_MCP_RETRY_MS) || 5000;
+// After a 401 the Hub has refused this program's signed request (an old copy of the plugin, a key that does not match
+// the registry, or another program on the Hub's port): retrying every 5 s cannot fix that and would only log refusals,
+// so it slows down to once a minute; a Hub that was merely down is still retried every 5 s.
+const REFUSED_RETRY_MS = RETRY_MS * 12;
 const PROTOCOL_VERSION = '2025-06-18';
 const BUILT_IN = JSON.parse(readFileSync(join(import.meta.dirname, 'tools.json'), 'utf8'));
 export const NOT_EXECUTED = `${PLACEHOLDER}\n这次 orrery 调用没有执行：orrery 的 postToolUse hook 没有运行。消息没有发出，也没有读到任何内容。`
@@ -18,31 +23,44 @@ export const NOT_EXECUTED = `${PLACEHOLDER}\n这次 orrery 调用没有执行：
 const send = (msg) => process.stdout.write(`${JSON.stringify(msg).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')}\n`);
 const result = (id, r) => send({ jsonrpc: '2.0', id, result: r });
 
-/** The Hub's tools/list, or null when the Hub cannot be asked. */
+/** The Hub's tools/list: { tools }, { refused: why } after a 401, or null when the Hub cannot be asked. */
 async function hubTools() {
-  const hub = await findHub();
+  const hub = findHub();
   if (!hub) return null;
   try {
     const r = await post(hub, '/mcp', { jsonrpc: '2.0', id: 'tools', method: 'tools/list' }, { headers: { 'x-orrery-harness': HARNESS } });
-    return r.status === 200 && Array.isArray(r.body?.result?.tools) ? r.body.result.tools : null;
-  } catch {
-    return null;
+    return r.status === 200 && Array.isArray(r.body?.result?.tools) ? { tools: r.body.result.tools } : null;
+  } catch (e) {
+    return e?.kind === 'rejected' ? { refused: e.message } : null;
   }
 }
 
 // shortcut: only a Hub that was down when tools/list was asked triggers list_changed, not a later Hub restart with
 // changed tools (the Hub's tool-update hint tells the member); upgrade to a poll of the Hub's tools if that bites.
 let retrying = false;
-function retryTools() {
+let reportedRefusal = '';
+/** Says once per reason, on stderr (Cursor's MCP log), why the Hub's list is not used and how often it is retried. */
+function noteRefusal(why) {
+  if (why === reportedRefusal) return;
+  reportedRefusal = why;
+  warn(`${why}; asking again every ${REFUSED_RETRY_MS / 1000} s, not every ${RETRY_MS / 1000} s (check that the Hub's registry key matches, or reinstall the plugin)`);
+}
+
+function retryTools(delay = RETRY_MS) {
   if (retrying) return;
   retrying = true;
-  const timer = setInterval(async () => {
-    if (!(await hubTools())) return;
-    clearInterval(timer);
-    retrying = false;
-    send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
-  }, RETRY_MS);
-  timer.unref();
+  const again = (ms) => setTimeout(async () => {
+    const got = await hubTools();
+    if (got?.tools) {
+      retrying = false;
+      reportedRefusal = '';
+      send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+      return;
+    }
+    if (got?.refused) noteRefusal(got.refused);
+    again(got?.refused ? REFUSED_RETRY_MS : RETRY_MS);
+  }, ms).unref();
+  again(delay);
 }
 
 async function handle(msg) {
@@ -57,9 +75,10 @@ async function handle(msg) {
   }
   if (method === 'ping') return result(id, {});
   if (method === 'tools/list') {
-    const tools = await hubTools();
-    if (!tools) retryTools();
-    return result(id, { tools: tools ?? BUILT_IN });
+    const got = await hubTools();
+    if (got?.refused) noteRefusal(got.refused);
+    if (!got?.tools) retryTools(got?.refused ? REFUSED_RETRY_MS : RETRY_MS);
+    return result(id, { tools: got?.tools ?? BUILT_IN });
   }
   if (method === 'tools/call') return result(id, { content: [{ type: 'text', text: NOT_EXECUTED }] });
   send({ jsonrpc: '2.0', id, error: { code: -32601, message: `method not found: ${method}` } });

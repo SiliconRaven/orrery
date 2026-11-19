@@ -8,12 +8,13 @@ import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import { REPO_ROOT } from '../src/main.ts';
-import { insertMessageWithEvent, startTestHub, tempDir } from './helpers.ts';
+import { insertMessageWithEvent, relayRegistry, resignedHeaders, startTestHub, tempDir, writeRegistry } from './helpers.ts';
 
 const hook = join(REPO_ROOT, 'plugins', 'unread-hint', 'hook.mjs');
-async function run(harness: string, input: unknown, home: string, extraEnv: Record<string, string> = {}) {
+/** Runs the hook with `registry` as its ORRERY_REGISTRY. */
+async function run(harness: string, input: unknown, registry: string, extraEnv: Record<string, string> = {}) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(process.execPath, [hook, harness], { env: { ...process.env, ...extraEnv, ORRERY_HOME: home }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(process.execPath, [hook, harness], { env: { ...process.env, ORRERY_REGISTRY: registry, ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '', stderr = '';
     child.stdout.setEncoding('utf8').on('data', (s) => { stdout += s; });
     child.stderr.setEncoding('utf8').on('data', (s) => { stderr += s; });
@@ -39,18 +40,21 @@ test('Claude and Codex subagent inputs never consume their parent session hint',
     codex: createMockNativeAdapter({ harness: 'codex', sessions }),
   }, limits: { quotaPollMs: 0 } });
   let requests = 0;
-  const proxy = await listen((req, res) => {
+  // A counting relay: the hook's registry names it; it signs each request again for the Hub.
+  const proxy = await listen(async (req, res) => {
     requests++;
-    const upstream = request(app.url + req.url, { method: req.method, headers: { ...req.headers, host: new URL(app.url).host } }, (reply) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c);
+    const body = Buffer.concat(chunks);
+    const upstream = request(app.url + req.url, { method: req.method, headers: resignedHeaders(app, req, body) }, (reply) => {
       res.writeHead(reply.statusCode ?? 500, reply.headers); reply.pipe(res);
     });
     upstream.on('error', () => res.writeHead(502).end());
-    req.pipe(upstream);
+    upstream.end(body);
   });
   try {
-    const { secret } = JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8'));
-    const home = tempDir();
-    writeFileSync(join(home, 'hub.json'), JSON.stringify({ url: proxy.url, secret }));
+    const home = join(tempDir(), 'registry');
+    relayRegistry(app, home, proxy.url);
     for (const harness of ['claude', 'codex']) {
       const { cluster, members: [member] } = await app.hub.createCluster(harness, [{ harness, mode: 'native', sessionId: session, name: 'A' }]);
       const id = randomUUID();
@@ -85,8 +89,8 @@ test('four output shapes and all unavailable-Hub cases are silent', async () => 
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ hint: 'orrery：你有 1 条未读' }));
   });
   try {
-    const home = tempDir();
-    const configure = (url: string) => writeFileSync(join(home, 'hub.json'), JSON.stringify({ url, secret: 'fake-secret' }));
+    const home = join(tempDir(), 'registry');
+    const configure = (url: string) => writeRegistry(home, url);
     configure(server.url);
     for (const harness of ['claude', 'codex', 'zcode', 'antigravity']) {
       const input = harness === 'antigravity' ? { conversationId: 's' } : { session_id: 's' };
@@ -112,31 +116,47 @@ test('four output shapes and all unavailable-Hub cases are silent', async () => 
     const missing = tempDir();
     silent(await run('codex', { session_id: 's' }, missing));
     silent(await run('antigravity', { conversationId: 's' }, missing), '{}');
-    writeFileSync(join(missing, 'hub.json'), '{');
+    writeFileSync(join(missing, 'active.json'), '{');
     silent(await run('claude', { session_id: 's' }, missing));
     const unreadable = tempDir();
-    mkdirSync(join(unreadable, 'hub.json'));
+    mkdirSync(join(unreadable, 'active.json'));
     silent(await run('codex', { session_id: 's' }, unreadable));
+    // A hub.json in ORRERY_HOME is never read without the explicit legacy setting.
+    const oldHome = tempDir();
+    mkdirSync(oldHome, { recursive: true });
+    writeFileSync(join(oldHome, 'hub.json'), JSON.stringify({ url: server.url, secret: 'fake-secret', pid: process.pid }));
+    mode = 'hint';
+    silent(await run('codex', { session_id: 's' }, missing, { ORRERY_HOME: oldHome }));
   } finally { await server.close(); }
 });
 
-test('localhost discovery bypasses an environment proxy', async () => {
+test('registry and explicit legacy (localhost) discovery bypass an environment proxy; only the legacy path sends the key', async () => {
   let intercepted = 0;
+  const seen: Record<string, unknown>[] = [];
   const proxy = await listen((_req, res) => { intercepted++; res.writeHead(502).end(); });
-  const hub = await listen((_req, res) => { res.writeHead(200).end(JSON.stringify({ hint: 'orrery：你有 1 条未读' })); });
+  const hub = await listen((req, res) => { seen.push(req.headers); res.writeHead(200).end(JSON.stringify({ hint: 'orrery：你有 1 条未读' })); });
+  const proxied = { HTTP_PROXY: proxy.url, NODE_USE_ENV_PROXY: '1', NO_PROXY: '' };
   try {
-    const home = tempDir();
-    writeFileSync(join(home, 'hub.json'), JSON.stringify({ url: hub.url.replace('127.0.0.1', 'localhost'), secret: 'fake-secret' }));
-    const result = await run('zcode', { session_id: 's' }, home, { HTTP_PROXY: proxy.url, NODE_USE_ENV_PROXY: '1', NO_PROXY: '' });
-    assert.equal(result.code, 0);
-    assert.equal(result.stderr, '');
-    assert.deepEqual(JSON.parse(result.stdout), { additionalContext: 'orrery：你有 1 条未读' });
+    const registry = join(tempDir(), 'registry');
+    const reg = writeRegistry(registry, hub.url);
+    const signed = await run('zcode', { session_id: 's' }, registry, proxied);
+    assert.deepEqual(signed, { code: 0, stdout: JSON.stringify({ additionalContext: 'orrery：你有 1 条未读' }), stderr: '' });
+    assert.equal(seen[0]['x-orrery-bridge'], undefined);
+    assert.match(String(seen[0]['x-orrery-sig']), /^v1 /);
+    assert.ok(!JSON.stringify(seen).includes(reg.key));
+
+    const oldHome = tempDir();
+    writeFileSync(join(oldHome, 'hub.json'), JSON.stringify({ url: hub.url.replace('127.0.0.1', 'localhost'), secret: 'fake-secret', pid: process.pid }));
+    const legacy = await run('zcode', { session_id: 's' }, tempDir(), { ...proxied, ORRERY_LEGACY_HUB: oldHome });
+    assert.deepEqual(legacy, { code: 0, stdout: JSON.stringify({ additionalContext: 'orrery：你有 1 条未读' }), stderr: '' });
+    assert.equal(seen[1]['x-orrery-bridge'], 'fake-secret');
     assert.equal(intercepted, 0);
   } finally { await proxy.close(); await hub.close(); }
 });
 
 test('hook uses only node built-ins, has no configuration writes or network fetch', () => {
   const source = readFileSync(hook, 'utf8');
-  assert.ok([...source.matchAll(/^import .* from '([^']+)';$/gm)].every((m) => m[1].startsWith('node:')));
+  // Node built-ins and its own copy of the shared discovery module (test/hub-discovery-client.test.ts checks the copy).
+  assert.ok([...source.matchAll(/^import .* from '([^']+)';$/gm)].every((m) => m[1].startsWith('node:') || m[1] === './hub-discovery.mjs'));
   assert.doesNotMatch(source, /\bfetch\s*\(|writeFile|appendFile|mkdir|permissionDecision|terminationBehavior|\bdecision\s*:/);
 });

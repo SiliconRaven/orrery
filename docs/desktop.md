@@ -8,6 +8,9 @@
 
 ## 设计核心：只跟随停靠，不侵入宿主窗口
 
+桌面外壳和源码启动器使用同一账户的 Hub 登记及端口冲突诊断。[签名接入](native-mode.md)
+
+
 直接往 Electron `BrowserView` 或 Win32 `SetParent` 嵌入第三方应用容易导致焦点抢夺、DPI 错位与越界问题。桌面壳只作外框协调：
 
 - 内置加载经启动器认证的 orrery 协作页；
@@ -40,7 +43,7 @@
 
 Windows x64 NSIS 安装包内置 Node 和运行依赖，安装后通过 **Orrery Beta** 快捷方式启动。数据位于 `%APPDATA%/Orrery Beta/hub`；关闭窗口后 Hub 继续运行，升级或卸载会先退出该安装实例的 Hub，保留数据库。
 
-配置原生桥和插件时，Node 使用 `<安装目录>/resources/node/node.exe`，插件文件位于 `<安装目录>/resources/hub/plugins` 或 `resources/hub/src/bridge`，并在宿主 MCP 配置中将 `ORRERY_HOME` 指向 `%APPDATA%/Orrery Beta/hub`。MCP JSON 中请填写展开后的实际绝对路径。安装器不会修改宿主设置。
+配置原生桥和插件时，Node 使用 `<安装目录>/resources/node/node.exe`，插件文件位于 `<安装目录>/resources/hub/plugins` 或 `resources/hub/src/bridge`。桥和插件读同一账户的 Hub 登记处（默认 `%USERPROFILE%/.orrery/registry`）找到安装版的 Hub，宿主 MCP 配置不再需要 `ORRERY_HOME`。MCP JSON 中请填写展开后的实际绝对路径。安装器不会修改宿主设置。
 
 开发启动：
 

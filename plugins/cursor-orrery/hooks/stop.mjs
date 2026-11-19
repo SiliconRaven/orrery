@@ -33,7 +33,7 @@ async function main() {
     ...(STATUSES.has(input.status) ? { status: input.status } : {}),
     usage: { input: count(input.input_tokens), output: count(input.output_tokens), cacheRead: count(input.cache_read_tokens), cacheWrite: count(input.cache_write_tokens) },
   };
-  let hub = await findHub();
+  let hub = findHub();
   if (!hub) return answer({});
   try {
     const r = await post(hub, '/bridge/cursor-turn', report);
@@ -63,9 +63,9 @@ async function main() {
       }
       if (got?.end || how === 'refused') return answer({});
     }
-    // Dropped (the Hub restarted or stopped): try again, maybe a new Hub with a new port or secret.
+    // Dropped (the Hub restarted or stopped): try again with a fresh look at the registry (a new port or claim).
     await sleep(Math.min(RETRY_MS, Math.max(0, deadline - Date.now())));
-    hub = await findHub();
+    hub = findHub();
   }
   return answer({});
 }

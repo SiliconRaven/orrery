@@ -6,10 +6,13 @@ This document defines local security boundaries, explicit non-goals, and severit
 
 ## Trust Boundaries
 
+Signed bridges use a shared key stored in the account's private registry. The Hub verifies the port, route, identity, body, startup claim and replay window before dispatch. Settings can disable plaintext acceptance. Static HTTP clients still send plaintext to their configured port. Responses are unsigned, and stale lock removal has a known race. [Native mode](native-mode.en.md)
+
+
 - **Loopback-only networking**: Hub Web and MCP servers bind strictly to `127.0.0.1` with no LAN or public exposure.
 - **Credential isolation**:
   - Static UI pages serve without auth, while all `/api/*` endpoints (including `GET /api/health`) and `/api/stream` require an API Bearer token or an `HttpOnly` cookie set via `POST /api/session` (`401` otherwise).
-  - Native `/mcp` callers authenticate via `x-orrery-bridge` paired with tamper-resistant host context (native Codex sends **bridge secret only** with zero session/harness headers and relies on `_meta.threadId`; Claude/DSH/WorkBuddy/Cursor pass session headers via bridge/hook; ZCode/Qoder rely on runtime `_meta`; Antigravity requires HMAC-signed `orreryCaller` arguments). The `Authorization` header identifies nobody on `/mcp`.
+  - Native `/mcp` callers first pass request authentication: orrery's own bridges and plug-ins sign with `x-orrery-sig` (bound to the Hub, this start, the port, the identity headers and the body; the key itself is not sent), while static HTTP configurations that cannot sign (Codex, ZCode and Antigravity MCP entries) send plain `x-orrery-bridge`, which the Hub's delivery settings can turn off. Identity then comes from tamper-resistant host context (native Codex sends **the key only** with zero session/harness headers and relies on `_meta.threadId`; Claude/DSH/WorkBuddy/Cursor pass session headers via bridge/hook; ZCode/Qoder rely on runtime `_meta`; Antigravity requires HMAC-signed `orreryCaller` arguments). The `Authorization` header identifies nobody on `/mcp`.
 - **Zero-intrusion policy**:
   - Never installs, enables, or edits user configs, plugins, or credentials of host apps.
   - Only sends deliveries to explicitly attached conversations; session discovery reads files directly or via temporary copies without editing source databases.
@@ -74,7 +77,7 @@ Full-trust plugins ([Third-party plugins, "Full-trust plugins"](external-plugins
 
 ## Non-Goals
 
-- **Malicious local software running as your OS user**: Processes able to read `~/.orrery/secret`, `api-token`, `hub.json`, or overwrite plugin files or `plugins.json`, share OS user privileges and sit outside scope.
+- **Malicious local software running as your OS user**: Processes able to read the registry's `bridge-secret` (default `~/.orrery/registry/`), `~/.orrery/secret`, `api-token`, `hub.json`, or overwrite plugin files or `plugins.json`, share OS user privileges and sit outside scope.
 - **User-enabled auto-run presets in host apps**: Cluster `@mentions` execute automatically if you configure auto-approve inside your host app.
 - **Plugins the user installs**: restricted plugin processes and full-trust plugin code run as described above; harm they do within "what it does not guarantee" is not an orrery defect.
 - **Vendor ToS & cloud policies**: External ToS compliance (such as Antigravity notices) remains the user's responsibility.

@@ -2,35 +2,31 @@
 // starts as a child process once the user adds it with `claude mcp add --scope user orrery -- node <this file>`.
 // Protocol: docs/native-mode.md ("桥协议", "原生 Claude"). Standalone: imports node built-ins and npm packages only.
 //
-// - MCP relay: newline-delimited JSON-RPC on stdin → POST <hub>/mcp with x-orrery-bridge (the Hub secret) and
-//   x-orrery-session (this session's id), responses → stdout. `initialize` is always answered here, the same way the
-//   Hub answers it (its MCP is stateless, so it needs no initialize); while the Hub is down, `tools/list` gets the
-//   same tool list and `tools/call` gets the error "orrery Hub 未运行".
-// - Delivery: holds GET <hub>/bridge/stream open (reconnecting every RETRY_MS, re-reading hub.json each time), writes
-//   each `deliver` into this session's inbox (auth line first, then one user line) and POSTs /bridge/ack.
+// - Which Hub and how: plugins/shared/hub-discovery.mjs (docs/hub-discovery.md). The registry is read for every request;
+//   requests are signed (x-orrery-sig), the key itself is never sent. No valid registry record: nothing is sent.
+// - MCP relay: newline-delimited JSON-RPC on stdin → POST <hub>/mcp signed over x-orrery-session (this session's id)
+//   and the body, responses → stdout. `initialize` is always answered here, the same way the Hub answers it (its MCP
+//   is stateless, so it needs no initialize); while the Hub cannot be asked, `tools/list` gets the same tool list and
+//   `tools/call` gets the reason (the plug-in did not send it, the Hub refused it, or the Hub is unreachable).
+// - Delivery: holds GET <hub>/bridge/stream open (reconnecting every RETRY_MS, re-reading the registry each time),
+//   writes each `deliver` into this session's inbox (auth line first, then one user line) and POSTs /bridge/ack.
 // - Tool list refresh: Claude fetches `tools/list` once per session, so when the stream connects again after a drop
 //   (the Hub restarted, maybe updated), or connects for the first time after `tools/list` was answered from the
 //   built-in list, the bridge sends `notifications/tools/list_changed` and Claude fetches the Hub's list again. It does
 //   the same for the stream's `tools-changed` event (a third-party plugin's tools came or went).
 // - The inbox token stays in this process's memory: never written, logged, or sent to the Hub.
-import { Agent, request, type IncomingMessage } from 'node:http';
 import { createHash } from 'node:crypto';
 import { connect } from 'node:net';
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from '@modelcontextprotocol/sdk/types.js';
+import { callOutcome, HubError, hubFetch, hubStream, type HubTarget as Hub } from '../../plugins/shared/hub-discovery.mjs';
 
 const SESSION_ID = process.env.CLAUDE_CODE_SESSION_ID || null;
 const INBOX = process.env.CLAUDE_CODE_MESSAGING_SOCKET || null;
 const TOKEN = process.env.CLAUDE_CODE_MESSAGING_TOKEN || null;
 delete process.env.CLAUDE_CODE_MESSAGING_TOKEN;   // nothing this process might start inherits it
-const HOME = process.env.ORRERY_HOME || join(homedir(), '.orrery');
 const RETRY_MS = Number(process.env.ORRERY_BRIDGE_RETRY_MS) || 5000;   // the env var exists for tests
 const INBOX_TIMEOUT_MS = 10_000;
-const HUB_DOWN = 'orrery Hub 未运行';
-const LOOPBACK_URL = /^http:\/\/(127\.0\.0\.1|localhost):\d{1,5}$/;
 
 const log = (m: string) => process.stderr.write(`orrery bridge: ${m}\n`);   // Claude keeps MCP stderr in its debug log
 const clean = (s: string) => (TOKEN ? s.split(TOKEN).join('***') : s);
@@ -75,43 +71,9 @@ const INSTRUCTIONS = !SESSION_ID
       + 'orrery 无法把群聊消息投进本会话；orrery 工具仍可调用。'
     : undefined;
 
-// ───────────── Hub discovery ─────────────
+// ───────────── Hub requests ─────────────
 
-interface Hub { url: string; secret: string }
-
-/** The Hub from hub.json, read fresh every time (the Hub may restart on another port). Null when there is none. */
-async function findHub(): Promise<Hub | null> {
-  try {
-    const d = JSON.parse(await readFile(join(HOME, 'hub.json'), 'utf8'));
-    if (typeof d?.url === 'string' && LOOPBACK_URL.test(d.url) && typeof d.secret === 'string' && d.secret) return { url: d.url, secret: d.secret };
-  } catch { /* no Hub */ }
-  return null;
-}
-
-const hubHeaders = (hub: Hub) => ({ 'x-orrery-bridge': hub.secret, 'x-orrery-session': SESSION_ID! });
-
-// Every Hub request goes straight to the loopback address in hub.json, on an agent of our own: with
-// NODE_USE_ENV_PROXY=1, fetch and the global http agent would send it (secret and session id included) to
-// HTTP_PROXY. A new Agent has no proxy unless one is passed. node:http never follows redirects; a 3xx is an error.
-const direct = new Agent();
-
-/** One request to the Hub. Resolves with the response once its headers arrive. */
-function hubRequest(hub: Hub, method: string, path: string, headers: Record<string, string>, body?: string, signal?: AbortSignal): Promise<IncomingMessage> {
-  return new Promise((ok, fail) => {
-    const req = request(`${hub.url}${path}`, { method, headers, agent: direct, signal }, ok);
-    req.on('error', fail);
-    req.end(body);
-  });
-}
-
-async function readAll(res: IncomingMessage): Promise<string> {
-  let s = '';
-  res.setEncoding('utf8');
-  for await (const chunk of res) s += chunk;
-  return s;
-}
-
-const isOk = (res: IncomingMessage) => res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300;
+const isOk = (status: number | undefined) => status !== undefined && status >= 200 && status < 300;
 
 // Same canonical tool-list fingerprint as the Hub; this records what the bridge supplied, not the client cache.
 function fingerprintTools(tools: { name: string }[]): string {
@@ -150,20 +112,20 @@ const toolError = (text: string) => ({ content: [{ type: 'text', text }], isErro
 
 /** Forwards one message to the Hub. Returns its JSON-RPC response (null for a notification); throws when it cannot. */
 async function relay(msg: Rpc): Promise<unknown> {
-  const hub = await findHub();
-  if (!hub) throw new Error(HUB_DOWN);
-  let res: IncomingMessage;
-  let body: string;
+  let status: number;
+  let text: string;
   try {
-    res = await hubRequest(hub, 'POST', '/mcp',
-      { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...hubHeaders(hub) }, JSON.stringify(msg));
-    body = await readAll(res);
-  } catch {
-    throw new Error(HUB_DOWN);
+    ({ status, text } = await hubFetch('POST', '/mcp', {
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'x-orrery-session': SESSION_ID! },
+      body: JSON.stringify(msg), log,
+    }));
+  } catch (e) {
+    // Not sent (retry is safe), refused (it did not run), or unknown (it may have run).
+    throw new Error(callOutcome(e));
   }
-  if (res.statusCode === 202) return null;
-  if (!isOk(res)) throw new Error(`orrery Hub 拒绝了请求（HTTP ${res.statusCode}）`);
-  return JSON.parse(body);
+  if (status === 202) return null;
+  if (!isOk(status)) throw new Error(`orrery Hub 拒绝了请求（HTTP ${status}）`);
+  return JSON.parse(text);
 }
 
 // shortcut: notifies on every reconnect, even when the Hub's tools did not change; compare a hash of tools/list if
@@ -247,10 +209,10 @@ function writeInbox(text: string): Promise<void> {
 }
 
 async function ack(hub: Hub, deliveryId: string, error: string | null): Promise<void> {
-  const res = await hubRequest(hub, 'POST', '/bridge/ack', { 'content-type': 'application/json', 'x-orrery-bridge': hub.secret },
-    JSON.stringify(error === null ? { deliveryId, ok: true } : { deliveryId, ok: false, error }));
-  res.resume();
-  if (!isOk(res)) throw new Error(`HTTP ${res.statusCode}`);
+  // Only to the Hub whose stream delivered it (findHub again could name another Hub by now).
+  const { status } = await hubFetch('POST', '/bridge/ack', { headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(error === null ? { deliveryId, ok: true } : { deliveryId, ok: false, error }), log, hub });
+  if (!isOk(status)) throw new Error(`HTTP ${status}`);
 }
 
 async function deliver(hub: Hub, data: string): Promise<void> {
@@ -271,17 +233,16 @@ async function deliver(hub: Hub, data: string): Promise<void> {
 }
 
 /** One stream connection: resolves when it ends. Deliveries are handled one at a time, in order. */
-async function stream(hub: Hub, signal: AbortSignal): Promise<void> {
-  const res = await hubRequest(hub, 'GET', `/bridge/stream?harness=claude&session=${encodeURIComponent(SESSION_ID!)}`,
-    { 'x-orrery-bridge': hub.secret }, undefined, signal);
-  if (!isOk(res)) {
+async function stream(signal: AbortSignal): Promise<void> {
+  const { res, hub } = await hubStream(`/bridge/stream?harness=claude&session=${encodeURIComponent(SESSION_ID!)}`, { signal, log });
+  if (!isOk(res.statusCode)) {
     res.resume();
     throw new Error(`stream refused (HTTP ${res.statusCode})`);
   }
   if (streamConnectedBefore || servedBuiltInTools) send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
   streamConnectedBefore = true;
   servedBuiltInTools = false;
-  log('connected to the Hub');
+  log(`connected to the Hub「${hub.name}」`);
   res.setEncoding('utf8');
   let buf = '';
   for await (const chunk of res) {
@@ -304,20 +265,20 @@ async function stream(hub: Hub, signal: AbortSignal): Promise<void> {
   }
 }
 
-/** Keeps a stream open for as long as the bridge runs, retrying every RETRY_MS with a fresh hub.json. */
+/** Keeps a stream open for as long as the bridge runs, retrying every RETRY_MS with a fresh look at the registry. */
 async function streamLoop(signal: AbortSignal): Promise<void> {
-  let reported = false;
+  let reported = '';
   while (!signal.aborted) {
-    const hub = await findHub();
     try {
-      if (!hub) throw new Error('no hub.json');
-      await stream(hub, signal);
-      reported = false;
+      await stream(signal);
+      reported = '';
       log('stream ended, reconnecting');
     } catch (e) {
       if (signal.aborted) return;
-      if (!reported) log(`Hub not reachable (${errText(e)}), retrying every ${RETRY_MS} ms`);
-      reported = true;
+      // Once per kind of trouble: a different reason (another Hub, a refusal after a restart) is logged again.
+      const why = e instanceof HubError ? e.message : `Hub not reachable (${errText(e)})`;
+      if (why !== reported) log(`${why}; retrying every ${RETRY_MS} ms`);
+      reported = why;
     }
     await new Promise<void>((ok) => {
       const t = setTimeout(ok, RETRY_MS);

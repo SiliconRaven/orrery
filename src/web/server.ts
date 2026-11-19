@@ -48,6 +48,12 @@ export interface WebControl {
   health(): { app: 'orrery'; pid: number; instance: string; state: 'running' | 'stopping'; home: string; db: string; executable: string };
   shutdown?: () => void;
   auth: { token: string; cookie: string };
+  bridgeSettings?: {
+    snapshot(): { role: 'active' | 'secondary'; allowLegacy: boolean; nativeDelivery: boolean; keyMigrated: boolean };
+    setAllowLegacy(enabled: boolean): void;
+    setNativeDelivery(enabled: boolean): void;
+    reveal(): string;
+  };
   toolFingerprints?: () => Promise<ToolFingerprints>;
   plugins: PluginSettings;
   externalPlugins?: ExternalPlugins;
@@ -475,6 +481,30 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
     }
     // Never carries the bridge secret or the API token: the launcher and the page read it.
     if (method === 'GET' && path === '/api/health') return json(res, 200, control.health());
+    if (path === '/api/bridge-settings' || path === '/api/bridge-settings/reveal') {
+      const settings = control.bridgeSettings;
+      if (settings && path.endsWith('/reveal') && method === 'POST') {
+        const data = await readJson(req);
+        if (Array.isArray(data) || Object.keys(data).length !== 0) throw new Error('Expected an empty JSON object');
+        res.setHeader('cache-control', 'no-store');
+        return json(res, 200, { key: settings.reveal() });
+      }
+      if (settings && path === '/api/bridge-settings') {
+        if (method === 'GET') return json(res, 200, settings.snapshot());
+        if (method === 'PATCH') {
+          const data = await readJson(req);
+          const { allowLegacy, nativeDelivery, confirmed } = data;
+          if (typeof allowLegacy === 'boolean' && Object.keys(data).length === 1) {
+            settings.setAllowLegacy(allowLegacy);
+          } else if (typeof nativeDelivery === 'boolean' && Object.keys(data).length === (nativeDelivery ? 2 : 1)
+            && (!nativeDelivery || confirmed === true)) {
+            settings.setNativeDelivery(nativeDelivery);
+          } else throw new Error('Provide one setting and confirm enabling secondary delivery');
+          return json(res, 200, settings.snapshot());
+        }
+      }
+      return json(res, 404, { error: 'not found' });
+    }
     if (path === '/api/updates' || path === '/api/updates/check') {
       const updates = control.updates;
       if (updates && method === 'GET' && path === '/api/updates') return json(res, 200, updates.snapshot());

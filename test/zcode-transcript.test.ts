@@ -1,3 +1,4 @@
+import { TEST_HUB_ID } from './helpers.ts';
 // Reading a bound ZCode conversation (src/adapters/zcode/transcript.ts). Every database here is hand-written synthetic
 // data shaped like ZCode's cli/db/db.sqlite (tables session, message, part with JSON in `data`).
 import { strict as assert } from 'node:assert';
@@ -23,7 +24,7 @@ const at = Date.parse('2026-01-02T12:00:00.000Z');
 
 /** What the member sees when it Reads the wait command's output file: numbered lines of exactly what wait.mjs printed. */
 function readOfWaitOutput(text: string, session = SESSION): string {
-  const printed = `${WAIT_STARTED}\n${text}${tail(waitCommand(ZCODE_WAIT, ticketFor(ZCODE_WAIT, SECRET, session), 'http://127.0.0.1:4999'))}`;
+  const printed = `${WAIT_STARTED}\n${text}${tail(waitCommand(ZCODE_WAIT, ticketFor(ZCODE_WAIT, SECRET, session, TEST_HUB_ID), 'http://127.0.0.1:4999'))}`;
   return printed.replace(/\n$/, '').split('\n').map((line, i) => `${i + 1}\t${line}`).join('\n');
 }
 
@@ -158,7 +159,7 @@ test('only a Read of this session\'s wait output carries delivery evidence; type
 
 test('wait tickets are masked in every returned text, while the raw wait output still gives evidence', async t => {
   const { message, page } = await fixture(t);
-  const command = waitCommand(ZCODE_WAIT, ticketFor(ZCODE_WAIT, SECRET, SESSION), 'http://127.0.0.1:4999');
+  const command = waitCommand(ZCODE_WAIT, ticketFor(ZCODE_WAIT, SECRET, SESSION, TEST_HUB_ID), 'http://127.0.0.1:4999');
   const envelope = '[orrery] cluster=Group clusterId=group from=Someone messageId=m1 hop=0 to=all\nsynthetic body';
   message('assistant', [
     tool('Bash', 'w1', { status: 'completed', input: { command, run_in_background: true }, output: `started ${command}` }),
@@ -169,7 +170,7 @@ test('wait tickets are masked in every returned text, while the raw wait output 
   const { items } = await page();
   assert.equal(items.length, 7);
   for (const item of items) assert.ok(!/[0-9a-f]{64}/.test(item.text ?? ''), item.text);
-  assert.ok(items[0]!.text!.includes(`z1.${SESSION}.<hidden> http://127.0.0.1:4999`));
+  assert.ok(items[0]!.text!.includes(`z2.${TEST_HUB_ID}.${SESSION}.<hidden> http://127.0.0.1:4999`));
   assert.deepEqual(items.filter(i => i.kind === 'tool_result').map(i => (i.source as { candidate?: unknown }).candidate),
     [undefined, { envelope }, undefined]);
 });

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer, request, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createServer, type AddressInfo, type Server } from 'node:net';
 import { join } from 'node:path';
@@ -13,10 +13,11 @@ import { createInterface } from 'node:readline';
 import { createClaudeNativeAdapter } from '../src/adapters/claude/native.ts';
 import { REPO_ROOT } from '../src/main.ts';
 import type { BridgePort, Member, NativeDeliverContext } from '../src/core/types.ts';
-import { startTestHub, tempDir, waitFor, type TestHub } from './helpers.ts';
+import { bridgeMac, signBridgeRequest } from '../src/bridge-protocol.ts';
+import { hubSecret, registryEnv, startTestHub, tempDir, waitFor, writeRegistry, type TestHub } from './helpers.ts';
 
 const BRIDGE = join(REPO_ROOT, 'src', 'bridge', 'claude-bridge.ts');
-const HUB_DOWN = 'orrery Hub 未运行';
+const NOT_SENT = /^接入件没有发送请求：未找到活动 Hub/;
 
 // ───────────── fixtures ─────────────
 
@@ -61,34 +62,43 @@ async function deadPort(): Promise<number> {
   return port;
 }
 
-/** An HTTP proxy in front of the Hub that records everything passing through in both directions. */
-async function recordingProxy(target: string) {
-  const t = new URL(target);
+/**
+ * A recording front for the Hub: the bridge's registry names it (its own hubId and claim, the Hub's key). It checks each
+ * request's signature against its own record, records everything in both directions, and forwards the request signed
+ * again for the real Hub (a signature is bound to one address, so a plain proxy would be refused).
+ */
+async function recordingProxy(app: TestHub, registryDir: string) {
+  const key = hubSecret(app.home);
+  const t = new URL(app.url);
   const seen: string[] = [];
-  const server = createHttpServer((req, res) => {
-    seen.push(`${req.method} ${req.url} ${JSON.stringify(req.headers)}`);
-    const up = request({ host: t.hostname, port: t.port, method: req.method, path: req.url, headers: { ...req.headers, host: t.host } }, (ur) => {
+  const badSignatures: string[] = [];
+  let front: { hubId: string; claim: string; url: string };
+  const server = createHttpServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c);
+    const body = Buffer.concat(chunks);
+    seen.push(`${req.method} ${req.url} ${JSON.stringify(req.headers)}`, body.toString());
+    const own = new Map(Object.entries(req.headers).filter(([k]) => k.startsWith('x-orrery-') && k !== 'x-orrery-sig') as [string, string][]);
+    const [, , , ts, nonce, mac] = String(req.headers['x-orrery-sig']).split(' ');
+    if (mac !== bridgeMac(key, front, req.method!, req.url!, own, ts, nonce, body)) badSignatures.push(`${req.method} ${req.url}`);
+    const headers = { ...req.headers, host: t.host, 'x-orrery-sig': signBridgeRequest(key, app.registry, req.method!, req.url!, own, body) };
+    const up = request({ host: t.hostname, port: t.port, method: req.method, path: req.url, headers }, (ur) => {
       res.writeHead(ur.statusCode!, ur.headers);
       res.flushHeaders();
       ur.on('data', (d: Buffer) => { seen.push(d.toString()); res.write(d); });
       ur.on('end', () => res.end());
     });
     up.on('error', () => res.destroy());
-    req.on('data', (d: Buffer) => { seen.push(d.toString()); up.write(d); });
-    req.on('end', () => up.end());
+    up.end(body);
     res.on('close', () => up.destroy());
   });
   await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  front = writeRegistry(registryDir, url, { key, name: 'Recording front' });
   return {
-    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
-    seen,
+    url, seen, badSignatures,
     close: () => { server.closeAllConnections(); return new Promise((ok) => server.close(ok)); },
   };
-}
-
-function writeHubJson(home: string, url: string, secret: string): void {
-  mkdirSync(home, { recursive: true });
-  writeFileSync(join(home, 'hub.json'), JSON.stringify({ url, secret, pid: 0 }));
 }
 
 /** The real bridge as Claude starts it: stdio JSON-RPC. The test process's own CLAUDE_CODE_* never reach it. */
@@ -96,7 +106,7 @@ function spawnBridge(env: Record<string, string>) {
   const base = Object.fromEntries(Object.entries(process.env)
     .filter(([k, v]) => v !== undefined && !/^(CLAUDE_CODE_|CLAUDECODE$|ORRERY_|HTTPS?_PROXY$|NO_PROXY$|NODE_USE_ENV_PROXY$)/i.test(k)));
   const child = spawn(process.execPath, [BRIDGE], {
-    env: { ...base, ORRERY_BRIDGE_RETRY_MS: '100', ...env } as NodeJS.ProcessEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    env: { ...base, ORRERY_REGISTRY: process.env.ORRERY_REGISTRY, ORRERY_BRIDGE_RETRY_MS: '100', ...env } as NodeJS.ProcessEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
   });
   const out: any[] = [];
   let raw = '';
@@ -164,9 +174,8 @@ const deliveryTo = async (app: TestHub, clusterId: string, messageId: string, me
 test('claude bridge: a delivery lands in the inbox auth line first, is acked, and the token never leaves the bridge', async () => {
   const app = await claudeHub();
   const inbox = await fakeInbox();
-  const proxy = await recordingProxy(app.url);
-  const bridgeHome = join(app.dir, 'bridge-home');
-  writeHubJson(bridgeHome, proxy.url, app.secret);
+  const bridgeRegistry = join(app.dir, 'bridge-registry');
+  const proxy = await recordingProxy(app, bridgeRegistry);
   const TOKEN = `inbox-token-${randomBytes(16).toString('hex')}`;
   const logged: string[] = [];
   const consoleOrig = { log: console.log, error: console.error, warn: console.warn, info: console.info };
@@ -174,7 +183,7 @@ test('claude bridge: a delivery lands in the inbox auth line first, is acked, an
     console[k] = (...a: unknown[]) => { logged.push(a.map(String).join(' ')); consoleOrig[k](...a); };
   }
   const bridge = spawnBridge({
-    ORRERY_HOME: bridgeHome, CLAUDE_CODE_SESSION_ID: app.sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: TOKEN,
+    ORRERY_REGISTRY: bridgeRegistry, CLAUDE_CODE_SESSION_ID: app.sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: TOKEN,
   });
   try {
     const { cluster, c, a } = await mixedCluster(app, app.sid);
@@ -229,6 +238,11 @@ test('claude bridge: a delivery lands in the inbox auth line first, is acked, an
     const places = { wire: proxy.seen.join('\n'), events: JSON.stringify(app.events), logs: logged.join('\n'), api, db: db.join(''), home: home.join(''), stderr: bridge.stderr() };
     assert.ok(proxy.seen.some((s) => s.includes('/bridge/ack')) && proxy.seen.some((s) => s.includes('x-orrery-session')), 'the proxy saw the traffic');
     for (const [where, s] of Object.entries(places)) assert.ok(!s.includes(TOKEN), `token found in ${where}`);
+    // Only signatures went to the Hub: no x-orrery-bridge header, and the key itself nowhere on the wire.
+    assert.deepEqual(proxy.badSignatures, [], 'every request was signed for the Hub the registry names');
+    assert.ok(proxy.seen.some((s) => s.includes('"x-orrery-sig"')), 'signed requests');
+    assert.ok(!proxy.seen.some((s) => s.includes('x-orrery-bridge')), 'no plaintext key header');
+    assert.ok(!proxy.seen.join('\n').includes(app.secret), 'the key is not on the wire');
   } finally {
     Object.assign(console, consoleOrig);
     await bridge.stop();
@@ -248,7 +262,7 @@ test('claude bridge: Hub requests never go through an environment proxy (NODE_US
   await new Promise<void>((ok) => proxy.listen(0, '127.0.0.1', ok));
   const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
   const bridge = spawnBridge({
-    ORRERY_HOME: app.home, CLAUDE_CODE_SESSION_ID: app.sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't',
+    ...registryEnv(app), CLAUDE_CODE_SESSION_ID: app.sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't',
     NODE_USE_ENV_PROXY: '1', HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl, NO_PROXY: '',
   });
   try {
@@ -279,10 +293,13 @@ test('claude bridge: Hub requests never go through an environment proxy (NODE_US
 test('claude bridge: Hub down → initialize, tools/list and ping still answer, tools/call says so; same answers as the Hub once it is up', async () => {
   const dir = tempDir();
   const sid = randomUUID();
-  const home = join(dir, 'home');
-  writeHubJson(home, `http://127.0.0.1:${await deadPort()}`, 'f'.repeat(64));   // a stale hub.json: nothing listens
+  const registry = join(dir, 'registry');
+  await (await startTestHub({ registryDir: registry })).close();   // the registry folder as a Hub makes it (private ACL)
+  const stale = `http://127.0.0.1:${await deadPort()}`;
+  writeRegistry(registry, stale, { name: 'Stale' });   // a record whose Hub is gone: nothing listens on its port
+  const HUB_DOWN = new RegExp(`^连不上 Hub「Stale」（${stale}）：`);
   const inbox = await fakeInbox();
-  const bridge = spawnBridge({ ORRERY_HOME: home, CLAUDE_CODE_SESSION_ID: sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
+  const bridge = spawnBridge({ ORRERY_REGISTRY: registry, CLAUDE_CODE_SESSION_ID: sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 'inbox-token-down' });
   let app: Awaited<ReturnType<typeof claudeHub>> | undefined;
   try {
     const down = {
@@ -293,16 +310,19 @@ test('claude bridge: Hub down → initialize, tools/list and ping still answer, 
       ping: (await bridge.rpc('ping')).result,
       other: (await bridge.rpc('resources/list')).error,
     };
-    assert.deepEqual(down.call, { content: [{ type: 'text', text: HUB_DOWN }], isError: true });
+    assert.equal(down.call.isError, true);
+    assert.match(down.call.content[0].text, HUB_DOWN);
     assert.deepEqual(down.ping, {});
-    assert.equal(down.other.message, HUB_DOWN);
+    assert.match(down.other.message, HUB_DOWN);
     assert.ok(['list_agents', 'send_message', 'read_messages', 'skip_unread', 'get_deliveries', 'ack_messages', 'create_task', 'bookmark_message'].every(
       (name) => down.tools.tools.some((t: any) => t.name === name)));
-    // No hub.json at all is the same.
-    writeFileSync(join(home, 'hub.json'), 'not json');
-    assert.deepEqual(await bridge.call('list_agents'), { content: [{ type: 'text', text: HUB_DOWN }], isError: true });
+    // No active record at all: the bridge sends nothing and says so.
+    rmSync(join(registry, 'active.json'));
+    const none = await bridge.call('list_agents');
+    assert.equal(none.isError, true);
+    assert.match(none.content[0].text, NOT_SENT);
 
-    // The Hub comes up (same home: it rewrites hub.json): the bridge connects and relays, with no restart.
+    // The Hub comes up (same registry: it registers as the active Hub): the bridge connects and relays, with no restart.
     app = await claudeHub(dir, sid);
     const { cluster, c } = await mixedCluster(app, sid);
     await waitFor(async () => (await statusOf(app!, c.id)) === 'idle', 'bridge connects once the Hub is up');
@@ -335,7 +355,7 @@ test('claude bridge: reconnects after the Hub restarts on another port, and what
   let app = await claudeHub(dir);
   const { sid } = app;
   const inbox = await fakeInbox();
-  const bridge = spawnBridge({ ORRERY_HOME: app.home, CLAUDE_CODE_SESSION_ID: sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
+  const bridge = spawnBridge({ ...registryEnv(app), CLAUDE_CODE_SESSION_ID: sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
   try {
     const { cluster, c } = await mixedCluster(app, sid);
     await waitFor(async () => (await statusOf(app, c.id)) === 'idle', 'online');
@@ -386,11 +406,11 @@ const connectedLogs = (bridge: ReturnType<typeof spawnBridge>) => bridge.stderr(
 const settle = () => new Promise((ok) => setTimeout(ok, 300));   // a few retry periods (ORRERY_BRIDGE_RETRY_MS=100)
 
 test('claude bridge: tools/list_changed once after the Hub stream comes back, none on the first connect', async () => {
-  const home = join(tempDir(), 'home');
+  const registry = join(tempDir(), 'registry');
   let hub = await fakeStreamHub();
-  writeHubJson(home, hub.url, 'f'.repeat(64));
+  writeRegistry(registry, hub.url);
   const inbox = await fakeInbox();
-  const bridge = spawnBridge({ ORRERY_HOME: home, CLAUDE_CODE_SESSION_ID: randomUUID(), CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
+  const bridge = spawnBridge({ ORRERY_REGISTRY: registry, CLAUDE_CODE_SESSION_ID: randomUUID(), CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
   try {
     await bridge.initialize();
     await waitFor(() => connectedLogs(bridge) === 1, 'first connect');
@@ -400,7 +420,7 @@ test('claude bridge: tools/list_changed once after the Hub stream comes back, no
     await hub.down();
     await settle();
     hub = await fakeStreamHub();
-    writeHubJson(home, hub.url, 'f'.repeat(64));
+    writeRegistry(registry, hub.url);
     await waitFor(() => connectedLogs(bridge) === 2, 'reconnect');
     await settle();
     assert.equal(listChanged(bridge), 1, 'exactly one after the reconnect');
@@ -413,10 +433,10 @@ test('claude bridge: tools/list_changed once after the Hub stream comes back, no
 });
 
 test('claude bridge: tools/list answered from the built-in list while the Hub was down → tools/list_changed on the first connect', async () => {
-  const home = join(tempDir(), 'home');
-  writeHubJson(home, `http://127.0.0.1:${await deadPort()}`, 'f'.repeat(64));
+  const registry = join(tempDir(), 'registry');
+  writeRegistry(registry, `http://127.0.0.1:${await deadPort()}`);
   const inbox = await fakeInbox();
-  const bridge = spawnBridge({ ORRERY_HOME: home, CLAUDE_CODE_SESSION_ID: randomUUID(), CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
+  const bridge = spawnBridge({ ORRERY_REGISTRY: registry, CLAUDE_CODE_SESSION_ID: randomUUID(), CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
   const hub = await fakeStreamHub();
   try {
     await bridge.initialize();
@@ -424,7 +444,7 @@ test('claude bridge: tools/list answered from the built-in list while the Hub wa
     assert.equal(tools.length, 23, 'the built-in list');
     for (const name of ['get_batch', 'manage_batch']) assert.equal(tools.find((tool: any) => tool.name === name)?.inputSchema.type, 'object', name);
     assert.equal(listChanged(bridge), 0);
-    writeHubJson(home, hub.url, 'f'.repeat(64));
+    writeRegistry(registry, hub.url);
     await waitFor(() => connectedLogs(bridge) === 1, 'first connect');
     await settle();
     assert.equal(listChanged(bridge), 1);
@@ -436,7 +456,7 @@ test('claude bridge: tools/list answered from the built-in list while the Hub wa
 });
 
 test('claude bridge: the stream\'s tools-changed (a third-party plugin\'s tools came or went) becomes tools/list_changed', async () => {
-  const home = join(tempDir(), 'home');
+  const registry = join(tempDir(), 'registry');
   const open: import('node:http').ServerResponse[] = [];
   const srv = createHttpServer((req, res) => {
     if (req.method !== 'GET' || !req.url?.startsWith('/bridge/stream')) { res.writeHead(503).end(); return; }
@@ -445,9 +465,9 @@ test('claude bridge: the stream\'s tools-changed (a third-party plugin\'s tools 
     open.push(res);
   });
   await new Promise<void>((ok) => srv.listen(0, '127.0.0.1', ok));
-  writeHubJson(home, `http://127.0.0.1:${(srv.address() as AddressInfo).port}`, 'f'.repeat(64));
+  writeRegistry(registry, `http://127.0.0.1:${(srv.address() as AddressInfo).port}`);
   const inbox = await fakeInbox();
-  const bridge = spawnBridge({ ORRERY_HOME: home, CLAUDE_CODE_SESSION_ID: randomUUID(), CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
+  const bridge = spawnBridge({ ORRERY_REGISTRY: registry, CLAUDE_CODE_SESSION_ID: randomUUID(), CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
   try {
     await bridge.initialize();
     await waitFor(() => open.length === 1, 'connected');
@@ -469,7 +489,7 @@ test('claude bridge: the stream\'s tools-changed (a third-party plugin\'s tools 
 test('claude bridge: an inbox that cannot be reached fails the delivery with the reason; stdin closing exits cleanly', async () => {
   const app = await claudeHub();
   const missing = process.platform === 'win32' ? `\\\\.\\pipe\\orrery-test-missing-${randomUUID()}` : join(app.dir, 'missing.sock');
-  const bridge = spawnBridge({ ORRERY_HOME: app.home, CLAUDE_CODE_SESSION_ID: app.sid, CLAUDE_CODE_MESSAGING_SOCKET: missing, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
+  const bridge = spawnBridge({ ...registryEnv(app), CLAUDE_CODE_SESSION_ID: app.sid, CLAUDE_CODE_MESSAGING_SOCKET: missing, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
   try {
     const { cluster, c } = await mixedCluster(app, app.sid);
     await waitFor(async () => (await statusOf(app, c.id)) === 'idle', 'online');
@@ -488,7 +508,7 @@ test('claude bridge: an inbox that cannot be reached fails the delivery with the
 test('claude bridge: an inbox that hangs up before the message is written is a failed delivery, not ok', async () => {
   const app = await claudeHub();
   const inbox = await fakeInbox({ hangUp: true });
-  const bridge = spawnBridge({ ORRERY_HOME: app.home, CLAUDE_CODE_SESSION_ID: app.sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
+  const bridge = spawnBridge({ ...registryEnv(app), CLAUDE_CODE_SESSION_ID: app.sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
   try {
     const { cluster, c } = await mixedCluster(app, app.sid);
     await waitFor(async () => (await statusOf(app, c.id)) === 'idle', 'online');
@@ -509,7 +529,7 @@ test('claude bridge: an inbox that hangs up before the message is written is a f
 
 test('claude bridge: a 3xx from the Hub is an error and is never followed', async () => {
   const sid = randomUUID();
-  const home = join(tempDir(), 'home');
+  const registry = join(tempDir(), 'registry');
   const listen = async (handler: (req: IncomingMessage, res: ServerResponse) => void) => {
     const srv = createHttpServer(handler);
     await new Promise<void>((ok) => srv.listen(0, '127.0.0.1', ok));
@@ -522,9 +542,9 @@ test('claude bridge: a 3xx from the Hub is an error and is never followed', asyn
     redirected.push(`${req.method} ${req.url}`);
     res.writeHead(307, { location: `${target.url}${req.url}` }).end();
   });
-  writeHubJson(home, hub.url, 'f'.repeat(64));
+  writeRegistry(registry, hub.url);
   const inbox = await fakeInbox();
-  const bridge = spawnBridge({ ORRERY_HOME: home, CLAUDE_CODE_SESSION_ID: sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
+  const bridge = spawnBridge({ ORRERY_REGISTRY: registry, CLAUDE_CODE_SESSION_ID: sid, CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
   try {
     const r = await bridge.call('list_agents');
     assert.equal(r.isError, true);
@@ -544,7 +564,7 @@ test('claude bridge: a 3xx from the Hub is an error and is never followed', asyn
 
 test('claude bridge: without inbox variables it still relays MCP, says so in initialize, and never goes online', async () => {
   const app = await claudeHub();
-  const bridge = spawnBridge({ ORRERY_HOME: app.home, CLAUDE_CODE_SESSION_ID: app.sid });
+  const bridge = spawnBridge({ ...registryEnv(app), CLAUDE_CODE_SESSION_ID: app.sid });
   try {
     const { cluster, c } = await mixedCluster(app, app.sid);
     const init = (await bridge.initialize()).result;
@@ -560,7 +580,7 @@ test('claude bridge: without inbox variables it still relays MCP, says so in ini
     await app.close();
   }
   // And without a session id it cannot speak for anyone.
-  const lost = spawnBridge({ ORRERY_HOME: app.home });
+  const lost = spawnBridge(registryEnv(app));
   try {
     assert.match((await lost.initialize()).result.instructions, /CLAUDE_CODE_SESSION_ID/);
     const r = await lost.call('list_agents');

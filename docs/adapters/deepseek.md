@@ -8,7 +8,7 @@ DeepSeek Harness（下称 DSH）适配器通过仓库内置的独立 Cordis 插�
 
 `plugins/dsh-orrery/` 是一个零第三方 npm 依赖的 ESM bundle（兼容 `engines.dsh: >=0.2.1-rc.2 <0.3.0-0`），由用户自行安装并在 DSH 插件页启用。
 
-1. **发现与共用长连接**：插件每次重连读取 `<ORRERY_HOME 或 ~/.orrery>/hub.json`（只连回环地址，使用独立 `node:http` agent 避免经过外部环境变量代理），建立共用 SSE 连接 `GET /bridge/stream?harness=deepseek`。
+1. **发现与共用长连接**：插件经 `lib/hub-discovery.mjs` 每次请求都读账户的 Hub 登记处（`ORRERY_REGISTRY`，默认 `~/.orrery/registry/`），连活动 Hub 或 `ORRERY_HUB` 钉住的那个，所有请求（含未读提示、轮次结束和活动报告）用 `x-orrery-sig` 签名，不读 `hub.json`（规则见[接入件：找 Hub、签名、报错](../native-mode.md#接入件找-hub签名报错)）。只连 `127.0.0.1`，使用独立 `node:http` agent 避免经过外部环境变量代理，建立共用 SSE 连接 `GET /bridge/stream?harness=deepseek`。
 2. **合批等待与轮次终态回报（`follows: true`）**：
    - DSH 自身对队列中的每条 prompt 各开一轮，不会自动合并。因此插件在收到 `deliver` 并调用 `ctx.sessionController.prompt({ requestId: deliveryId, sessionId, mode: 'queue', ... }, signal)` 前，先监听该会话的 `session/event` 流。
    - 当看到对应 `rpcId === deliveryId` 的轮次启动并在随后的 `turn/end` 中捕获结果时，通过 `POST /bridge/done` 上报明确结果（`completed`、`failed` 或断线/超时 `unknown`）。在这之前，Hub 暂存新消息并在本轮结束时合批下发。
@@ -21,7 +21,7 @@ DeepSeek Harness（下称 DSH）适配器通过仓库内置的独立 Cordis 插�
 详细步骤与注意事项见 [plugins/dsh-orrery/README.md](../../plugins/dsh-orrery/README.md)：
 
 1. 在 DSH 的 **Plugins → Add plugin** 填写本地仓库 `<orrery>/plugins/dsh-orrery` 的绝对路径并确认启用；或退出应用后运行 `dsh plugin --profile desktop add link:<绝对路径>`。
-2. 更新 orrery 后，请在 DSH 插件页停用再重新启用 `dsh-orrery`（或重启 DSH）使新插件代码加载生效。停用期间 Hub 立即显示该会话离线，消息留群不补发。
+2. 更新 orrery 后，请在 DSH 插件页停用再重新启用 `dsh-orrery`（或重启 DSH）使新插件代码加载生效（按上一步的路径或 `link:` 安装是路径引用，不用重装；单独拷走再装的要先重新拷一份）。停用期间 Hub 立即显示该会话离线，消息留群不补发。
 
 ## 对话枚举、活动与 Token
 
@@ -30,7 +30,7 @@ DeepSeek Harness（下称 DSH）适配器通过仓库内置的独立 Cordis 插�
 
 ## 安全与实际使用
 
-- **权限提示**：入队消息遵循用户自己在 DSH 设置的权限预设，自动放行档位下外部 `@` 会直接触发执行。插件绝不读 `~/.dsh/.credentials.yaml`，不改会话设定，不记录桥密钥。
+- **权限提示**：入队消息遵循用户自己在 DSH 设置的权限预设，自动放行档位下外部 `@` 会直接触发执行。插件绝不读 `~/.dsh/.credentials.yaml`，不改会话设定，不记录接入密钥，也不把密钥原文发给 Hub。
 - **使用状态**：真实应用已验证收信、MCP 发言、忙时合批，以及关闭主窗口退居托盘后保持在线。
 - **活动观察**：已通过最小真机验收，覆盖真实收发、轮次结束与心跳展示。
 - **Token 口径**：逐轮数值来自宿主上报；缓存和多工具的细分核算与基本收发验证分开记录。

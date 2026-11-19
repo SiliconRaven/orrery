@@ -672,7 +672,7 @@ test('tool versions: a Claude conversation offered plugin tools still matches th
   const app = await startTestHub({ dir: setup({ one: [{ name: 'Cla', session: 'claude-session', harness: 'claude' }] }, [{ clusterIds: ['one'] }]) });
   const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE_CODE_|CLAUDECODE$|ORRERY_|HTTPS?_PROXY$|NO_PROXY$|NODE_USE_ENV_PROXY$)/i.test(k)));
   const bridge = spawn(process.execPath, [join(REPO_ROOT, 'src', 'bridge', 'claude-bridge.ts')], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'],
-    env: { ...base, ORRERY_HOME: app.home, CLAUDE_CODE_SESSION_ID: 'claude-session' } as NodeJS.ProcessEnv });
+    env: { ...base, ORRERY_REGISTRY: app.registryDir, CLAUDE_CODE_SESSION_ID: 'claude-session' } as NodeJS.ProcessEnv });
   const answers = new Map<number, any>();
   createInterface({ input: bridge.stdout }).on('line', (line) => { try { const m = JSON.parse(line); if (typeof m.id === 'number') answers.set(m.id, m); } catch { /* not ours */ } });
   let next = 1;

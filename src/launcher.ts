@@ -10,6 +10,7 @@ import { Agent, request } from 'node:http';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { API_TOKEN_RE, REPO_ROOT, resolveConfig, type Config, type Env } from './config.ts';
+import { registeredHubOnPort } from './hub-registry.ts';
 
 export const START_TIMEOUT_MS = 20_000;
 const HEALTH_TIMEOUT_MS = 2_000;
@@ -33,6 +34,7 @@ export interface SpawnedHub { pid: number | undefined; exited(): boolean }
 export interface LaunchDeps {
   config: Config;
   health(port: number): Promise<HealthResult>;
+  registeredHub?(port: number): Promise<{ name: string; home: string } | undefined>;
   spawnHub(logFile: string): SpawnedHub;
   openBrowser(url: string): Promise<void>;
   showError(message: string): Promise<void>;
@@ -79,6 +81,14 @@ export function getHealth(port: number, token?: string, timeoutMs = HEALTH_TIMEO
     req.end();
   });
 }
+
+/**
+ * The Hub's own answer between taking the port and being ready (main.ts: 503 "hub is starting"). Registering in the
+ * Hub registry (with its Windows ACL checks) makes that stretch last a second or more, so a launcher whose Hub lost the
+ * port race meets it: it is the winning Hub starting, not another program on the port.
+ */
+const isStarting = (r: HealthResult) => r.kind === 'answer' && r.status === 503
+  && (r.body as { error?: unknown } | undefined)?.error === 'hub is starting';
 
 function asHealth(r: HealthResult): Health | null {
   if (r.kind !== 'answer' || r.status !== 200) return null;
@@ -149,6 +159,10 @@ export async function launch(deps: LaunchDeps): Promise<number> {
     + '启动器没有启动新的 Hub，也没有结束它。';
   const portInUse = `端口 ${config.port} 被别的程序占用。启动器没有结束它，也没有换端口或数据库。`
     + '关掉占用这个端口的程序，或用环境变量 ORRERY_PORT 换一个端口后再试。';
+  const occupied = async () => {
+    const hub = await deps.registeredHub?.(config.port);
+    return hub ? `另一个 orrery Hub「${hub.name}」（${hub.home}）正在使用端口 ${config.port}。请先退出该 Hub，或为这个实例指定一个不同的 ORRERY_PORT。` : portInUse;
+  };
   const withTail = (text: string, tail: string) => (tail ? `${text}\n\n日志最后几行：\n${tail}` : text);
 
   if (config.port === 0) return fail('ORRERY_PORT 为 0（随机端口）时不能用启动器：请设一个固定端口，或不设（默认 4317）。');
@@ -186,8 +200,19 @@ export async function launch(deps: LaunchDeps): Promise<number> {
       await deps.sleep(POLL_MS);
     }
     if (!child.exited()) break;
-    // It exited early: see who holds the configured port.
-    const r = await deps.health(config.port);
+    // It exited early: see who holds the configured port. A Hub still starting there (503 "hub is starting", or no
+    // answer at all while it is busy registering) is waited for within the deadline, never started next to; once it
+    // answers 200 the usual same-data rules below apply.
+    let r = await deps.health(config.port);
+    while ((isStarting(r) || r.kind === 'silent') && deps.now() < deadline) {
+      await deps.sleep(POLL_MS);
+      r = await deps.health(config.port);
+    }
+    if (isStarting(r)) return fail(`端口 ${config.port} 上的 orrery Hub ${START_TIMEOUT_MS / 1000} 秒内没有启动完，请稍后再试。启动器没有启动新的 Hub，也没有结束它。`);
+    if (r.kind === 'silent') {
+      return fail(`端口 ${config.port} 上的程序 ${START_TIMEOUT_MS / 1000} 秒内没有回答（可能是还没启动完的 orrery Hub，也可能是别的程序）。`
+        + '启动器没有启动新的 Hub，也没有结束它。');
+    }
     const h = asHealth(r);
     let retry = false;
     if (h) {
@@ -197,7 +222,7 @@ export async function launch(deps: LaunchDeps): Promise<number> {
       await deps.sleep(POLL_MS);
       retry = true;
     } else if (r.kind !== 'refused') {
-      return fail(portInUse);
+      return fail(await occupied());
     } else {
       const tail = logTail(logFile, from);
       // The port was held when this Hub tried it and is free now: the holder (a Hub that was exiting) just went.
@@ -221,7 +246,7 @@ export async function launch(deps: LaunchDeps): Promise<number> {
  * relative values (resolved against the launcher's working directory) mean the same in the Hub (cwd: REPO_ROOT).
  */
 export function childEnv(env: Env, config: Config): Env {
-  return { ...env, ORRERY_HOME: config.home, ORRERY_DB: config.dbPath, ORRERY_PORT: String(config.port) };
+  return { ...env, ORRERY_HOME: config.home, ORRERY_DB: config.dbPath, ORRERY_REGISTRY: config.registryDir, ORRERY_PORT: String(config.port) };
 }
 
 /** Starts `node src/main.ts` detached, without a window, output appended to logFile. */
@@ -337,6 +362,7 @@ export function defaultDeps(config: Config, env: Env): LaunchDeps {
   return {
     config,
     health: (port) => getHealth(port, apiTokenOf(config)),   // read each time: the first Hub start makes the file
+    registeredHub: (port) => registeredHubOnPort(config.registryDir, port),
     spawnHub: hubSpawner(env, config),
     openBrowser: (url) => openInBrowser(url),
     showError: (message) => showErrorDialog(message),

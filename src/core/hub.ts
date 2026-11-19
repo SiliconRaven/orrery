@@ -101,6 +101,8 @@ export const DEFAULT_LIMITS: Limits = {
 
 export interface HubOptions {
   store: Store;
+  bridgeHubId?: string;    // stable id of this data directory, used to scope wait tickets
+  secondary?: boolean;
   nativeAdapters: Record<string, NativeAdapter>;    // by harness
   limits?: Partial<Limits>;
   files?: FileStoreOptions; // where attachments are kept (docs/files.md); absent: no uploads or attachments
@@ -306,6 +308,7 @@ type RecordEvent = (clusterId: string | null, memberId: string | null, kind: Hub
 
 const HOUR_MS = 3_600_000;
 const OFFLINE_ERROR = '成员离线，未投递';
+const SECONDARY_OFFLINE_ERROR = '第二实例：不投递';
 /** The reason recorded on deliveries superseded when their member was hidden (page and user only: members never see it). */
 export const HIDDEN_DELIVERY_REASON = '成员被设为隐身，投递已取消';
 export const OPEN_STATUS_LABEL: Record<string, string> = { pending: '待开工', working: '执行中', review: '待验收' };
@@ -473,6 +476,9 @@ export class Hub {
   private started = false;
   private closed = false;
   private paused = false;
+  readonly bridgeHubId: string;
+  private readonly secondary: boolean;
+  private nativeDelivery: boolean;
   private readonly lastHintCount = new Map<string, string>();   // memberId -> unread breakdown signature last hinted; lost on restart
   // The effective limit settings (docs/hop-limit.md); each changed only after its store write.
   private readonly limitSettings: Record<LimitSetting, { limit: Limit; source: LimitSource }>;
@@ -587,6 +593,9 @@ export class Hub {
 
   constructor(opts: HubOptions) {
     this.store = opts.store;
+    this.bridgeHubId = opts.bridgeHubId ?? randomUUID();
+    this.secondary = opts.secondary ?? false;
+    this.nativeDelivery = !this.secondary || this.store.getSavedNumber('secondary_native_delivery') === 1;
     this.collaboration = new Collaboration(opts.store, (event) => {
       this.notify(event);
       const payload = event.payload as { action?: string; paused?: boolean; suggested?: boolean };
@@ -1037,6 +1046,7 @@ export class Hub {
 
   private withStatus(m: StoredMember, starting = false): Member {
     if (m.removedAt) return { ...m, status: 'offline' };
+    if (!this.nativeDelivery) return { ...m, status: 'offline', deliveryDisabled: 'secondary' };
     const run = this.running.get(m.id);
     const longWaiting = this.store.countWarnedQueued(m.id) + (run?.waiting && run.queueWarned ? run.deliveries.length : 0);
     const waiting = longWaiting ? { longWaiting } : {};
@@ -1192,6 +1202,7 @@ export class Hub {
    */
   private connectionReport(m: StoredMember): { state: 'online' | 'offline'; basis: string } {
     if (m.removedAt) return { state: 'offline', basis: '已移出集群' };
+    if (!this.nativeDelivery) return { state: 'offline', basis: SECONDARY_OFFLINE_ERROR };
     const a = own(this.nativeAdapters, m.harness);
     if (!a) return { state: 'offline', basis: 'Hub 没有这个 harness 的适配器' };
     return { state: a.isOnline(m.workerSessionId, this.bridge) ? 'online' : 'offline',
@@ -2302,6 +2313,7 @@ export class Hub {
 
   /** Asks now; an adapter that cannot say (a failed check) counts as not confirmed. Never starts the app. */
   private async confirmedOnline(member: StoredMember): Promise<boolean> {
+    if (!this.nativeDelivery) return false;
     const native = own(this.nativeAdapters, member.harness);
     if (!native) return false;
     if (native.confirmOnline) return native.confirmOnline(member.workerSessionId).catch(() => false);
@@ -3136,6 +3148,7 @@ export class Hub {
   private decideOnline(d: Delivery, pending: Delivery[]): Delivery {
     const member = this.store.getMember(d.memberId);
     if (!this.started || !member) return d;
+    if (!this.nativeDelivery) return this.store.markOffline(d.id, SECONDARY_OFFLINE_ERROR);
     const native = own(this.nativeAdapters, member.harness);
     if (native?.confirmOnline) {
       pending.push(d);
@@ -3432,6 +3445,19 @@ export class Hub {
     if (!paused) this.scheduleAll();
   }
 
+  nativeDeliveryEnabled(): boolean {
+    return this.nativeDelivery;
+  }
+
+  setSecondaryNativeDelivery(enabled: boolean): void {
+    if (!this.secondary) throw new Error('Only a secondary Hub can change this setting');
+    if (this.nativeDelivery === enabled) return;
+    this.store.saveNumber('secondary_native_delivery', enabled ? 1 : 0);
+    this.nativeDelivery = enabled;
+    for (const member of this.store.listMembers()) this.emitMember(member);
+    this.scheduleAll();
+  }
+
   // ---- scheduling ----
 
   private scheduleAll(): void {
@@ -3461,6 +3487,10 @@ export class Hub {
     if (!this.started || this.closed) return;
     const member = this.store.getMember(memberId);
     if (!member) return;
+    if (!this.nativeDelivery) {
+      this.dropOffline(member, this.store.queued(memberId).map((q) => q.id), SECONDARY_OFFLINE_ERROR);
+      return;
+    }
     const native = own(this.nativeAdapters, member.harness);
     if (!confirmed && !native?.isOnline(member.workerSessionId, this.bridge)) {
       if (native?.confirmOnline) this.confirmQueued(member, native);
@@ -3788,7 +3818,7 @@ export class Hub {
   }
 
   /** Ends those of `ids` that are still queued 'offline' (terminal; the messages stay unread for the member). */
-  private dropOffline(member: StoredMember, ids: string[]): void {
+  private dropOffline(member: StoredMember, ids: string[], reason = OFFLINE_ERROR): void {
     const queued = new Set(this.store.queued(member.id).map((q) => q.id));
     let dropped = false;
     const notices: (() => void)[] = [];
@@ -3796,7 +3826,7 @@ export class Hub {
       for (const id of ids) {
         if (queued.has(id)) {
           dropped = true;
-          const delivery = this.store.markOffline(id, OFFLINE_ERROR);
+          const delivery = this.store.markOffline(id, reason);
           this.pendingSenderNotices.delete(delivery.messageId);
           const event = record(member.clusterId, member.id, 'delivery', { delivery });
           const notice = this.deliveryNotification(event, delivery); if (notice) notices.push(notice);
@@ -3820,6 +3850,10 @@ export class Hub {
 
   /** One native delivery: 'accepted' / 'completed' → done, 'offline' → offline (never retried), a throw → failed. */
   private async deliverNative(member: StoredMember, adapter: NativeAdapter, run: Running, input: string): Promise<void> {
+    if (!this.nativeDelivery) {
+      this.finish(member, run, 'offline', SECONDARY_OFFLINE_ERROR);
+      return;
+    }
     let state: 'done' | 'failed' | 'offline';
     let error: string | null = null;
     let outcome: DeliveryResult | null = null;
@@ -3903,7 +3937,7 @@ export class Hub {
     const notices: (() => void)[] = [];
     this.atomically((record) => {
       for (const d of run.deliveries) {
-        const delivery = state === 'offline' ? this.store.markOffline(d.id, OFFLINE_ERROR) : this.store.setDeliveryState(d.id, state, error, outcome);
+        const delivery = state === 'offline' ? this.store.markOffline(d.id, error ?? OFFLINE_ERROR) : this.store.setDeliveryState(d.id, state, error, outcome);
         const event = record(member.clusterId, member.id, 'delivery', { delivery });
         if (state === 'failed' || state === 'offline') {
           const notice = this.deliveryNotification(event, delivery); if (notice) notices.push(notice);

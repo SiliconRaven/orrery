@@ -3485,16 +3485,100 @@ async function confirmLanguageReload() {
   });
 }
 const settingsFrame = initSettings(settingsDialog, undefined, { beforeLanguageChange: confirmLanguageReload });
+let bridgeSettingsRevision = 0;   // ignore responses after this dialog was closed or reopened
+let bridgeSettingsState;
+
+function drawBridgeSettings(state) {
+  bridgeSettingsState = state;
+  $('bridge-settings').hidden = false;
+  $('bridge-allow-legacy').checked = state.allowLegacy;
+  $('bridge-native-delivery').checked = state.nativeDelivery;
+  $('bridge-secondary-setting').hidden = state.role !== 'secondary';
+  $('bridge-key-migrated').hidden = !state.keyMigrated;
+  $('bridge-hub-role').textContent = t(state.role === 'active' ? '活动 Hub'
+    : state.nativeDelivery ? '第二实例，已允许投递' : '第二实例：不投递');
+}
+
+function hideBridgeKey() {
+  $('bridge-key-text').textContent = '';
+  $('bridge-key-value').hidden = true;
+  $('bridge-reveal-key').setAttribute('aria-expanded', 'false');
+  $('bridge-reveal-key').textContent = t('显示接入密钥');
+}
+
+async function loadBridgeSettings() {
+  const revision = ++bridgeSettingsRevision;
+  $('bridge-settings').hidden = true;
+  hideBridgeKey();
+  showError('bridge-settings-error', null);
+  try {
+    const state = await api('GET', '/api/bridge-settings');
+    if (revision === bridgeSettingsRevision) drawBridgeSettings(state);
+  } catch { /* an old Hub has no bridge settings */ }
+}
+
+async function saveBridgeSettings(input, data, revision) {
+  input.disabled = true;
+  showError('bridge-settings-error', null);
+  try {
+    const state = await api('PATCH', '/api/bridge-settings', data);
+    if (revision === bridgeSettingsRevision) drawBridgeSettings(state);
+  } catch (e) {
+    if (revision === bridgeSettingsRevision) {
+      drawBridgeSettings(bridgeSettingsState);
+      showError('bridge-settings-error', e.message);
+    }
+  } finally { input.disabled = false; }
+}
+
+$('bridge-allow-legacy').addEventListener('change', (event) => {
+  const input = event.currentTarget;
+  void saveBridgeSettings(input, { allowLegacy: input.checked }, bridgeSettingsRevision);
+});
+$('bridge-native-delivery').addEventListener('change', async (event) => {
+  const input = event.currentTarget;
+  const nativeDelivery = input.checked;
+  const revision = bridgeSettingsRevision;
+  if (nativeDelivery && !await confirmDialog({
+    title: t('允许第二实例投递？'),
+    message: t('请确认同一个原生对话只绑定在一个正在投递的 Hub 上。'),
+    confirmText: t('允许投递'),
+  })) {
+    if (revision === bridgeSettingsRevision) drawBridgeSettings(bridgeSettingsState);
+    return;
+  }
+  if (revision === bridgeSettingsRevision) void saveBridgeSettings(input, nativeDelivery ? { nativeDelivery, confirmed: true } : { nativeDelivery }, revision);
+});
+$('bridge-reveal-key').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  if (!$('bridge-key-value').hidden) return hideBridgeKey();
+  const revision = bridgeSettingsRevision;
+  button.disabled = true;
+  showError('bridge-settings-error', null);
+  try {
+    const { key } = await api('POST', '/api/bridge-settings/reveal', {});
+    if (revision !== bridgeSettingsRevision) return;
+    $('bridge-key-text').textContent = key;
+    $('bridge-key-value').hidden = false;
+    button.setAttribute('aria-expanded', 'true');
+    button.textContent = t('隐藏接入密钥');
+  } catch (e) {
+    if (revision === bridgeSettingsRevision) showError('bridge-settings-error', e.message);
+  } finally { button.disabled = false; }
+});
 $('open-settings').addEventListener('click', () => {
   render();
   settingsFrame.opened();
   settingsDialog.showModal();
+  void loadBridgeSettings();
   pluginSettings.load();
   disposeInstallPanel();
   installPanel = mountPluginInstall($('plugin-install-settings'), { api: featureApi, onInstalled: () => pluginSettings.load() });
 });
 $('settings-close').addEventListener('click', () => settingsDialog.close());
 settingsDialog.addEventListener('close', () => {
+  ++bridgeSettingsRevision;
+  hideBridgeKey();
   disposeInstallPanel();
   $('open-settings').focus();
 });

@@ -140,7 +140,8 @@ test('tempDir: a test process removes its directories when it exits, a failing o
   assert.deepEqual(readdirSync(root), [], 'nothing left after a failing run');
 
   assert.equal(runTiny(root, withWrite + body, { [KEEP_ENV]: '1' }), 0);
-  assert.equal(readdirSync(root).filter((name) => name.startsWith('orrery-test-')).length, 3, 'kept with the opt-out');
+  // Four: the two tempDir() calls, startTestHub's directory, and the private registry helpers.ts makes for the process.
+  assert.equal(readdirSync(root).filter((name) => name.startsWith('orrery-test-')).length, 4, 'kept with the opt-out');
 });
 
 /** A fake temp root with old and fresh test directories (one with extra hyphens), another prefix and a lock file. */
