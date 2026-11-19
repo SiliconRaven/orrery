@@ -151,6 +151,8 @@ export interface MemberTaskFacts {
 export interface TaskView {
   /** Every task of the cluster, in any state. */
   all(clusterId: string): Task[];
+  /** Whether saved group task permissions still reference a role. Also consulted while Tasks is disabled. */
+  groupPermissionsUseRole?(clusterId: string, roleId: string): boolean;
   task(clusterId: string, taskId: string): Task | null;
   resolveRef?(clusterId: string, ref: string): string;
   /** The questions of a task's unresolved attention items. */

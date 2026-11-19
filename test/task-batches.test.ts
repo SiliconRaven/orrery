@@ -288,13 +288,14 @@ test('takeover moves a task out of its batch', (t) => {
 test('migration: a step-5 database gets the batch table; old tasks stay outside any batch', () => {
   const path = join(tempDir(), 'batches.db');
   let store = new Store(path, new PluginHost(officialPlugins));
-  store.db.exec(`DROP INDEX collaboration_tasks_batch; DROP TABLE task_batches; UPDATE plugin_migrations SET version = 5 WHERE plugin_id = 'tasks';`);
+  store.db.exec(`DROP INDEX collaboration_tasks_batch; DROP TABLE task_batches; DROP TABLE task_cluster_permissions;
+    UPDATE plugin_migrations SET version = 5 WHERE plugin_id = 'tasks';`);
   store.close();
   store = new Store(path, new PluginHost(officialPlugins));
   try {
-    assert.equal(MIGRATIONS.length, 7);
     assert.equal((store.db.prepare("SELECT version FROM plugin_migrations WHERE plugin_id = 'tasks'").get() as { version: number }).version, MIGRATIONS.length);
     assert.equal((store.db.prepare('SELECT COUNT(*) AS n FROM task_batches').get() as { n: number }).n, 0);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM task_cluster_permissions').get()!.n, 0);
     store.transaction(() => store.db.exec(MIGRATIONS[5]));   // running it again is harmless
   } finally { store.close(); }
 });

@@ -41,6 +41,12 @@
 | `POST /api/clusters/:id/deliveries/:deliveryId/resend`、`.../handoff` | 用户从投递异常重发或转交新会话 |
 | `GET /api/clusters/:id/deliveries/:deliveryId/timeline`、`.../messages/:messageId/delivery-timelines` | 查看单条或整条消息的投递时间线诊断 |
 
+### 群级任务权限
+
+群级任务权限由 `GET /api/clusters/:id/workspace` 的 `taskPermissions` 返回。仅用户可向 `POST /api/clusters/:id/collaboration` 提交 `action: "tasks.permissions"`，并给出 `taskPermissions: {createRoleIds, executeRoleIds, reviewRoleIds}` 的完整三项。角色 ID 必须属于本群，空数组表示该项对成员开放。成员可用 `list_tasks` 的 `include: ["taskPermissions"]` 读取。
+
+`coordinator.set` 的可选 `taskPlanningRoleBypass: true` 由用户在协调员授权中设置。该值只豁免建任务时的群级角色检查，仍须有 `permissions.taskPlanning`。当前协调员的既有授权不因升级改变。资格不符返回 `ROLE_REQUIRED`，消息会指出具体的群级项和可满足它的角色。
+
 ## Bridge 协作端点
 
 - **`POST /bridge/ship-verify` 与 `POST /bridge/ship-result`**：由 `scripts/ship.ts` 调用，**通过请求体中的签名 `body.ticket` 自行鉴权**（不要 `x-orrery-bridge`；票据不对返 `403`，状态冲突返 `409`）：

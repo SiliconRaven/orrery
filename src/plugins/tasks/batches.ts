@@ -9,6 +9,7 @@ import type { Store } from '../../core/store.ts';
 import type { HubEvent } from '../../core/types.ts';
 import { refuseHidden } from './actions.ts';
 import { approvedResult, eligible, fail, memberName, missingRoleNames, participantKeys, resolveTaskRef, taskDependencyEvaluation, taskOf } from './model.ts';
+import { requireTaskPermission } from './permissions.ts';
 import {
   batchTaskRows, collaborationRecord, collaborationRecords, nextBatchNumber, saveCollaborationRecord, saveCollaborationTask, saveTaskBatch,
   taskBatch, taskBatchIdByNumber, taskBatches, type TaskBatch,
@@ -197,6 +198,7 @@ export function checkJoin(store: Store, batch: TaskBatch, task: Task): void {
     if (task.assignedMemberId === id || participantKeys(collaborationRecords<Assignment>(store, task.id, 'assignment')).includes(actorKey(member!))) {
       fail('REVIEW_NOT_INDEPENDENT', `the batch reviewer ${memberName(store, id)} works on this task, so it cannot join the batch`);
     }
+    requireTaskPermission(store, batch.clusterId, id, 'reviewRoleIds');
     if (!eligible(store, batch.clusterId, id, task.reviewRoleIds)) {
       fail('ROLE_REQUIRED', `the batch reviewer ${memberName(store, id)} lacks roles: ${missingRoleNames(store, batch.clusterId, id, task.reviewRoleIds).join(', ')}`);
     }
@@ -216,6 +218,7 @@ function batchReviewer(ctx: PluginActionContext, value: unknown): TaskBatch['rev
   refuseHidden(store, clusterId, actor, actorId, member.id);
   const policy = store.coordinator?.policy(clusterId);
   if (policy?.enabled && policy.memberId === member.id) fail('FORBIDDEN', `${member.name} is the coordinator and cannot review; name the user or another member`);
+  requireTaskPermission(store, clusterId, member.id, 'reviewRoleIds');
   return { kind: 'member', memberId: member.id };
 }
 

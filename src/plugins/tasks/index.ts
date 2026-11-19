@@ -11,6 +11,7 @@ import { memberTasks } from './handover.ts';
 import { heldBrief } from './hidden.ts';
 import { LABEL_ACTIONS, libraryView, runLabelAction, selectDefaultGroups } from './labels.ts';
 import { allTasks, resolveTaskRef } from './model.ts';
+import { groupPermissionsUseRole, setTaskPermissions } from './permissions.ts';
 import { taskDetail, taskRefs, workspace } from './queries.ts';
 import { shipRoute, taskRoutes } from './routes.ts';
 import { TasksService } from './service.ts';
@@ -48,7 +49,8 @@ export const tasks: OfficialPlugin = {
 
 协调员插件依赖它：要先关闭协调员，才能关闭任务系统。`,
   migrations: MIGRATIONS,
-  actions: { ...entries(runTaskAction), ...labelActions, 'tasks.settings': runSettingsAction, ...batchEntries(runBatchAction) },
+  actions: { ...entries(runTaskAction), ...labelActions, 'tasks.settings': runSettingsAction, 'tasks.permissions': setTaskPermissions,
+    ...batchEntries(runBatchAction) },
   prepare: { 'task.submit': prepareSubmit },
   managementActions: ['task.create', 'task.edit', 'task.assign', 'task.nominate', 'task.merge', 'task.cancel', 'task.reopen', 'task.handoff', 'task.takeover',
     'task.attention', 'task.resolve_attention', 'task.summary', 'message.link', 'batch.create', 'batch.add', 'batch.remove', 'batch.cancel', 'batch.merge'],
@@ -69,6 +71,7 @@ export const tasks: OfficialPlugin = {
   eventSource: taskEventSource,
   taskView: (store: Store) => ({
     all: (clusterId): Task[] => [...allTasks(store, clusterId)],
+    groupPermissionsUseRole: (clusterId, roleId) => groupPermissionsUseRole(store, clusterId, roleId),
     task: (clusterId, taskId) => collaborationTask(store, clusterId, taskId),
     resolveRef: (clusterId, ref) => resolveTaskRef(store, clusterId, ref),
     unresolvedQuestions: (taskId) => collaborationRecords<{ question: string; resolvedAt: string | null }>(store, taskId, 'attention')

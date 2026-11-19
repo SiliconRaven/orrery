@@ -46,6 +46,8 @@ export const MIGRATIONS = [
      WHERE json_extract(data_json, '$.batchId') IS NOT NULL;`,
   // Clean up watches left by earlier removals. Core schema v30 runs the normal memberRemoved hook for its own removals.
   `DELETE FROM task_watches WHERE member_id IN (SELECT id FROM members WHERE removed_at IS NOT NULL);`,
+  `CREATE TABLE IF NOT EXISTS task_cluster_permissions (cluster_id TEXT PRIMARY KEY REFERENCES clusters(id),
+     data_json TEXT NOT NULL);`,
 ];
 
 /** A review batch (docs/collaboration.md「验收批次」), stored as JSON in task_batches. */
@@ -319,7 +321,7 @@ export function purgeClusterTasks(store: Store, clusterId: string): void {
   store.db.prepare(`DELETE FROM collaboration_links WHERE task_id IN (${tasks}) OR message_id IN (SELECT id FROM messages WHERE cluster_id = ?)`)
     .run(clusterId, clusterId);
   store.db.prepare(`DELETE FROM collaboration_records WHERE task_id IN (${tasks})`).run(clusterId);
-  for (const table of ['collaboration_tasks', 'merge_windows', 'task_counters', 'cluster_label_groups', 'task_cluster_settings', 'task_batches']) {
+  for (const table of ['collaboration_tasks', 'merge_windows', 'task_counters', 'cluster_label_groups', 'task_cluster_settings', 'task_cluster_permissions', 'task_batches']) {
     store.db.prepare(`DELETE FROM ${table} WHERE cluster_id = ?`).run(clusterId);
   }
 }

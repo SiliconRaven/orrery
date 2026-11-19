@@ -19,6 +19,7 @@ import { batchLabel, batchSnapshot, batchTransitions, checkJoin, refuseEarlyRevi
 import { decideBranchLink } from './branch-link.ts';
 import { announceLibrary, applyTaskLabels } from './labels.ts';
 import { noticeBody } from './notices.ts';
+import { allowsTaskRoles, requireTaskPermission, taskPermissions } from './permissions.ts';
 import { mergedOnTarget, shipRunner } from './ship.ts';
 import { authoriseSelfReview, selfReviewBound, selfReviewHolder, takeoverRecords } from './takeover.ts';
 import { runWatchAction, takeWatches, taskEnd, watchNoticeBody, type TaskEnd } from './watches.ts';
@@ -243,6 +244,9 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
   const reviewer = (value: unknown) => reviewerOf(collaboration, clusterId, value, (id) => refuseHidden(store, clusterId, actor, actorId, id));
   const isEligible = (id: string, roles: string[]) => eligible(store, clusterId, id, roles);
   const missing = (id: string, roles: string[]) => missingRoleNames(store, clusterId, id, roles).join(', ');
+  const permissions = taskPermissions(store, clusterId);
+  const requireGroupRole = (id: string, field: Parameters<typeof requireTaskPermission>[3]) =>
+    requireTaskPermission(store, clusterId, id, field, permissions);
   const records = <T>(kind: string) => collaborationRecords<T>(store, task!.id, kind);
   const save = (kind: string, record: { id: string }) => saveCollaborationRecord(store, task!.id, kind, record);
   const newAssignment = (): Assignment => ({ id: randomUUID(), taskId: task!.id, memberId: actorId, actorKey: actorKey(member(actorId)),
@@ -293,6 +297,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
   const checkExecutor = (id: string) => {
     refuseHidden(store, clusterId, actor, actorId, id);
     refuseCoordinator(store, clusterId, id);
+    requireGroupRole(id, 'executeRoleIds');
     if (!isEligible(id, task!.executeRoleIds)) fail('ROLE_REQUIRED', `${memberName(store, id)} lacks roles: ${missing(id, task!.executeRoleIds)}`);
     if (task!.reviewer.kind === 'member' && task!.reviewer.memberId === id) {
       fail('REVIEW_NOT_INDEPENDENT', `${memberName(store, id)} is the task reviewer, so they cannot execute it; for the reviewer to do the work, use task_action takeover instead (the reviewer becomes the executor and you choose who reviews after it)`);
@@ -337,6 +342,11 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
   let leftBatch: string | undefined;
   if (action === 'task.create') {
     management('taskPlanning', true);
+    const coordinator = store.coordinator?.policy(clusterId);
+    const coordinatorBypass = coordinator?.enabled && coordinator.memberId === actorId && coordinator.taskPlanningRoleBypass === true;
+    if (actor.kind === 'member' && !coordinatorBypass) {
+      requireGroupRole(actorId, 'createRoleIds');
+    }
     if (command.reviewer !== undefined || command.reviewRoleIds !== undefined) management('reviewerManagement', true);
     if (command.memberId !== undefined) management('assignment', true);
     const id = randomUUID();
@@ -375,8 +385,11 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
         saveTaskBatch(store, batch);
       }
     }
-    if (task.reviewer.kind === 'member' && !isEligible(task.reviewer.memberId, task.reviewRoleIds)) {
-      return fail('ROLE_REQUIRED', `reviewer ${memberName(store, task.reviewer.memberId)} lacks roles: ${missing(task.reviewer.memberId, task.reviewRoleIds)}`);
+    if (task.reviewer.kind === 'member') {
+      if (!task.batchId) requireGroupRole(task.reviewer.memberId, 'reviewRoleIds');
+      if (!isEligible(task.reviewer.memberId, task.reviewRoleIds)) {
+        return fail('ROLE_REQUIRED', `reviewer ${memberName(store, task.reviewer.memberId)} lacks roles: ${missing(task.reviewer.memberId, task.reviewRoleIds)}`);
+      }
     }
     if (task.requiresApproval) { task.proposalState = 'proposed'; approvalRequired = true; }
     if (command.memberId !== undefined) {
@@ -384,8 +397,8 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       if (task.assignedMemberId) { checkExecutor(task.assignedMemberId); recipients.add(task.assignedMemberId); if (waitsOnDependencies()) infoOnly.add(task.assignedMemberId); }
     } else {
       // Nobody named: the creator does it when they can.
-      const policy = store.coordinator?.policy(clusterId);
-      if (actor.kind === 'member' && !(policy?.enabled && policy.memberId === actorId) && isEligible(actorId, task.executeRoleIds)
+      if (actor.kind === 'member' && !(coordinator?.enabled && coordinator.memberId === actorId) && isEligible(actorId, task.executeRoleIds)
+        && allowsTaskRoles(store, clusterId, actorId, permissions.executeRoleIds)
         && !(task.reviewer.kind === 'member' && task.reviewer.memberId === actorId)) task.assignedMemberId = actorId;
     }
     changes = taskChanges(store, null, task);
@@ -461,6 +474,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     }
     if (task.reviewer.kind === 'member' && !isEligible(task.reviewer.memberId, task.reviewRoleIds)) return fail('ROLE_REQUIRED', `reviewer ${memberName(store, task.reviewer.memberId)} lacks roles: ${missing(task.reviewer.memberId, task.reviewRoleIds)}`);
     if (command.reviewer !== undefined && task.reviewer.kind === 'member') {
+      if (canonical(task.reviewer) !== canonical(beforeEdit.reviewer)) requireGroupRole(task.reviewer.memberId, 'reviewRoleIds');
       const key = actorKey(member(task.reviewer.memberId));
       if (task.assignedMemberId === task.reviewer.memberId || participantKeys(records<Assignment>('assignment')).includes(key)) {
         return fail('REVIEW_NOT_INDEPENDENT', `reviewer ${memberName(store, task.reviewer.memberId)} participated in the task`);
@@ -542,6 +556,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     // Optional in the new flow; a session still passing one must hold the current assignment.
     if (command.assignmentId !== undefined && command.assignmentId !== task.currentAssignmentId) return fail('STALE_ASSIGNMENT', 'the assignment is no longer active for this member');
     if (task.status !== 'pending') return fail('INVALID_STATE', 'task has already started; check its status with get_task');
+    requireGroupRole(actorId, 'executeRoleIds');
     if (!isEligible(actorId, task.executeRoleIds)) return fail('ROLE_REQUIRED', `${memberName(store, actorId)} lacks roles: ${missing(actorId, task.executeRoleIds)}`);
     const current = versions(store, task);
     if (!current) return fail('DEPENDENCIES_NOT_READY', 'dependencies are not ready');
@@ -558,6 +573,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       const prior = approved && records<Assignment>('assignment').find((a) => a.id === approved.assignmentId);
       if (!approved || command.assignmentId !== approved.assignmentId) return fail('STALE_ASSIGNMENT', 'only the approved assignment can resubmit');
       if (!prior || prior.actorKey !== actorKey(member(actorId))) return fail('STALE_ASSIGNMENT', 'only the prior executor can resubmit');
+      requireGroupRole(actorId, 'executeRoleIds');  // a new assignment, unlike submit on work already started
       if (!isEligible(actorId, task.executeRoleIds)) return fail('ROLE_REQUIRED', `${memberName(store, actorId)} lacks roles: ${missing(actorId, task.executeRoleIds)}`);
       const current = versions(store, task);
       if (!current) return fail('DEPENDENCIES_NOT_READY', 'dependencies are not ready');
@@ -622,6 +638,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       const policy = store.coordinator?.policy(clusterId);
       if (policy?.enabled && policy.memberId === actorId) return fail('FORBIDDEN', `${memberName(store, actorId)} is the coordinator and cannot review; the designated reviewer or the user reviews instead`);
       if (task.reviewer.kind !== 'member' || task.reviewer.memberId !== actorId) return fail('FORBIDDEN', `only the designated reviewer (${task.reviewer.kind === 'member' ? memberName(store, task.reviewer.memberId) : 'user'}) can review; ask that reviewer, or have the reviewer changed with task_action edit`);
+      requireGroupRole(actorId, 'reviewRoleIds');
       if (!isEligible(actorId, task.reviewRoleIds)) return fail('ROLE_REQUIRED', `reviewer ${memberName(store, task.reviewer.memberId)} lacks roles: ${missing(task.reviewer.memberId, task.reviewRoleIds)}`);
       // A member reviews a batch once it is complete; the user, the authority, may review any time.
       refuseEarlyReview(store, task);
@@ -850,12 +867,14 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     }
     refuseHidden(store, clusterId, actor, actorId, reviewerId);
     refuseCoordinator(store, clusterId, reviewerId);
+    requireGroupRole(reviewerId, 'executeRoleIds');
     if (!isEligible(reviewerId, task.executeRoleIds)) return fail('ROLE_REQUIRED', `${memberName(store, reviewerId)} lacks roles: ${missing(reviewerId, task.executeRoleIds)}`);
     // What reviews after the takeover: the user unless the caller names a member or self review.
     const next = command.reviewer === undefined ? { kind: 'user' as const } : reviewer(command.reviewer);
     const assignments = records<Assignment>('assignment');
     let basis: TakeoverBasis = actor.kind === 'user' ? 'user' : 'user_review';
     if (next.kind === 'member') {
+      requireGroupRole(next.memberId, 'reviewRoleIds');
       if (next.memberId === reviewerId) return fail('REVIEW_NOT_INDEPENDENT', `${memberName(store, reviewerId)} is taking the task over, so they cannot also review it`);
       if (next.memberId === task.assignedMemberId || participantKeys(assignments).includes(actorKey(member(next.memberId)))) {
         return fail('REVIEW_NOT_INDEPENDENT', `${memberName(store, next.memberId)} worked on this task, so they cannot review it`);

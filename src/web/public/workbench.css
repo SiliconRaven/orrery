@@ -294,6 +294,7 @@
 .wb-rp-who { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); font-size: var(--f-base); }
 .wb-rp-perms { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0 0 12px; list-style: none; }
 .wb-rp-perm-on { border-color: transparent; background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.wb-task-planning-bypass { margin-inline-start: 24px; }
 .wb-rp-rules { border-top: 1px solid var(--line); }
 .wb-rp-rules > summary { display: flex; align-items: center; gap: 8px; width: fit-content; margin-top: 12px; padding: 4px 8px 4px 0; border-radius: var(--r-sm);
   color: var(--text); font-size: var(--f-md); line-height: 20px; cursor: pointer; list-style: none; }
@@ -408,6 +409,11 @@
 .workbench-form .workbench-check input { width: auto; margin: 3px 0 0; flex: none; }
 .workbench-form .workbench-check span { flex: 1; color: var(--text); }
 .workbench-form .workbench-check .wb-role-description { flex: none; }
+.wb-task-permission-group { min-width: 0; margin: 0; padding: 6px 10px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); }
+.wb-task-permission-group legend { padding-inline: 4px; font-weight: 600; }
+.wb-task-permission-options { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.workbench-form .wb-task-permission-options label { align-items: center; min-height: 28px; }
+.workbench-form .wb-task-permission-options input { margin-top: 0; }
 .wb-check-text { display: grid; gap: 3px; justify-items: start; }
 .workbench-form select[multiple] { min-height: 70px; }
 .workbench-form textarea { min-height: 72px; resize: vertical; }

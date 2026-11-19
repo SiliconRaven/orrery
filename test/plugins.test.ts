@@ -439,8 +439,8 @@ test('tools: enabled, the task tools match the versioned definitions', async () 
     const tools = (await toolsOf(app)).filter((tool) => TASK_TOOLS.includes(tool.name));
     assert.equal(tools.length, TASK_TOOLS.length);
     // shortcut: a golden hash of these thirteen definitions; update it only when the tools are meant to change
-    // (these task and batch descriptions document the `members` directory in tool results).
-    assert.equal(fingerprintTools(tools), 'sha256:eda7e4ac514c09df1de3a85d40929c755b9b7d35d1b66599502dba199639ed0e');
+    // (list_tasks exposes group task permissions, and task tools document the role gates).
+    assert.equal(fingerprintTools(tools), 'sha256:02ea47d25cb79830c4c3cb5634d72b4b8fbcf6a32278b3f44214b9124f1e7c97');
   } finally { await app.close(); }
 });
 

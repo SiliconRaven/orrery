@@ -74,6 +74,7 @@ async function seed(app: TestHub, name: string, marker: string) {
   const role = command({ action: 'role.create', name: `role-${marker}` }).role!;
   command({ action: 'member.roles', memberId: a.id, roleIds: [role.id] });
   command({ action: 'tasks.settings', takeoverSelfReview: true });
+  command({ action: 'tasks.permissions', taskPermissions: { createRoleIds: [role.id], executeRoleIds: [role.id], reviewRoleIds: [] } });
   command({ action: 'cluster.pause', operationId: `pause-${marker}`, paused: true });
   command({ action: 'cluster.pause', operationId: `resume-${marker}`, paused: false });
   app.store.db.prepare('INSERT INTO merge_windows (cluster_id, data_json) VALUES (?, ?)').run(cluster.id, JSON.stringify({ marker }));
@@ -147,10 +148,10 @@ test('a purge removes every row of the cluster in core and plugin tables and lea
     writeFileSync(join(app.dir, 'project-1', 'code.txt'), 'project');
     for (const table of ['members', 'messages', 'deliveries', 'reads', 'message_acknowledgements', 'files', 'message_files', 'turn_usage',
       'activity_snapshots', 'collaboration_roles', 'collaboration_member_roles', 'collaboration_policies', 'collaboration_operations',
-      'collaboration_tasks', 'collaboration_records', 'collaboration_links', 'merge_windows', 'task_counters', 'cluster_label_groups', 'collaboration_bookmarks', 'task_watches', 'task_cluster_settings']) {
+      'collaboration_tasks', 'collaboration_records', 'collaboration_links', 'merge_windows', 'task_counters', 'cluster_label_groups', 'collaboration_bookmarks', 'task_watches', 'task_cluster_settings', 'task_cluster_permissions']) {
       const where = table === 'members' || table === 'messages' || table === 'files' || table.startsWith('collaboration_tasks') || table === 'collaboration_roles'
         || table === 'collaboration_policies' || table === 'collaboration_operations' || table === 'merge_windows' || table === 'task_counters' || table === 'cluster_label_groups'
-        || table === 'task_cluster_settings'
+        || table === 'task_cluster_settings' || table === 'task_cluster_permissions'
         ? 'cluster_id = ?' : null;
       const n = where ? app.store.db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).get(gone.cluster.id)!.n : app.store.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()!.n;
       assert.ok(Number(n) > 0, `the seed wrote ${table}`);

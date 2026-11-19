@@ -5,6 +5,8 @@
 // ORRERY_REQUIRE_BROWSER=1.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { findBrowser, launchBrowser, type Browser, type Page } from './browser.ts';
 import { startTestHub, TEST_TOKEN, type TestHub } from './helpers.ts';
 
@@ -65,11 +67,81 @@ async function openRoles(page: Page, hub: TestHub, width: number, height: number
   await page.evaluate(`document.getElementById('open-workbench').click()`);
   await page.waitFor(`document.querySelector('dialog[open] .workbench-tabs')`, 'the workbench');
   await page.evaluate(`[...document.querySelectorAll('dialog[open] .workbench-tabs button')].find((b) => b.textContent === '角色与协调').click()`);
-  await page.waitFor(`document.querySelectorAll('dialog[open] .wb-rp-card').length === 6 && document.querySelector('dialog[open] .wb-rp-instruction')`, 'the roles page');
+  await page.waitFor(`document.querySelectorAll('dialog[open] .wb-rp-card').length === 7 && document.querySelector('dialog[open] .wb-rp-instruction')`, 'the roles page');
   // The refreshes that follow opening the workbench redraw it a few times; start once it has been still for 800 ms.
   await page.evaluate(`(() => { window.__drawn = Date.now(); new MutationObserver(() => { window.__drawn = Date.now(); }).observe(${CONTENT}, { childList: true }); return true; })()`);
   await page.waitFor(`Date.now() - window.__drawn > 800`, 'the page to settle', 10_000);
 }
+
+test('task permission card saves all three role lists; coordinator bypass belongs to Task planning', { skip, timeout: 45_000 }, async () => {
+  assert.ok(found.path);
+  const hub = await startTestHub();
+  let browser: Browser | undefined;
+  const output = process.env.ORRERY_TASK_PERMISSIONS_SHOT_DIR;
+  try {
+    const command = await setUp(hub);
+    const roles = await Promise.all(['建单成员', '交付成员', '独立验收'].map(async (name) =>
+      (await command({ action: 'role.create', name })).role.id as string));
+    const clusterId = hub.hub.listClusters().find((cluster) => cluster.name === 'roles')!.id;
+    const workspace = () => hub.api('GET', `/api/clusters/${clusterId}/workspace`);
+    browser = await launchBrowser(found.path, { redact: [TEST_TOKEN] });
+    const page = browser.page;
+    const card = "document.getElementById('wb-rp-task-permissions')";
+    const savedRoles = { createRoleIds: [roles[0]], executeRoleIds: [roles[1]], reviewRoleIds: [roles[2]] };
+    const capture = async (name: string) => {
+      if (!output) return;
+      const { data } = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+      mkdirSync(output, { recursive: true });
+      writeFileSync(join(output, name + '.png'), Buffer.from(data, 'base64'));
+    };
+    await openRoles(page, hub, 1280, 720);
+    assert.equal(await page.evaluate(`[...${card}.querySelectorAll('.wb-rp-desc')].every(el => el.textContent === '所有成员')`), true);
+    await page.evaluate(`${railItem('任务权限')}.click()`);
+    await settle(page);
+    await page.click(`${card}.querySelector('button')`, 'edit task permissions');
+    const chooser = '[data-task-permission]';
+    await page.waitFor(`document.querySelectorAll('${chooser}').length === 3`, 'three role pickers');
+    await page.evaluate(`(() => {
+      const choices = ${JSON.stringify(savedRoles)};
+      for (const [key, ids] of Object.entries(choices)) {
+        const fields = document.querySelector('[data-task-permission="' + key + '"]');
+        for (const input of fields.querySelectorAll('input')) input.checked = ids.includes(input.value);
+      }
+    })()`);
+    await capture('task-permissions-edit');
+    const save = "document.querySelector('dialog[open] .workbench-form button[type=submit]')";
+    await page.click(save, 'save role lists');
+    await page.waitFor(`!document.querySelector('${chooser}') && ${card}.textContent.includes('独立验收')`, 'saved card');
+    assert.deepEqual((await workspace()).taskPermissions, savedRoles);
+    await page.evaluate(`${railItem('任务权限')}.click()`);
+    await settle(page);
+    await capture('task-permissions-card');
+
+    const coordinatorEdit = "document.getElementById('wb-rp-coordinator').querySelector('.wb-rp-actions button')";
+    await page.evaluate(`${railItem('协调员')}.click()`);
+    await settle(page);
+    await page.click(coordinatorEdit, 'edit coordinator permissions');
+    const bypass = "document.querySelector('[data-coordinator-task-role-bypass]')";
+    await page.waitFor(bypass, 'task planning bypass');
+    assert.equal(await page.evaluate(`${bypass}.checked`), false);
+    await page.click(bypass, 'allow coordinator role bypass');
+    await capture('task-permissions-coordinator');
+    await page.click(save, 'save coordinator authorization');
+    await page.waitFor(`!${bypass}`, 'authorization saved');
+    assert.equal((await workspace()).coordinator.taskPlanningRoleBypass, true);
+    assert.deepEqual((await workspace()).taskPermissions, savedRoles);
+
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+    await page.evaluate(`${railItem('任务权限')}.click()`);
+    await settle(page);
+    assert.equal(await page.evaluate(`${card}.scrollWidth <= ${card}.clientWidth`), true);
+    await capture('task-permissions-narrow');
+    assert.deepEqual(browser.problems().exceptions, []);
+  } finally {
+    await browser?.close();
+    await hub.close();
+  }
+});
 
 test('roles page at 375 px: a redraw keeps the current rail item in view and the page where it was', { skip, timeout: 120_000 }, async () => {
   assert.ok(found.path, `ORRERY_REQUIRE_BROWSER=1 but ${found.path === null ? found.reason : ''}`);
@@ -141,7 +213,7 @@ test('roles page opened wide then narrowed to 375 px: the rail sits under the wr
     assert.ok(layout.railTop >= layout.tabsBottom - 1, `the rail is under the tabs, not behind them: ${JSON.stringify(layout)}`);
     assert.ok(layout.cardTop >= layout.railBottom - 1, `the chosen card starts below the rail: ${JSON.stringify(layout)}`);
     const labels = await page.evaluate<string[]>(`[...${RAIL}.querySelectorAll('button')].map((b) => b.textContent)`);
-    assert.equal(labels.length, 6);
+    assert.equal(labels.length, 7);
     for (const label of labels) {
       const hit = await page.evaluate<boolean>(`(() => {
         const b = ${railItem(label)}, rail = ${RAIL};

@@ -104,6 +104,8 @@ npm run backup                           # Back up local private Hub SQLite data
 npm run plugin:inspect -- <manifest>     # Preflight a third-party plugin manifest before registering (never runs it)
 ```
 
+Users can set group roles for creating, executing, and reviewing tasks under Roles and coordination → Task permissions. All three are open by default. The coordinator's optional create-role bypass is configured under Task planning. [Task permissions](docs/collaboration.en.md)
+
 ## Documentation Index
 
 - **Architecture & Design**: [Architecture](docs/architecture.en.md) · [Native Mode](docs/native-mode.en.md) · [Loop Limits](docs/hop-limit.en.md) · [Security Model](docs/security.en.md)

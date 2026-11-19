@@ -184,9 +184,11 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
     await mark(app, 'mark-gamma', 'member', 'c1-Alice', null);
     await mark(app, 'mark-beta', 'member', 'c1-Bob', null);
     await page.click(`document.getElementById('members-toggle')`, 'close the member panel');
+    await page.waitFor(`document.getElementById('members-toggle').getAttribute('aria-expanded') === 'false'`, 'the member panel closed');
 
     step = 'a task: on its card after the labels, and in the detail; clicking a mark does not open the task';
-    await page.click(`document.getElementById('open-workbench')`, 'the workbench');
+    await page.evaluate(`document.getElementById('open-workbench').click()`);
+    await page.waitFor(`document.querySelector('dialog.workbench[open]')`, 'the workbench opened');
     const card = `[...document.querySelectorAll('.workbench-task')].find((c) => c.textContent.includes('修好构建'))`;
     await page.waitFor(card, 'the task card');
     const onCard = slot('task', task.id, card);

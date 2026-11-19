@@ -16,7 +16,6 @@ export class CollaborationError extends Error {
 /** The next step for refusals whose fix depends only on the code; other refusals say it where they are raised. */
 const NEXT_STEP: Record<string, string> = {
   OPERATION_CONFLICT: '; use a new operationId for a different command, or resend the original request unchanged',
-  ROLE_IN_USE: '; remove the role from those tasks first (executeRoleIds, reviewRoleIds)',
   STALE_POLICY: '; read list_tasks.coordinator.generation and retry with it, or omit generation if you are not the enabled coordinator',
 };
 const fail = (code: string, message: string): never => { throw new CollaborationError(code, message + (NEXT_STEP[code] ?? '')); };
@@ -318,7 +317,14 @@ export class Collaboration {
         management('roleManagement');
         const role = this.store.collaborationRoles(clusterId).find((r) => r.id === command.roleId);
         if (!role) return fail('OUT_OF_SCOPE', 'unknown role; list_tasks with include: ["roles"] shows role IDs');
-        if (this.store.tasks?.all(clusterId).some((t) => t.executeRoleIds.includes(role.id) || t.reviewRoleIds.includes(role.id))) return fail('ROLE_IN_USE', 'role is required by a task');
+        // Disabling Tasks keeps its group settings. Protect those references while the view is inactive too.
+        const savedTasks = this.store.tasks ?? this.store.plugins.installed.find((plugin) => plugin.taskView)?.taskView?.(this.store);
+        if (savedTasks?.groupPermissionsUseRole?.(clusterId, role.id)) {
+          return fail('ROLE_IN_USE', 'role is required by group Task permissions. Remove it from Task permissions first.');
+        }
+        if (this.store.tasks?.all(clusterId).some((t) => t.executeRoleIds.includes(role.id) || t.reviewRoleIds.includes(role.id))) {
+          return fail('ROLE_IN_USE', 'role is required by a task; remove the role from those tasks first (executeRoleIds, reviewRoleIds)');
+        }
         if (!suggest) this.store.deleteCollaborationRole(role.id);
         out.role = role;
       } else if (action === 'member.roles') {

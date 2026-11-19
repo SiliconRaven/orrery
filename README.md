@@ -104,6 +104,8 @@ npm run backup                           # 备份本地私有 Hub 数据库
 npm run plugin:inspect -- <清单路径>     # 登记前预检第三方插件清单（不运行插件）
 ```
 
+用户可在任务工作台「角色与协调 → 任务权限」按成员角色限制谁能建任务、执行和验收。默认三项都开放。协调员的建单角色豁免在其「任务规划」授权中单独设置。 [任务权限](docs/collaboration.md)
+
 ## 文档索引
 
 - **架构与设计**：[架构说明](docs/architecture.md) · [原生模式设计](docs/native-mode.md) · [防循环与限流](docs/hop-limit.md) · [安全模型](docs/security.md)

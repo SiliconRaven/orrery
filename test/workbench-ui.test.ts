@@ -1183,17 +1183,17 @@ async function openSettings(t: TestContext, workspace: any, { members = [{ id: '
   return { body, posted, byClass, button, click, change, card: (id: string) => byClass(`wb-rp-${id}`)[0] };
 }
 
-test('角色与协调: a real nav rail lists the six sections in order, marks one current and goes to the chosen card', async (t) => {
+test('角色与协调: a real nav rail lists the sections in order, marks one current and goes to the chosen card', async (t) => {
   const page = await openSettings(t, FULL_SETTINGS);
   const [rail] = page.byClass('wb-rp-rail');
   assert.equal(rail.tagName, 'nav');
   assert.equal(rail.attributes['aria-label'], '角色与协调分区');
   const items = rail.children;
-  assert.deepEqual(items.map((item: any) => item.textContent), ['协调员', '长期要求', '业务角色', '成员角色', '标签组', '本群设置']);
+  assert.deepEqual(items.map((item: any) => item.textContent), ['协调员', '长期要求', '业务角色', '成员角色', '任务权限', '标签组', '本群设置']);
   assert.ok(items.every((item: any) => item.tagName === 'button' && item.attributes.type === 'button'), 'keyboard reachable buttons');
-  assert.deepEqual(items.map((item: any) => item.attributes['aria-current']), ['true', 'false', 'false', 'false', 'false', 'false']);
+  assert.deepEqual(items.map((item: any) => item.attributes['aria-current']), ['true', 'false', 'false', 'false', 'false', 'false', 'false']);
   const cards = page.byClass('wb-rp-card');
-  assert.deepEqual(cards.map((card: any) => card.attributes['data-wb-section']), ['coordinator', 'instructions', 'roles', 'member-roles', 'labels', 'cluster'],
+  assert.deepEqual(cards.map((card: any) => card.attributes['data-wb-section']), ['coordinator', 'instructions', 'roles', 'member-roles', 'task-permissions', 'labels', 'cluster'],
     'one card per rail item, in the same order');
   for (const card of cards) {
     assert.equal(card.tagName, 'section');
@@ -1204,7 +1204,7 @@ test('角色与协调: a real nav rail lists the six sections in order, marks on
   }
   assert.equal(items[2].attributes['aria-controls'], 'wb-rp-roles');
   await page.click(items[2]);
-  assert.deepEqual(items.map((item: any) => item.attributes['aria-current']), ['false', 'false', 'true', 'false', 'false', 'false']);
+  assert.deepEqual(items.map((item: any) => item.attributes['aria-current']), ['false', 'false', 'true', 'false', 'false', 'false', 'false']);
   assert.equal((page.card('roles').scrolledInto as any)?.block, 'start', 'the chosen card is scrolled to the top');
 });
 
@@ -1212,7 +1212,7 @@ test('角色与协调 without the coordinator plugin: the rail and the page drop
   const page = await openSettings(t, FULL_SETTINGS, { plugins: ['tasks'] });
   const [rail] = page.byClass('wb-rp-rail');
   assert.equal(rail.attributes['aria-label'], '角色分区');
-  assert.deepEqual(rail.children.map((item: any) => item.textContent), ['业务角色', '成员角色', '标签组', '本群设置']);
+  assert.deepEqual(rail.children.map((item: any) => item.textContent), ['业务角色', '成员角色', '任务权限', '标签组', '本群设置']);
   assert.equal(rail.children[0].attributes['aria-current'], 'true');
   assert.equal(page.card('coordinator'), undefined);
   assert.equal(page.card('instructions'), undefined);

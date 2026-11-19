@@ -33,9 +33,14 @@ export const setCoordinator: PluginAction = ({ store, actor, clusterId, command,
   const permissions = { ...DEFAULT_PERMISSIONS, ...command.permissions };
   if (Object.keys(permissions).some((k) => !Object.hasOwn(DEFAULT_PERMISSIONS, k))
     || Object.values(permissions).some((v) => typeof v !== 'boolean')) return fail('INVALID_REQUEST', 'invalid coordinator permissions');
+  if (command.taskPlanningRoleBypass !== undefined && typeof command.taskPlanningRoleBypass !== 'boolean') {
+    return fail('INVALID_REQUEST', 'taskPlanningRoleBypass must be boolean');
+  }
+  const previousBypass = previous.coordinator?.memberId === member.id && previous.coordinator.taskPlanningRoleBypass === true;
+  const taskPlanningRoleBypass = command.taskPlanningRoleBypass ?? previousBypass;
   // Long-term requirements survive a coordinator change; missing in old policies means [].
   const policy: CoordinatorPolicy = { memberId: member.id, enabled: command.enabled, mode: command.mode,
-    permissions, generation: previous.generation + 1,
+    permissions, generation: previous.generation + 1, ...(taskPlanningRoleBypass ? { taskPlanningRoleBypass: true } : {}),
     standingInstructions: previous.coordinator?.standingInstructions ?? [] };
   saveCoordinator(store, clusterId, policy, policy.generation);
   const previousMember = previous.coordinator?.memberId;

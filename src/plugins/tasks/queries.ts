@@ -6,6 +6,7 @@ import type { Store } from '../../core/store.ts';
 import { batchBase, batchSummary } from './batches.ts';
 import { libraryView } from './labels.ts';
 import { displayTask, fail, resolveTaskRef, taskDependencyEvaluation, taskOf } from './model.ts';
+import { taskPermissions } from './permissions.ts';
 import { taskSettings } from './takeover.ts';
 import { taskWatches } from './watches.ts';
 import {
@@ -29,7 +30,7 @@ export const workspace: PluginQuery = ({ store, clusterId, query, limit, collabo
     // Review batches that are not cancelled, newest first, with their progress (batches.ts).
     batches: taskBatches(store, clusterId).filter((batch) => !batch.cancelledAt).map((batch) => batchSummary(store, batch)),
     memberRoles, labels: collaborationLabels(store, clusterId),
-    labelLibrary: libraryView(store, clusterId), taskSettings: taskSettings(store, clusterId),
+    labelLibrary: libraryView(store, clusterId), taskSettings: taskSettings(store, clusterId), taskPermissions: taskPermissions(store, clusterId),
     coordinator: coordinator ? { ...coordinator, rules: view!.rules } : null, paused: pause.paused,
     generation: view?.generation(clusterId) ?? 0, pausedBy: pause.pausedBy };
 };

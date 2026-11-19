@@ -41,6 +41,12 @@ This reference documents the Web HTTP routes, Bridge endpoints, and member MCP t
 | `POST /api/clusters/:id/deliveries/:deliveryId/resend`, `.../handoff` | User retries a failed/offline/unknown delivery or hands off to another conversation |
 | `GET /api/clusters/:id/deliveries/:deliveryId/timeline`, `.../messages/:messageId/delivery-timelines` | Inspects per-delivery or per-message timelines |
 
+### Group task permissions
+
+The cluster workspace response includes `taskPermissions`. The user can write the full object `{createRoleIds, executeRoleIds, reviewRoleIds}` via `tasks.permissions` on `POST /api/clusters/:id/collaboration`. Role IDs must belong to that group, and an empty list allows every member. Members may request the read-only view with `list_tasks` and `include: ["taskPermissions"]`.
+
+The user can opt into `taskPlanningRoleBypass: true` on `coordinator.set`. The bypass applies only to the group create-role check, and the coordinator still needs `permissions.taskPlanning`. A failed eligibility check reports `ROLE_REQUIRED` with the relevant group setting and acceptable roles.
+
 ## Bridge Collaboration Endpoints
 
 - **`POST /bridge/ship-verify` and `POST /bridge/ship-result`**: Called by `scripts/ship.ts` using **signed `body.ticket` auth** (no `x-orrery-bridge` secret; `403` on bad ticket, `409` on state conflict):

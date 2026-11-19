@@ -1545,10 +1545,21 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       input.checked = policy?.permissions?.[key] ?? index < 6;
       return { key, input, el: h('label', { class: 'workbench-check' }, input, h('span', {}, h('b', {}, t(label)), ` · ${t(description)}`)) };
     });
+    const planning = checks.find((item) => item.key === 'taskPlanning').input;
+    const bypass = h('input', { type: 'checkbox', 'data-coordinator-task-role-bypass': true });
+    bypass.checked = policy?.taskPlanningRoleBypass === true;
+    const updateBypass = () => { bypass.disabled = !planning.checked; };
+    planning.addEventListener('change', updateBypass);
+    member.addEventListener('change', () => { bypass.checked = policy?.memberId === member.value && policy.taskPlanningRoleBypass === true; });
+    updateBypass();
+    const bypassField = h('label', { class: 'workbench-check wb-task-planning-bypass' }, bypass,
+      t("建任务不受群级角色限制"));
     formDialog(t("设置协调授权"), [h('p', { class: 'muted' }, t("必须明确选择现有成员并保存才启用。协调员不能修改自己的授权或代替验收。")),
-      h('label', {}, t("协调员"), member), h('label', {}, t("模式"), mode), ...checks.map((item) => item.el)], () => command({
+      h('label', {}, t("协调员"), member), h('label', {}, t("模式"), mode),
+      ...checks.flatMap((item) => item.key === 'taskPlanning' ? [item.el, bypassField] : [item.el])], () => command({
       action: 'coordinator.set', memberId: member.value, enabled: true, mode: mode.value,
       permissions: Object.fromEntries(checks.map((item) => [item.key, item.input.checked])),
+      ...(bypass.checked || policy?.taskPlanningRoleBypass ? { taskPlanningRoleBypass: bypass.checked } : {}),
       ...(policy ? { generation: policy.generation } : {}),
     }));
   }
@@ -1623,7 +1634,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   // ---- 角色与协调: a section rail beside one column of same-shaped cards (docs/collaboration.md「角色与协调页」) ----
   // [id, rail label, belongs to the coordinator plugin]
   const SETTINGS_SECTIONS = [['coordinator', t("协调员"), true], ['instructions', t("长期要求"), true], ['roles', t("业务角色")],
-    ['member-roles', t("成员角色")], ['labels', t("标签组")], ['cluster', t("本群设置")]];
+    ['member-roles', t("成员角色")], ['task-permissions', t("任务权限")], ['labels', t("标签组")], ['cluster', t("本群设置")]];
   const settingsSections = () => SETTINGS_SECTIONS.filter(([, , coordinator]) => !coordinator || coordinatorEnabled());
   const railButtons = new Map();   // section id -> rail button of the page on screen
   const sectionCards = new Map();  // section id -> its card
@@ -1716,6 +1727,8 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       return h('li', { class: on ? 'wb-rp-perm wb-rp-perm-on' : 'wb-rp-perm', title: t(description) },
         on ? icon('check', 'ico-xs') : null, t(label), h('span', { class: 'sr-only' }, on ? t("（已授权）") : t("（未授权）")));
     })),
+    policy.permissions?.taskPlanning && policy.taskPlanningRoleBypass
+      ? h('p', { class: 'wb-rp-sub' }, t("已允许协调员绕过群级建任务角色限制。")) : null,
     rules ? h('details', { class: 'wb-rp-rules', open: view.rulesOpen === true, ontoggle: (event) => { view.rulesOpen = event.target.open; } },
       h('summary', {}, h('span', {}, t("协调规则 {version}", { version: rules.version })), h('span', { class: 'wb-rp-rules-toggle', 'aria-hidden': 'true' })),
       h('div', { class: 'wb-rp-rules-text', tabindex: '0', role: 'region', 'aria-label': t("协调规则 {version} 全文", { version: rules.version }) }, rules.text)) : null);
@@ -1794,6 +1807,42 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
           'data-wb-focus': 'setting-takeover', onchange: (event) => allowTakeover(event.target.checked) })]));
   }
 
+  function taskPermissionsCard() {
+    const roles = view.workspace?.roles ?? [];
+    const byId = new Map(roles.map((role) => [role.id, role]));
+    const permissions = view.workspace?.taskPermissions ?? {};
+    const rows = [['createRoleIds', t("建任务")], ['executeRoleIds', t("执行任务")], ['reviewRoleIds', t("验收任务")]];
+    const allMembers = t("所有成员");
+    const description = t("一项未选角色时，所有成员均可操作。选了角色后，成员至少要有其中一个。");
+    const describeRole = (id) => byId.get(id)?.name ?? t("已移除角色：{id}", { id });
+    const edit = () => {
+      const fields = rows.map(([key, title]) => {
+        const selected = permissions[key] ?? [];
+        const ids = [...new Set([...byId.keys(), ...selected])];
+        const options = ids.map((id) => {
+          const input = h('input', { type: 'checkbox', value: id });
+          input.checked = selected.includes(id);
+          return { input, el: h('label', { class: 'workbench-check' }, input, h('span', {}, describeRole(id))) };
+        });
+        return { key, options, el: h('fieldset', { class: 'wb-task-permission-group', 'data-task-permission': key },
+          h('legend', {}, title), h('div', { class: 'wb-task-permission-options' },
+            options.length ? options.map(({ el }) => el) : h('p', { class: 'muted' }, t("尚未创建业务角色。")))) };
+      });
+      const cid = view.clusterId;
+      formDialog(t("修改任务权限"), [h('p', { class: 'muted' }, description),
+        ...fields.map(({ el }) => el)], () =>
+        command({ action: 'tasks.permissions',
+          taskPermissions: Object.fromEntries(fields.map(({ key, options }) => [key,
+            options.filter(({ input }) => input.checked).map(({ input }) => input.value)])),
+        }, cid));
+    };
+    return settingsCard('task-permissions', t("任务权限"), { sub: description, actions: [rowButton(t("修改任务权限"), edit)] },
+      ...rows.map(([key, title]) => {
+        const ids = permissions[key] ?? [];
+        return settingsRow(title, ids.length ? ids.map(describeRole).join('、') : allMembers, []);
+      }));
+  }
+
   /** The label library manager, from a cluster or from 全部任务; it belongs to no cluster. At most one is open. */
   let labelManager = null;
   function openLabels() {
@@ -1807,7 +1856,8 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     if (!sections.some(([id]) => id === view.settingsSection)) view.settingsSection = sections[0][0];
     sectionCards.clear();
     const cards = { coordinator: () => coordinatorCard(policy), instructions: () => instructionsCard(policy),
-      roles: () => rolesCard(view.workspace?.roles ?? []), 'member-roles': memberRolesCard, labels: labelGroupsCard, cluster: clusterSettingsCard };
+      roles: () => rolesCard(view.workspace?.roles ?? []), 'member-roles': memberRolesCard,
+      'task-permissions': taskPermissionsCard, labels: labelGroupsCard, cluster: clusterSettingsCard };
     return h('div', { class: 'workbench-settings wb-rp' }, settingsRail(sections),
       h('div', { class: 'wb-rp-stack' }, sections.map(([id]) => cards[id]())));
   }

@@ -25,6 +25,8 @@ export type CoordinatorPermissions = Record<CoordinatorPermission, boolean>;
 export interface StandingInstruction { id: string; text: string; createdBy: string; createdAt: string; }
 export interface CoordinatorPolicy {
   memberId: string; enabled: boolean; mode: 'suggest' | 'execute'; generation: number; permissions: CoordinatorPermissions;
+  /** User opt-in under taskPlanning; missing means the group create roles still apply. */
+  taskPlanningRoleBypass?: boolean;
   /** User's long-term requirements, kept across coordinator changes; missing in old policies means []. */
   standingInstructions?: StandingInstruction[];
 }
@@ -157,6 +159,13 @@ export interface WorkspaceResult {
   labelLibrary?: unknown;
   /** This cluster's task settings; only the user changes them (tasks.settings). */
   taskSettings?: { takeoverSelfReview: boolean };
+  taskPermissions?: TaskPermissions;
+}
+
+export interface TaskPermissions {
+  createRoleIds: string[];
+  executeRoleIds: string[];
+  reviewRoleIds: string[];
 }
 export interface TaskResult {
   task: Task; assignments: Assignment[]; submissions: SubmissionView[]; reviews: ReviewView[]; approvals: Approval[]; merges: Merge[];
@@ -212,6 +221,8 @@ export interface CollaborationCommand {
   attentionId?: string; kind?: string; question?: string; targetMemberId?: string | null; resolution?: string;
   messageId?: string; taskIds?: string[]; removeTaskIds?: string[];
   enabled?: boolean; mode?: 'suggest' | 'execute'; permissions?: Partial<CoordinatorPermissions>;
+  /** coordinator.set (user only): allow taskPlanning to bypass the group create role list. */
+  taskPlanningRoleBypass?: boolean;
   generation?: number; paused?: boolean; hidden?: boolean; sourceEventId?: number;
   /** coordinator.instruction.*: the standing instruction to edit/remove. */
   instructionId?: string;
@@ -222,6 +233,8 @@ export interface CollaborationCommand {
   note?: string | null;
   /** tasks.settings (user only): allow self review after a reviewer takeover in this cluster. */
   takeoverSelfReview?: boolean;
+  /** tasks.permissions (user only): the complete set of group-wide task role gates. */
+  taskPermissions?: TaskPermissions;
   /** task.create and batch.*: the review batch (an ID, a unique prefix or B<number>). */
   batchId?: string;
   /** batch.shipped / batch.ship_failed (the Hub only): the approved submissions the ship ticket was signed for. */

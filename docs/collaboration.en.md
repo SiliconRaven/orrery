@@ -16,6 +16,12 @@ Cluster operations obey role-based policies while keeping the user in final cont
 
 Business roles carry a name and description (`list_tasks` exposes them) and restrict task execution or review eligibility when bound. New clusters initialize three default roles without auto-assigning members.
 
+Under Roles and coordination → Task permissions, the user can choose group roles for creating, executing, and reviewing tasks. An empty list allows all members. Otherwise a member needs any one group role and all roles required by the task itself. Changes apply to new assignments, starts, and member reviews. Work already started can still be submitted. Self review uses execution eligibility. A member selected by the user still needs the relevant roles.
+
+An enabled coordinator follows the group create-role list by default. The user can explicitly enable the role bypass under the existing Task planning permission. Task planning is still required, and Suggest mode continues to create suggestions only.
+
+Deleting a role referenced by group task permissions returns `ROLE_IN_USE`. First remove the role from Task permissions. Saved permissions remain protected while the Tasks plugin is disabled.
+
 ## Task Lifecycle & Three Review Tiers
 
 Each task gets a sequential per-cluster `#<number>` ID and moves through core statuses (`pending`, `working`, `review`, `completed`, `merged`, `cancelled`):
