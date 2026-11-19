@@ -1,3 +1,4 @@
+import { t, language } from './i18n.js';
 // DOM helpers. Untrusted strings (names, message bodies, agent output) only ever become text nodes or
 // attribute values — never HTML.
 import { inlineText, markdownBlocks } from './markdown.js';
@@ -10,26 +11,26 @@ export function toolVersionView(report, memberId, harness, now = Date.now()) {
   const current = row && report?.hub?.[row.profile];
   const obs = row?.observation;
   const describe = (claim) => {
-    if (!claim || !current || claim.profile !== row.profile) return { text: '未知', state: 'unknown' };
+    if (!claim || !current || claim.profile !== row.profile) return { text: t("未知"), state: 'unknown' };
     const callAt = Date.parse(obs?.lastCallAt);
     const stale = !Number.isFinite(callAt) || now - callAt > obs.staleAfterMs;
     const match = claim.fingerprint === current;
     const partial = claim.registered && claim.registered.succeeded !== claim.registered.total;
-    const registrations = claim.registered ? ` · 注册 ${claim.registered.succeeded}/${claim.registered.total}` : '';
-    const source = { 'claude-forwarded': 'Claude 桥转发', 'claude-fallback': 'Claude 桥内置', 'dsh-source': 'DeepSeek 插件清单', client: '客户端自报' }[claim.source] || '声明';
-    return { text: `${source}：${match ? '与 Hub 一致' : '与 Hub 不同'} · ${claim.fingerprint.slice(7, 19)}${registrations}${partial ? '（未全部注册）' : ''}${stale ? ' · 记录已过期' : ''}`,
+    const registrations = claim.registered ? t(" · 注册 {succeeded}/{total}", { succeeded: claim.registered.succeeded, total: claim.registered.total }) : '';
+    const source = { 'claude-forwarded': t("Claude 桥转发"), 'claude-fallback': t("Claude 桥内置"), 'dsh-source': t("DeepSeek 插件清单"), client: t("客户端自报") }[claim.source] || t("声明");
+    return { text: t("{source}：{value2} · {value3}{registrations}{value5}{value6}", { source: source, value2: match ? t("与 Hub 一致") : t("与 Hub 不同"), value3: claim.fingerprint.slice(7, 19), registrations: registrations, value5: partial ? t("（未全部注册）") : '', value6: stale ? t(" · 记录已过期") : '' }),
       state: stale ? 'unknown' : match && !partial ? 'match' : 'different' };
   };
   const client = describe(obs?.client), bridge = describe(obs?.bridge);
-  const advice = harness === 'claude' ? '在 Claude 中重连 MCP；若对话仍使用旧工具，重开对话。'
-    : harness === 'deepseek' ? '在 DeepSeek 中重载 orrery 插件；若对话仍使用旧工具，重开对话。'
-      : harness === 'antigravity' ? '在 Antigravity 的 MCP Servers 设置里刷新 orrery；必要时重启应用。'
-        : harness === 'zcode' ? '在应用中重载 orrery 插件并重连 MCP；必要时重开对话。'
-          : harness === 'workbuddy' ? '在 WorkBuddy 的 MCP 设置里重连 orrery 服务器；必要时新开对话。'
-            : harness === 'qoder' ? '在 Qoder 里重载 orrery 插件；若对话仍使用旧工具，重开对话。'
-              : harness === 'cursor' ? '在 Cursor 里重新加载窗口，确认 orrery MCP 服务器开着；若对话仍使用旧工具，重开对话。'
-              : '在应用中重连 orrery MCP；若仍使用旧工具，重开对话。';
-  return { hub: current ? current.slice(7, 19) : '未知', client, bridge,
+  const advice = harness === 'claude' ? t("在 Claude 中重连 MCP；若对话仍使用旧工具，重开对话。")
+    : harness === 'deepseek' ? t("在 DeepSeek 中重载 orrery 插件；若对话仍使用旧工具，重开对话。")
+      : harness === 'antigravity' ? t("在 Antigravity 的 MCP Servers 设置里刷新 orrery；必要时重启应用。")
+        : harness === 'zcode' ? t("在应用中重载 orrery 插件并重连 MCP；必要时重开对话。")
+          : harness === 'workbuddy' ? t("在 WorkBuddy 的 MCP 设置里重连 orrery 服务器；必要时新开对话。")
+            : harness === 'qoder' ? t("在 Qoder 里重载 orrery 插件；若对话仍使用旧工具，重开对话。")
+              : harness === 'cursor' ? t("在 Cursor 里重新加载窗口，确认 orrery MCP 服务器开着；若对话仍使用旧工具，重开对话。")
+              : t("在应用中重连 orrery MCP；若仍使用旧工具，重开对话。");
+  return { hub: current ? current.slice(7, 19) : t("未知"), client, bridge,
     lastCall: obs?.lastCallAt ?? null, advice: client.state === 'different' || bridge.state === 'different' ? advice : null };
 }
 
@@ -42,25 +43,25 @@ export function memberHealth(report, member) {
   const row = report?.members?.find((item) => item.memberId === member.id);
   const observed = row?.connection?.observedAt ? fmtTime(row.connection.observedAt) : null;
   let connection;
-  if (member.removedAt) connection = { state: 'offline', label: '离线', basis: '已移出集群', observed: null };
+  if (member.removedAt) connection = { state: 'offline', label: t("离线"), basis: t("已移出集群"), observed: null };
   else if (!row?.connection) {
-    connection = { state: 'unknown', label: '未知', basis: report ? '报告里没有这个成员的连接信息' : '工具版本报告读取失败', observed: null };
+    connection = { state: 'unknown', label: t("未知"), basis: report ? t("报告里没有这个成员的连接信息") : t("工具版本报告读取失败"), observed: null };
   } else {
     const state = row.connection.state === 'online' || row.connection.state === 'offline' ? row.connection.state : 'unknown';
-    connection = { state, label: state === 'online' ? '在线' : state === 'offline' ? '离线' : '未知',
-      basis: row.connection.basis ?? '未知', observed };
+    connection = { state, label: state === 'online' ? t("在线") : state === 'offline' ? t("离线") : t("未知"),
+      basis: row.connection.basis ?? t("未知"), observed };
   }
   let problem;
-  if (!report) problem = { known: false, text: '工具版本报告读取失败' };
-  else if (!row) problem = { known: false, text: '报告里没有这个成员的投递记录' };
-  else if (!Object.hasOwn(row, 'lastProblem')) problem = { known: false, text: '报告缺少投递记录字段' };
+  if (!report) problem = { known: false, text: t("工具版本报告读取失败") };
+  else if (!row) problem = { known: false, text: t("报告里没有这个成员的投递记录") };
+  else if (!Object.hasOwn(row, 'lastProblem')) problem = { known: false, text: t("报告缺少投递记录字段") };
   else if (!row.lastProblem) problem = { known: true, text: null };
   else if (row.lastProblem.state !== 'failed' && row.lastProblem.state !== 'offline') {
-    problem = { known: false, text: '投递记录格式不可识别' };
+    problem = { known: false, text: t("投递记录格式不可识别") };
   } else {
-    const label = row.lastProblem.state === 'offline' ? '离线未投递' : '投递失败';
-    problem = { known: true, text: (row.lastProblem.at ? fmtTime(row.lastProblem.at) : '时间未知') + ' · ' + label
-      + (row.lastProblem.error ? '：' + snippet(row.lastProblem.error, 80) : '') };
+    const label = row.lastProblem.state === 'offline' ? t("离线未投递") : t("投递失败");
+    problem = { known: true, text: (row.lastProblem.at ? fmtTime(row.lastProblem.at) : t("时间未知")) + ' · ' + label
+      + (row.lastProblem.error ? t("：") + snippet(row.lastProblem.error, 80) : '') };
   }
   return { connection, problem };
 }
@@ -261,7 +262,7 @@ export function avatarEl(member, size = '', { named = false, presence = null } =
   if (presence) {
     const said = `${member.name} · ${presence.label}`;
     return h('span', { class: ['avatar-orbit', size, `presence-${presence.state}`].filter(Boolean).join(' '), title: said,
-      ...(named ? { role: 'img', 'aria-label': `${member.name}，${presence.label}` } : {}) },
+      ...(named ? { role: 'img', 'aria-label': t("{name}，{label}", { name: member.name, label: presence.label }) } : {}) },
     avatarFace(member, size, {}), h('span', { class: 'presence-dot', 'aria-hidden': 'true' }));
   }
   return avatarFace(member, size, { title: member.name, ...(named ? { role: 'img', 'aria-label': member.name } : {}) });
@@ -271,21 +272,21 @@ export function avatarEl(member, size = '', { named = false, presence = null } =
 function avatarFace(member, size, who) {
   const cls = `avatar ${size}`;
   const a = member.avatar;
-  const kind = avatarKind(member);
-  if (kind === 'image') return h('span', { class: cls, ...who }, h('img', { src: a, alt: '' }));
-  const preset = presetName(a);
-  if (preset) return h('span', { class: cls, ...who }, h('img', { src: `/avatars/${preset}.png`, alt: '' }));
-  if (kind === 'emoji') return h('span', { class: `${cls} emoji`, ...who }, a);
   const tile = `background: ${memberColor(member.name)}`;
-  if (kind === 'initial') return h('span', { class: cls, style: tile, ...who }, initialOf(member));
-  const mark = markSource(member) ?? { label: initialOf(member), color: memberColor(member.name) };
-  // A broken icon turns this element into the initial tile in place (callers may hold it), never a broken-image glyph.
+  // A missing avatar asset turns this element into the initial tile in place (callers may hold it), never a broken-image glyph.
   const fallback = (e) => {
     const el = e.target.parentElement;
     el.className = cls;
     el.setAttribute('style', tile);
     el.replaceChildren(initialOf(member));
   };
+  const kind = avatarKind(member);
+  if (kind === 'image') return h('span', { class: cls, ...who }, h('img', { src: a, alt: '' }));
+  const preset = presetName(a);
+  if (preset) return h('span', { class: cls, ...who }, h('img', { src: `/avatars/${preset}.png`, alt: '', onerror: fallback }));
+  if (kind === 'emoji') return h('span', { class: `${cls} emoji`, ...who }, a);
+  if (kind === 'initial') return h('span', { class: cls, style: tile, ...who }, initialOf(member));
+  const mark = markSource(member) ?? { label: initialOf(member), color: memberColor(member.name) };
   return h('span', { class: `${cls} app ${APP_AVATAR_MARK}`, style: `--mark: ${mark.color}`, ...who },
     h('img', { src: harnessApp(member.harness).icon, alt: '', onerror: fallback }),
     // Decorative: the name is beside the avatar or is its accessible name.
@@ -293,7 +294,7 @@ function avatarFace(member, size, who) {
 }
 
 export function userAvatar(size = '') {
-  return h('span', { class: `avatar user ${size}` }, '你');
+  return h('span', { class: `avatar user ${size}` }, t("你"));
 }
 
 export const isSystemMessage = (message) => message?.from === 'system' && message.kind === 'system';
@@ -384,17 +385,26 @@ export function systemMark(message) {
   return category === 'warning' && level ? { level, label: WARNING_LEVEL_LABELS[level] } : null;
 }
 
+/**
+ * System records that quote what a member or a plugin wrote and need no Markdown of their own (a plugin tool call's
+ * argument and result previews, a gate plugin's reason, a plugin's or member's name in a gate failure or restart record,
+ * the message snippets of a queue warning, or the names in a rename notice): the page shows their body as plain text.
+ * Notices that link tasks (#12) keep Markdown.
+ */
+const PLAIN_TEXT_KINDS = new Set(['plugin_tool_call', 'plugin_refused', 'plugin_check_failed', 'plugin_restarted', 'queue_warning', 'member_renamed']);
+export const plainTextRecord = (message) => isSystemMessage(message) && PLAIN_TEXT_KINDS.has(message.systemKind);
+
 export function messageAuthorName(message, members) {
-  if (isSystemMessage(message)) return 'Orrery 系统';
-  if (typeof message.from === 'string' && message.from.startsWith('plugin:')) return `插件 ${message.from.slice(7)}`;
-  if (message.from === 'user') return '你';
+  if (isSystemMessage(message)) return t("Orrery 系统");
+  if (typeof message.from === 'string' && message.from.startsWith('plugin:')) return t("插件 {value1}", { value1: message.from.slice(7) });
+  if (message.from === 'user') return t("你");
   const member = members.get(message.from);
-  if (!member) return '(未知成员)';
+  if (!member) return t("(未知成员)");
   if (member.removedAt) {
     for (const other of members.values()) {
       if (other && !other.removedAt && other.name === member.name
         && (!member.clusterId || !other.clusterId || other.clusterId === member.clusterId)) {
-        return `${member.name}（已移出）`;
+        return t("{name}（已移出）", { name: member.name });
       }
     }
   }
@@ -407,7 +417,7 @@ export function systemAvatar() {
 
 export function fmtTime(iso) {
   const d = new Date(iso);
-  const hm = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  const hm = d.toLocaleTimeString(language() === 'en' ? 'en-GB' : 'zh-CN', { hour: '2-digit', minute: '2-digit' });
   return d.toDateString() === new Date().toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
 }
 
@@ -417,26 +427,26 @@ export function fmtTime(iso) {
  * '' for a missing or unreadable time.
  */
 export function relativeTime(iso, now = Date.now()) {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return '';
-  const ms = Math.max(0, now - t);
-  if (ms < 60_000) return '刚刚';
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} 分钟前`;
-  const then = new Date(t);
+  const time = Date.parse(iso);
+  if (!Number.isFinite(time)) return '';
+  const ms = Math.max(0, now - time);
+  if (ms < 60_000) return t("刚刚");
+  if (ms < 3_600_000) return t("{value1} 分钟前", { value1: Math.floor(ms / 60_000) });
+  const then = new Date(time);
   const today = new Date(now);
   const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const days = Math.round((midnight(today) - midnight(then)) / 86_400_000);   // calendar days; round: a DST day is 23 or 25 hours
-  if (days <= 0) return `${Math.floor(ms / 3_600_000)} 小时前`;
-  if (days === 1) return '昨天';
-  if (days < 7) return `${days} 天前`;
-  const date = `${then.getMonth() + 1}月${then.getDate()}日`;
-  return then.getFullYear() === today.getFullYear() ? date : `${then.getFullYear()}年${date}`;
+  if (days <= 0) return t("{value1} 小时前", { value1: Math.floor(ms / 3_600_000) });
+  if (days === 1) return t("昨天");
+  if (days < 7) return t("{days} 天前", { days: days });
+  const date = t("{value1}月{value2}日", { value1: then.getMonth() + 1, value2: then.getDate() });
+  return then.getFullYear() === today.getFullYear() ? date : t("{value1}年{date}", { value1: then.getFullYear(), date: date });
 }
 
 /** The full local time for a relative time's tooltip. */
 export const fullTime = (iso) => {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('zh-CN', { hour12: false });
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(language() === 'en' ? 'en-GB' : 'zh-CN', { hour12: false });
 };
 
 /** A `<time>` showing relativeTime(iso); refreshRelativeTimes() updates every one of them in place. */
@@ -459,10 +469,17 @@ export const snippet = (s, n = 40) => (s.length > n ? `${s.slice(0, n)}…` : s)
  * ([{ name, ... }]) that `match` what follows ('prefix', 'includes' or a function of (candidate, query)); picking
  * replaces that with `name `. `item(c)` is a candidate's menu row content. Returns a keydown handler that reports
  * whether it consumed the key; its `refresh()` redraws the menu when candidates arrive later.
+ * `onPick(c)`: picking inserts nothing; the trigger, the query and the spaces right after it are removed (the rest of the
+ * text stays where it is) and `onPick` is called (the "/" commands).
+ * `footer`: a line of text under the rows (not a row: the keys skip it).
+ * `enter(items, query)`: when given, plain Enter picks only a row the user chose with the arrow keys, else the candidate
+ * `enter` names (or none); with none it closes the menu and leaves Enter to the composer. Tab always picks the highlight.
+ * A choice made with the arrow keys survives refresh() (it follows its candidate, or is dropped if that is gone).
  */
-export function attachPicker(input, menu, { trigger, lead, candidates, item, match = 'prefix' }) {
+export function attachPicker(input, menu, { trigger, lead, candidates, item, match = 'prefix', onPick = null, footer = '', enter = null }) {
   let items = [];
   let index = 0;
+  let chosen = null;   // the name of the row the user moved to with the arrow keys, until the text changes
   const esc = trigger.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`(?:^|${lead})${esc}([^\\s${esc}]*)$`);
 
@@ -477,12 +494,15 @@ export function attachPicker(input, menu, { trigger, lead, candidates, item, mat
     if (typeof match === 'function') return match(c, t.query);
     return match === 'includes' ? c.name.toLowerCase().includes(t.query) : c.name.toLowerCase().startsWith(t.query);
   };
-  const close = () => { menu.hidden = true; items = []; };
-  const update = () => {
+  const close = () => { menu.hidden = true; items = []; chosen = null; };
+  /** `keep`: a reload of the same text (refresh), which keeps an arrow-key choice on its candidate. */
+  const update = (keep = false) => {
     const t = token();
     if (!t) return close();
     items = candidates(t.query).filter((c) => matches(c, t));
-    index = 0;
+    const at = keep && chosen !== null ? items.findIndex((c) => c.name === chosen) : -1;
+    if (at < 0) chosen = null;
+    index = Math.max(at, 0);
     draw();
   };
   /** Replaces the token at the caret; if the caret moved off the token the menu was drawn for, just refreshes. */
@@ -490,6 +510,15 @@ export function attachPicker(input, menu, { trigger, lead, candidates, item, mat
     const t = token();
     if (!t || !matches(c, t)) return update();
     const end = input.selectionStart;
+    if (onPick) {
+      const from = t.start - trigger.length;
+      input.value = `${input.value.slice(0, from)}${input.value.slice(end).replace(/^[^\S\n]+/, '')}`;
+      input.setSelectionRange(from, from);
+      close();
+      input.dispatchEvent(new Event('input'));
+      onPick(c);
+      return;
+    }
     input.value = `${input.value.slice(0, t.start)}${c.name} ${input.value.slice(end)}`;
     const pos = t.start + c.name.length + 1;
     input.setSelectionRange(pos, pos);
@@ -502,12 +531,12 @@ export function attachPicker(input, menu, { trigger, lead, candidates, item, mat
       role: 'option',
       'aria-selected': String(i === index),
       onmousedown: (e) => { e.preventDefault(); pick(c); },
-    }, item(c))));
+    }, item(c))), ...(footer && items.length ? [h('li', { class: 'picker-footer', role: 'presentation' }, footer)] : []));
     menu.hidden = items.length === 0;
     menu.children[index]?.scrollIntoView?.({ block: 'nearest' });   // the list scrolls past 240px; keep the highlight in view
   };
-  input.addEventListener('input', update);
-  input.addEventListener('click', update);
+  input.addEventListener('input', () => update());
+  input.addEventListener('click', () => update());
   input.addEventListener('blur', close);
   // Caret moves that fire no input event. Up/Down are left out: while the menu is open they move the highlight.
   input.addEventListener('keyup', (e) => {
@@ -518,14 +547,19 @@ export function attachPicker(input, menu, { trigger, lead, candidates, item, mat
     const plain = !(e.shiftKey || e.ctrlKey || e.altKey || e.metaKey);
     if (plain && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       index = (index + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+      chosen = items[index].name;
       draw();
+    } else if (plain && e.key === 'Enter' && enter) {
+      const target = chosen !== null ? items[index] : enter(items, token()?.query ?? '');
+      if (!target) { close(); return false; }   // nothing chosen or named exactly: Enter is the composer's (it sends)
+      pick(target);
     } else if (plain && (e.key === 'Enter' || e.key === 'Tab')) pick(items[index]);
     else if (e.key === 'Escape') close();
     else return false;   // includes Shift+Enter, which stays a newline
     e.preventDefault();
     return true;
   };
-  keydown.refresh = () => { if (document.activeElement === input) update(); };
+  keydown.refresh = () => { if (document.activeElement === input) update(true); };
   return keydown;
 }
 
@@ -631,14 +665,18 @@ export function oneAtATime(open) {
 /**
  * Shows one modal dialog and resolves true only when its confirm button is pressed. Esc and the cancel button resolve
  * false. Focus starts on cancel (or on the only button), so Enter does not confirm by accident, and goes back to the
- * element that had it when the dialog closes. Text is set as text nodes, never parsed as HTML.
+ * element that had it when the dialog closes. Text is set as text nodes, never parsed as HTML. A full-trust plugin's
+ * dialog (plugin-slots.js) carries its id in `tag` (data-plugin-slot, so detaching closes it) and resolves false at
+ * once without opening when `skip()` says the plugin was detached while the dialog waited its turn.
  */
-const showDialog = oneAtATime(({ title, message, confirmText, cancelText, danger }) => new Promise((resolve) => {
+const showDialog = oneAtATime(({ title, message, confirmText, cancelText, danger, tag = null, skip = null }) => new Promise((resolve) => {
+  if (skip?.()) return resolve(false);
   const trigger = document.activeElement;
   const cancel = cancelText ? h('button', { type: 'submit', value: 'cancel' }, cancelText) : null;
   const ok = h('button', { type: 'submit', value: 'confirm', class: danger ? 'primary danger' : 'primary' }, confirmText);
   const dialog = h('dialog', {
     class: 'ask', role: 'alertdialog', 'aria-labelledby': title ? 'ask-title' : 'ask-message', 'aria-describedby': title ? 'ask-message' : null,
+    'data-plugin-slot': tag,
   }, h('form', { method: 'dialog' },
     title ? h('h2', { id: 'ask-title' }, title) : null,
     h('p', { id: 'ask-message', class: 'ask-message' }, message),
@@ -655,13 +693,13 @@ const showDialog = oneAtATime(({ title, message, confirmText, cancelText, danger
 }));
 
 /** Replaces window.confirm in the page: resolves true when confirmed, false on cancel or Esc. */
-export function confirmDialog({ title = '', message, confirmText = '确定', cancelText = '取消', danger = false }) {
-  return showDialog({ title, message, confirmText, cancelText, danger });
+export function confirmDialog({ title = '', message, confirmText = t('确定'), cancelText = t('取消'), danger = false, tag = null, skip = null }) {
+  return showDialog({ title, message, confirmText, cancelText, danger, tag, skip });
 }
 
-/** Replaces window.alert in the page: one "确定" button; resolves when closed. */
-export function noticeDialog(message, title = '') {
-  return showDialog({ title, message, confirmText: '确定', cancelText: null, danger: false }).then(() => {});
+/** Replaces window.alert in the page: one "确定" button; resolves when closed. `owner`: { tag, skip } as for confirmDialog. */
+export function noticeDialog(message, title = '', { tag = null, skip = null } = {}) {
+  return showDialog({ title, message, confirmText: t('确定'), cancelText: null, danger: false, tag, skip }).then(() => {});
 }
 
 // ---- create dialog: pure helpers (no DOM, so test/web-ui.test.ts can run them in node) ----
@@ -700,23 +738,25 @@ export function memberDefaultName({ harness, model = '', models = [], taken = ne
 
 /**
  * One checked harness of the create dialog → `{ specs }` for POST /api/clusters, or `{ error }`.
- * `c`: { harness, nativeCreate, project, sessions: [{ sessionId, name, avatar }], create,
- *   name, avatar, model, effort }.
- * One member per picked conversation, plus a new one only when `create` is ticked, the harness supports it,
- * and a project is explicitly selected. Existing conversations do not need a project selection.
- * `mode` is always sent; name / avatar / model / effort only when filled; model / effort only on a new member.
+ * `c`: { harness, nativeCreate, project, sessions: [{ sessionId, name, avatar }], create, name, avatar, model, effort }.
+ * One member per picked conversation (with its own name / avatar), plus a new one when `create` is ticked, the harness
+ * can create one (`nativeCreate`) and a project is picked: a new conversation always names its project. Nothing
+ * picked and nothing to create is an error (Claude: create it in the app).
+ * A new conversation says `mode: 'native'` (the Hub refuses a create without it: such a request used to ask for an
+ * isolated member); name / avatar / model / effort only when filled; model / effort only on a new member.
  */
 export function harnessSpecs(c) {
   const filled = (o, k) => (o[k]?.trim() ? { [k]: o[k].trim() } : {});
-  const attach = c.sessions.map((s) => ({ harness: c.harness, mode: 'native', sessionId: s.sessionId, ...filled(s, 'name'), ...filled(s, 'avatar') }));
-  if (c.create) {
-    if (!c.nativeCreate) return { error: `${c.harness} 只能接入已有会话：先在桌面应用里新建会话，再点「刷新」勾选它` };
+  const attach = c.sessions.map((s) => ({ harness: c.harness, sessionId: s.sessionId, ...filled(s, 'name'), ...filled(s, 'avatar') }));
+  if (c.create && c.nativeCreate) {
     const projectPath = c.project?.trim();
-    if (!projectPath) return { error: '请选择新建对话的项目目录' };
+    if (!projectPath) return { error: t('请选择新建对话的项目目录') };
     const fresh = { harness: c.harness, mode: 'native', projectPath, ...filled(c, 'name'), ...filled(c, 'avatar'), ...filled(c, 'model'), ...filled(c, 'effort') };
     return { specs: [...attach, fresh] };
   }
-  return attach.length ? { specs: attach } : { error: '请选择已有对话，或勾选新建对话' };
+  if (attach.length) return { specs: attach };
+  return { error: c.nativeCreate ? t('请选择已有对话，或勾选新建对话')
+    : t('{harness} 只能接入已有会话：先在桌面应用里新建会话，再点「刷新」勾选它', { harness: c.harness }) };
 }
 
 // ---- member page: pure helpers ----
@@ -729,33 +769,33 @@ export function harnessSpecs(c) {
 export function offlineHint(member, status, harnessAvailable = true) {
   if (status !== 'offline') return null;
   if (!harnessAvailable) {
-    return `这个 Hub 现在没有提供 ${member.harness}，发给它的消息不会投递，只留在群聊记录里（要投递，需在 ${member.harness} 适配器可用时重启 Hub）。`;
+    return t("这个 Hub 现在没有提供 {harness}，发给它的消息不会投递，只留在群聊记录里（要投递，需在 {value2} 适配器可用时重启 Hub）。", { harness: member.harness, value2: member.harness });
   }
-  const dropped = '这个对话现在离线，发给它的消息不会投递，上线后也不补发；消息留在群聊记录里，它之后可以用 read_messages 自己读。';
+  const dropped = t("这个对话现在离线，发给它的消息不会投递，上线后也不补发；消息留在群聊记录里，它之后可以用 read_messages 自己读。");
   if (member.harness === 'antigravity') {
-    return `${dropped}如果 Antigravity 开着却一直离线：检查是否按 README「原生模式：Antigravity」放好了 orrery sidecar，并在 Antigravity 里启用了它。`;
+    return t("{dropped}如果 Antigravity 开着却一直离线：检查是否按 README「原生模式：Antigravity」放好了 orrery sidecar，并在 Antigravity 里启用了它。", { dropped: dropped });
   }
   if (member.harness === 'zcode') {
-    return `${dropped}ZCode 开着时，在这个对话里说一句「重新挂上 orrery」（或用 orrery skill）：它运行 orrery 的等待命令后显示在线。ZCode 重启后、或上一轮没有重新挂上时都要这样做一次。`;
+    return t("{dropped}ZCode 开着时，在这个对话里说一句「重新挂上 orrery」（或用 orrery skill）：它运行 orrery 的等待命令后显示在线。ZCode 重启后、或上一轮没有重新挂上时都要这样做一次。", { dropped: dropped });
   }
   if (member.harness === 'workbuddy') {
-    return `${dropped}WorkBuddy 开着时，在这个对话里说一句「挂上 orrery」（或用 orrery skill）：它运行 orrery 的等待命令后显示在线。对话进程被回收后要再说一次。`;
+    return t("{dropped}WorkBuddy 开着时，在这个对话里说一句「挂上 orrery」（或用 orrery skill）：它运行 orrery 的等待命令后显示在线。对话进程被回收后要再说一次。", { dropped: dropped });
   }
   if (member.harness === 'qoder') {
-    return `${dropped}Qoder 开着时，在这个对话里说一句「重新挂上 orrery」（或用 orrery skill）：它运行 orrery 的等待命令后显示在线。Qoder 重启后、或上一轮没有重新挂上时都要这样做一次。`;
+    return t("{dropped}Qoder 开着时，在这个对话里说一句「重新挂上 orrery」（或用 orrery skill）：它运行 orrery 的等待命令后显示在线。Qoder 重启后、或上一轮没有重新挂上时都要这样做一次。", { dropped: dropped });
   }
   if (member.harness === 'cursor') {
-    return `${dropped}Cursor 对话只在每轮结束后挂着等待时在线：Cursor 开着时，在 Cursor 里对这个对话说一句话，这一轮结束后它重新上线。一直离线的话，检查是否按 README「原生模式：Cursor」装好了 orrery 插件。`;
+    return t("{dropped}Cursor 对话只在每轮结束后挂着等待时在线：Cursor 开着时，在 Cursor 里对这个对话说一句话，这一轮结束后它重新上线。一直离线的话，检查是否按 README「原生模式：Cursor」装好了 orrery 插件。", { dropped: dropped });
   }
   if (member.harness !== 'claude') return dropped;
-  return `${dropped}如果它在 Claude Desktop 或终端里开着却一直离线：检查是否按 README「原生模式：Claude」加了 orrery 桥（claude mcp add …）；`
-    + '加完要重开这个会话，因为桥只在会话启动时加载。';
+  return t("{dropped}如果它在 Claude Desktop 或终端里开着却一直离线：检查是否按 README「原生模式：Claude」加了 orrery 桥（claude mcp add …）；", { dropped: dropped })
+    + t("加完要重开这个会话，因为桥只在会话启动时加载。");
 }
 
 /** The member page's note about deliveries the Hub has warned about and that have still not started. */
 export function longWaitingHint(member) {
   const n = member.removedAt ? 0 : member.longWaiting ?? 0;
-  return n ? `${n} 条消息已经等了很久，这个成员还没开始处理。` : null;
+  return n ? t("{n} 条消息已经等了很久，这个成员还没开始处理。", { n: n }) : null;
 }
 
 // ---- group chat: pure helpers ----
@@ -793,7 +833,7 @@ export function splitReceiptMembers(message, deliveries, reads, acknowledgements
 
 /** One-line status note below a message when it was not delivered to everyone (or fyi kept @names unread). */
 export function recordOnlyNotice(message, deliveries, reads, acknowledgements, nameOf) {
-  if (!message?.fyi) return deliveries.length ? null : '没有投递对象，只留在群聊记录里';
+  if (!message?.fyi) return deliveries.length ? null : t("没有投递对象，只留在群聊记录里");
   const deliveredIds = new Set(deliveries.map((d) => d.memberId));
   const fyiIds = [...new Set(message.mentions ?? [])].filter((id) => !deliveredIds.has(id));
   const readSet = new Set([
@@ -802,22 +842,22 @@ export function recordOnlyNotice(message, deliveries, reads, acknowledgements, n
   ]);
   const unread = fyiIds.filter((id) => !readSet.has(id));
   const read = fyiIds.filter((id) => readSet.has(id));
-  if (unread.length && read.length) return `仅知会：${unread.map(nameOf).join('、')}未读，${read.map(nameOf).join('、')}已读，不唤醒`;
-  if (unread.length) return `仅知会：${unread.map(nameOf).join('、')}未读，不唤醒`;
-  if (read.length) return `仅知会：${read.map(nameOf).join('、')}已读，不唤醒`;
-  return deliveries.length ? null : '仅知会，不唤醒';
+  if (unread.length && read.length) return t("仅知会：{value1}未读，{value2}已读，不唤醒", { value1: unread.map(nameOf).join(t("、")), value2: read.map(nameOf).join(t("、")) });
+  if (unread.length) return t("仅知会：{value1}未读，不唤醒", { value1: unread.map(nameOf).join(t("、")) });
+  if (read.length) return t("仅知会：{value1}已读，不唤醒", { value1: read.map(nameOf).join(t("、")) });
+  return deliveries.length ? null : t("仅知会，不唤醒");
 }
 
 // icon: the sprite icon drawn before the label (index.html).
 const DELIVERY_STATE = {
-  queued: { icon: 'circle', label: '排队中' }, running: { icon: 'half', label: '处理中' },
-  done: { icon: 'check', label: '投递流程结束' }, failed: { icon: 'close', label: '失败' },
-  offline: { icon: 'minus', label: '离线，未投递' },
-  superseded: { icon: 'minus', label: '已被新的提名取代，未投递' },
+  queued: { icon: 'circle', get label() { return t("排队中"); } }, running: { icon: 'half', get label() { return t("处理中"); } },
+  done: { icon: 'check', get label() { return t("投递流程结束"); } }, failed: { icon: 'close', get label() { return t("失败"); } },
+  offline: { icon: 'minus', get label() { return t("离线，未投递"); } },
+  superseded: { icon: 'minus', get label() { return t("已被新的提名取代，未投递"); } },
 };
 const DELIVERY_OUTCOME = {
-  accepted: { icon: 'check', label: '已接收' }, completed: { icon: 'check', label: '轮次完成' },
-  failed: { icon: 'close', label: '轮次失败' }, unknown: { icon: 'help', label: '结果未知' },
+  accepted: { icon: 'check', get label() { return t("已接收"); } }, completed: { icon: 'check', get label() { return t("轮次完成"); } },
+  failed: { icon: 'close', get label() { return t("轮次失败"); } }, unknown: { icon: 'help', get label() { return t("结果未知"); } },
 };
 
 /** Outcome describes only what the adapter can substantiate; old deliveries have no outcome. */
@@ -840,20 +880,20 @@ export function handoffNeedsConfirmation(delivery) {
 
 /** The 有问题的投递 dialog's line under its title (GET delivery-problems: `count` in all, `shown` listed). */
 export function problemsDescription(count, shown) {
-  if (!count) return '没有需要处理的投递了。';
-  return '离线、失败或结果未知，而且还没有交接或重发的投递。点一条跳到原消息，在回执里看原因和下一步。'
-    + '交接、重发或标为已知后，它不再列出；离线的投递在那个成员自己读到这条消息后也会消失。'
-    + (count > shown ? `这里列出最新的 ${shown} 条。` : '');
+  if (!count) return t("没有需要处理的投递了。");
+  return t("离线、失败或结果未知，而且还没有交接或重发的投递。点一条跳到原消息，在回执里看原因和下一步。")
+    + t("交接、重发或标为已知后，它不再列出；离线的投递在那个成员自己读到这条消息后也会消失。")
+    + (count > shown ? t("这里列出最新的 {shown} 条。", { shown: shown }) : '');
 }
 
 /** "全部标为已知" asks first when it marks more than five; null: it does not ask. */
 export function dismissAllConfirmation(count, shown) {
   if (count <= 5) return null;
   return {
-    title: '全部标为已知？',
-    message: `会把 ${count} 条有问题的投递标为已知${count > shown ? `（包括列表外较早的 ${count - shown} 条）` : ''}，它们不再计数。`
-      + '投递记录、回执、交接和重发都不变，之后新出现的问题照常显示。标记不能撤销。',
-    confirmText: '全部标为已知',
+    title: t("全部标为已知？"),
+    message: t("会把 {count} 条有问题的投递标为已知{value2}，它们不再计数。", { count: count, value2: count > shown ? t("（包括列表外较早的 {value1} 条）", { value1: count - shown }) : '' })
+      + t("投递记录、回执、交接和重发都不变，之后新出现的问题照常显示。标记不能撤销。"),
+    confirmText: t("全部标为已知"),
   };
 }
 
@@ -868,16 +908,16 @@ export function dismissAllRequest(listing) {
 // ---- handover package (docs/cluster-members.md「交接包」) ----
 
 // The task state names the workbench also uses; ui.js cannot import workbench.js (it imports this file).
-const HANDOVER_STATUS = { pending: '待开工', working: '进行中', review: '待验收', completed: '已完成', merged: '已合并', cancelled: '已取消' };
-const HANDOVER_ROLE = { executor: '执行者', reviewer: '验收人（等它验收）', former: '曾经负责' };
+const HANDOVER_STATUS = { get pending() { return t("待开工"); }, get working() { return t("进行中"); }, get review() { return t("待验收"); }, get completed() { return t("已完成"); }, get merged() { return t("已合并"); }, get cancelled() { return t("已取消"); } };
+const HANDOVER_ROLE = { get executor() { return t("执行者"); }, get reviewer() { return t("验收人（等它验收）"); }, get former() { return t("曾经负责"); } };
 /** A full date-time for text that leaves this page: a bare HH:MM is ambiguous once the package is in another conversation. */
 const handoverStamp = (iso) => {
   const d = new Date(iso);
-  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${d.toLocaleTimeString(language() === 'en' ? 'en-GB' : 'zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
 };
 
 /** A value a Hub record does not have is said as 未知, never filled in. */
-const known = (value) => (value === null || value === undefined || value === '' ? '未知' : String(value));
+const known = (value) => (value === null || value === undefined || value === '' ? t("未知") : String(value));
 
 /**
  * The editable text of GET /api/members/:id/handover. It carries only what the records have; the two fields the Hub
@@ -887,85 +927,85 @@ const known = (value) => (value === null || value === undefined || value === '' 
 export function handoverText(pkg) {
   if (!pkg) return '';
   const lines = [
-    `交接包 · ${pkg.member.name}（${pkg.member.harness}${pkg.member.model ? ` · ${pkg.member.model}` : ''}）· 集群 ${pkg.cluster.name}`,
-    `生成时间：${handoverStamp(pkg.generatedAt)} · 内容只来自 Hub 记录，没有记录的写“未知”；可以改完再复制或发送。`,
-    `工作目录：${known(pkg.member.cwd)}`,
-    `对话 ID：${known(pkg.member.sessionId)}`,
-    '', '## 一、集群目标（用户最近的要求）',
+    t("交接包 · {name}（{harness}{value3}）· 集群 {value4}", { name: pkg.member.name, harness: pkg.member.harness, value3: pkg.member.model ? ` · ${pkg.member.model}` : '', value4: pkg.cluster.name }),
+    t("生成时间：{generatedAt} · 内容只来自 Hub 记录，没有记录的写“未知”；可以改完再复制或发送。", { generatedAt: handoverStamp(pkg.generatedAt) }),
+    t("工作目录：{cwd}", { cwd: known(pkg.member.cwd) }),
+    t("对话 ID：{sessionId}", { sessionId: known(pkg.member.sessionId) }),
+    '', t("## 一、集群目标（用户最近的要求）"),
   ];
-  if (pkg.requests.length) lines.push(...pkg.requests.map((r) => `- ${handoverStamp(r.at)}「${r.body || '（无正文）'}」`));
-  else lines.push('- 未知（Hub 里没有这个群用户的发言记录）');
-  lines.push('', '## 二、当前与最近的任务');
-  if (!pkg.tasks.length) lines.push('- 未知（Hub 的任务记录里没有这个成员的任务）');
+  if (pkg.requests.length) lines.push(...pkg.requests.map((r) => t("- {at}「{value2}」", { at: handoverStamp(r.at), value2: r.body || t("（无正文）") })));
+  else lines.push(t("- 未知（Hub 里没有这个群用户的发言记录）"));
+  lines.push('', t("## 二、当前与最近的任务"));
+  if (!pkg.tasks.length) lines.push(t("- 未知（Hub 的任务记录里没有这个成员的任务）"));
   for (const task of pkg.tasks) {
-    const status = task.proposalState === 'proposed' ? '待批准' : HANDOVER_STATUS[task.status] ?? task.status;
-    lines.push(`### ${task.title}（${status}）`);
-    lines.push(`- 任务 ID：${task.id}`, `- 这个成员的角色：${HANDOVER_ROLE[task.role] ?? task.role}`, `- 最近更新：${handoverStamp(task.updatedAt)}`);
-    lines.push('- 分支：未知（Hub 没有记录分支，只记录提交）');
+    const status = task.proposalState === 'proposed' ? t("待批准") : HANDOVER_STATUS[task.status] ?? task.status;
+    lines.push(t("### {title}（{status}）", { title: task.title, status: status }));
+    lines.push(t("- 任务 ID：{id}", { id: task.id }), t("- 这个成员的角色：{value1}", { value1: HANDOVER_ROLE[task.role] ?? task.role }), t("- 最近更新：{updatedAt}", { updatedAt: handoverStamp(task.updatedAt) }));
+    lines.push(t("- 分支：未知（Hub 没有记录分支，只记录提交）"));
     // The submission may be another member's: a reviewer's package needs it, a former executor must not claim it.
     const own = task.submissionBy === null || task.submissionBy === pkg.member.name;
-    const whose = own ? '' : `执行者的提交，${task.submissionBy}`;
-    lines.push(`- 提交：${known(task.commitSha)}${task.commitSha && !own ? `（${whose}）` : ''}`);
-    if (task.mergedCommitSha) lines.push(`- 合并提交：${task.mergedCommitSha}`);
-    if (task.summary) lines.push(`- 提交说明${own ? '' : `（${whose}）`}：${task.summary}`);
+    const whose = own ? '' : t("执行者的提交，{submissionBy}", { submissionBy: task.submissionBy });
+    lines.push(t("- 提交：{commitSha}{value2}", { commitSha: known(task.commitSha), value2: task.commitSha && !own ? t("（{whose}）", { whose: whose }) : '' }));
+    if (task.mergedCommitSha) lines.push(t("- 合并提交：{mergedCommitSha}", { mergedCommitSha: task.mergedCommitSha }));
+    if (task.summary) lines.push(t("- 提交说明{value1}：{summary}", { value1: own ? '' : t("（{whose}）", { whose: whose }), summary: task.summary }));
     lines.push(task.review
-      ? `- 最近验收意见：${task.review.verdict === 'approve' ? '通过' : '退回'}${task.review.self ? '（自查）' : ''} · ${task.review.reviewer} · ${handoverStamp(task.review.at)}${task.review.reason ? `：${task.review.reason}` : ''}`
-      : '- 最近验收意见：未知（这个任务还没有验收记录）');
-    lines.push('- 实际跑过的命令：未知（Hub 的任务记录没有命令字段）');
-    lines.push(task.questions.length ? '- 未解决的问题：' : '- 未解决的问题：无');
+      ? t("- 最近验收意见：{value1}{value2} · {reviewer} · {at}{value5}", { value1: task.review.verdict === 'approve' ? t("通过") : t("退回"), value2: task.review.self ? t("（自查）") : '', reviewer: task.review.reviewer, at: handoverStamp(task.review.at), value5: task.review.reason ? t("：{reason}", { reason: task.review.reason }) : '' })
+      : t("- 最近验收意见：未知（这个任务还没有验收记录）"));
+    lines.push(t("- 实际跑过的命令：未知（Hub 的任务记录没有命令字段）"));
+    lines.push(task.questions.length ? t("- 未解决的问题：") : t("- 未解决的问题：无"));
     for (const question of task.questions) lines.push(`  - ${question}`);
   }
-  if (pkg.tasksOmitted > 0) lines.push(`- 另有 ${pkg.tasksOmitted} 个任务未显示（未结束的优先，其余按最近更新排序，最多 10 个）`);
-  lines.push('', '## 三、最近的投递失败');
-  if (!pkg.deliveries.length) lines.push('- 未知（没有失败或离线的投递记录）');
+  if (pkg.tasksOmitted > 0) lines.push(t("- 另有 {tasksOmitted} 个任务未显示（未结束的优先，其余按最近更新排序，最多 10 个）", { tasksOmitted: pkg.tasksOmitted }));
+  lines.push('', t("## 三、最近的投递失败"));
+  if (!pkg.deliveries.length) lines.push(t("- 未知（没有失败或离线的投递记录）"));
   for (const delivery of pkg.deliveries) {
     const look = deliveryView(delivery);
-    lines.push(`- ${delivery.at ? handoverStamp(delivery.at) : '时间未知'} · ${look.label}${delivery.error ? ` · ${delivery.error}` : ''} · 消息「${delivery.message || '（无正文）'}」`);
+    lines.push(t("- {value1} · {label}{value3} · 消息「{value4}」", { value1: delivery.at ? handoverStamp(delivery.at) : t("时间未知"), label: look.label, value3: delivery.error ? ` · ${delivery.error}` : '', value4: delivery.message || t("（无正文）") }));
   }
   return lines.join('\n');
 }
 
-const STAGE_LABEL = { queued: '入队', started: '开始投递', accepted: '桥或应用接受', acknowledged: '成员主动确认', ended: '结束' };
-const STAGE_STATUS = { pending: '还没有', not_reached: '没有发生', unknown: '未知' };
+const STAGE_LABEL = { get queued() { return t("入队"); }, get started() { return t("开始投递"); }, get accepted() { return t("桥或应用接受"); }, get acknowledged() { return t("成员主动确认"); }, get ended() { return t("结束"); } };
+const STAGE_STATUS = { get pending() { return t("还没有"); }, get not_reached() { return t("没有发生"); }, get unknown() { return t("未知"); } };
 
 /** One stage of a delivery's timeline. Unknown stays "未知": the page never fills in a time the Hub did not record. */
 export function timelineStageView(stage) {
   if (stage.status !== 'reached') return { label: STAGE_LABEL[stage.key], value: STAGE_STATUS[stage.status] };
-  return { label: STAGE_LABEL[stage.key], value: stage.at ? new Date(stage.at).toLocaleString('zh-CN') : '已发生，时间未知' };
+  return { label: STAGE_LABEL[stage.key], value: stage.at ? new Date(stage.at).toLocaleString(language() === 'en' ? 'en-GB' : 'zh-CN') : t("已发生，时间未知") };
 }
 
 const WAITING = '不用重发，会自动投递。';
 const DIAGNOSIS = {
-  paused_global: { stage: '排队中', reason: '全部投递已暂停，这条在队列里等着，还没有发出去。', next: '用左栏底部的开关恢复投递，恢复后会自动投递。' },
-  paused_cluster: { stage: '排队中', reason: '本群已暂停投递，这条在队列里等着，还没有发出去。', next: '点页面上方的“恢复本群投递”，恢复后会自动投递。' },
-  checking_online: { stage: '排队中', reason: 'Hub 正在确认这个成员是否在线。', next: '稍等。确认离线的话这条会标成离线，不会投递。' },
-  hourly_limit: { stage: '排队中', reason: '防循环：这个对话这一小时的轮次已经用完，这条先留在队列里。', next: `额度恢复后再投。${WAITING}` },
-  notice_limit: { stage: '排队中', reason: '防循环：这个对话这一小时能收的系统通知批次已经用完，这条先留在队列里。', next: `额度恢复后再投。${WAITING}` },
-  busy: { stage: '排队中', reason: '这个成员正在处理上一轮，这条排在后面。', next: `上一轮结束后接着投。${WAITING}` },
-  queued: { stage: '排队中', reason: '在队列里等待调度。', next: '稍等。' },
-  running: { stage: '投递中', reason: '已经开始投递，还没有结果。', next: '等待结果，不用重发。' },
-  offline: { stage: '离线，未投递', reason: '该投的时候成员离线，这条没有发出去，以后也不会自动补发。消息留在群聊记录里，对它算未读。', next: '成员上线后可以重发，也可以指定别的成员接手。' },
-  chain_limit: { stage: '被防循环拦下', reason: '防循环：这条消息链的轮次已经到上限，这条没有投递。', next: '确实要继续的话，到设置里调高每条链的轮次上限后重发，或者发一条新消息。' },
-  failed: { stage: '失败', reason: '投递失败，没有拿到成功的结果。', next: '看下面的原因。问题解决后可以重发，也可以指定别的成员接手。' },
-  unknown: { stage: '结果未知', reason: 'Hub 不知道这条有没有送到：可能已经送达，甚至还在执行。', next: '先到应用里看这个对话，确认没有在执行，再重发或指定别的成员接手。' },
-  superseded: { stage: '已被取代，未投递', reason: '尚未开始的旧提名已被新的提名取代，这不是投递失败。', next: '不用处理。' },
-  accepted: { stage: '已接收', reason: '桥或应用已经接受这条投递。接受不代表这一轮做完了，也不代表模型看过。', next: '不用处理；要确认对方看到，看主动确认。' },
-  completed: { stage: '轮次完成', reason: '这一轮已经结束。', next: '不用处理。' },
-  done: { stage: '投递流程结束', reason: '投递流程结束，但没有记录接收结果（较早的记录）。', next: '不用处理。' },
+  paused_global: { get stage() { return t("排队中"); }, get reason() { return t("全部投递已暂停，这条在队列里等着，还没有发出去。"); }, get next() { return t("用左栏底部的开关恢复投递，恢复后会自动投递。"); } },
+  paused_cluster: { get stage() { return t("排队中"); }, get reason() { return t("本群已暂停投递，这条在队列里等着，还没有发出去。"); }, get next() { return t("点页面上方的“恢复本群投递”，恢复后会自动投递。"); } },
+  checking_online: { get stage() { return t("排队中"); }, get reason() { return t("Hub 正在确认这个成员是否在线。"); }, get next() { return t("稍等。确认离线的话这条会标成离线，不会投递。"); } },
+  hourly_limit: { get stage() { return t("排队中"); }, get reason() { return t("防循环：这个对话这一小时的轮次已经用完，这条先留在队列里。"); }, get next() { return t("额度恢复后再投。{WAITING}", { WAITING: t(WAITING) }); } },
+  notice_limit: { get stage() { return t("排队中"); }, get reason() { return t("防循环：这个对话这一小时能收的系统通知批次已经用完，这条先留在队列里。"); }, get next() { return t("额度恢复后再投。{WAITING}", { WAITING: t(WAITING) }); } },
+  busy: { get stage() { return t("排队中"); }, get reason() { return t("这个成员正在处理上一轮，这条排在后面。"); }, get next() { return t("上一轮结束后接着投。{WAITING}", { WAITING: t(WAITING) }); } },
+  queued: { get stage() { return t("排队中"); }, get reason() { return t("在队列里等待调度。"); }, get next() { return t("稍等。"); } },
+  running: { get stage() { return t("投递中"); }, get reason() { return t("已经开始投递，还没有结果。"); }, get next() { return t("等待结果，不用重发。"); } },
+  offline: { get stage() { return t("离线，未投递"); }, get reason() { return t("该投的时候成员离线，这条没有发出去，以后也不会自动补发。消息留在群聊记录里，对它算未读。"); }, get next() { return t("成员上线后可以重发，也可以指定别的成员接手。"); } },
+  chain_limit: { get stage() { return t("被防循环拦下"); }, get reason() { return t("防循环：这条消息链的轮次已经到上限，这条没有投递。"); }, get next() { return t("确实要继续的话，到设置里调高每条链的轮次上限后重发，或者发一条新消息。"); } },
+  failed: { get stage() { return t("失败"); }, get reason() { return t("投递失败，没有拿到成功的结果。"); }, get next() { return t("看下面的原因。问题解决后可以重发，也可以指定别的成员接手。"); } },
+  unknown: { get stage() { return t("结果未知"); }, get reason() { return t("Hub 不知道这条有没有送到：可能已经送达，甚至还在执行。"); }, get next() { return t("先到应用里看这个对话，确认没有在执行，再重发或指定别的成员接手。"); } },
+  superseded: { get stage() { return t("已被取代，未投递"); }, get reason() { return t("尚未开始的旧提名已被新的提名取代，这不是投递失败。"); }, get next() { return t("不用处理。"); } },
+  accepted: { get stage() { return t("已接收"); }, get reason() { return t("桥或应用已经接受这条投递。接受不代表这一轮做完了，也不代表模型看过。"); }, get next() { return t("不用处理；要确认对方看到，看主动确认。"); } },
+  completed: { get stage() { return t("轮次完成"); }, get reason() { return t("这一轮已经结束。"); }, get next() { return t("不用处理。"); } },
+  done: { get stage() { return t("投递流程结束"); }, get reason() { return t("投递流程结束，但没有记录接收结果（较早的记录）。"); }, get next() { return t("不用处理。"); } },
 };
 
 /** What the receipt panel tells the user about a delivery's timeline: where it is, why, and what to do. */
 export function deliveryAdvice(timeline) {
   const view = DIAGNOSIS[timeline.diagnosis];
-  return timeline.handoffMessageId ? { ...view, next: '已经交接或重发，看新消息的回执。' } : view;
+  return timeline.handoffMessageId ? { ...view, next: t("已经交接或重发，看新消息的回执。") } : view;
 }
 
 const RESEND_BLOCK = {
-  offline: '成员现在不在线，不能重发。',
-  removed: '成员已移出，不能重发，可以指定别的成员接手。',
-  hidden: '成员隐身中，不会收到任何消息，不能重发；先取消隐身，或指定别的成员接手。',
-  hop_limit: '这条消息链的跳数已到上限，不能重发。',
-  chain_limit: '这条消息链的轮次已到上限，不能重发。',
+  get offline() { return t("成员现在不在线，不能重发。"); },
+  get removed() { return t("成员已移出，不能重发，可以指定别的成员接手。"); },
+  get hidden() { return t("成员隐身中，不会收到任何消息，不能重发；先取消隐身，或指定别的成员接手。"); },
+  get hop_limit() { return t("这条消息链的跳数已到上限，不能重发。"); },
+  get chain_limit() { return t("这条消息链的轮次已到上限，不能重发。"); },
 };
 
 export const resendBlockedText = (blockedBy) => RESEND_BLOCK[blockedBy];
@@ -998,7 +1038,7 @@ export function withLastMessage(cluster, createdAt) {
 
 /** The member panel toggle's summary in the chat header: "3 个群员 · 2 在线", plus " · 1 隐身" when some are hidden. */
 export function memberSummary(total, online, hidden = 0) {
-  return `${total} 个群员 · ${online} 在线${hidden ? ` · ${hidden} 隐身` : ''}`;
+  return t("{total} 个群员 · {online} 在线{value3}", { total: total, online: online, value3: hidden ? t(" · {hidden} 隐身", { hidden: hidden }) : '' });
 }
 
 // ---- hidden members (docs/cluster-members.md「隐身」): only the user and the coordinator see them ----
@@ -1006,7 +1046,7 @@ export function memberSummary(total, online, hidden = 0) {
 /** The words of the mark a hidden member carries wherever the page shows it; in a line of text, the words alone. */
 export const HIDDEN_MARK = '隐身中';
 /** The mark as a chip: the crossed-out eye and the words, never colour alone. `text`: other words, same icon. */
-export const hiddenMark = (text = HIDDEN_MARK, cls = 'hidden-mark') => h('span', { class: cls }, icon('eye-off', 'ico-xs'), text);
+export const hiddenMark = (text = t(HIDDEN_MARK), cls = 'hidden-mark') => h('span', { class: cls }, icon('eye-off', 'ico-xs'), text);
 
 /** Online members are counted without the hidden ones, which are counted on their own. */
 export function memberCounts(members, statusOf) {
@@ -1043,16 +1083,16 @@ const taskLine = (t) => `- ${t.number != null ? `#${t.number} ` : ''}${t.title}`
 /** The confirmation text for hiding (`hide` true) or showing a member, listing the tasks it holds. */
 export function hiddenConfirmText(member, held, hide) {
   if (!hide) {
-    return `取消 ${member.name} 的隐身？取消后它重新出现在其他成员的成员列表里，从这一刻起照常收消息；隐身期间的消息不会补发，也不算它的未读。`;
+    return t("取消 {name} 的隐身？取消后它重新出现在其他成员的成员列表里，从这一刻起照常收消息；隐身期间的消息不会补发，也不算它的未读。", { name: member.name });
   }
-  const lines = [`把 ${member.name} 设为隐身？`,
-    '隐身期间它收不到任何消息（@、@all、任务通知都不投递，也不算未读），除你和协调员外其他成员看不到它；它调用 orrery 工具只会得到“已被设为隐身”的说明，什么也不执行。已经排队还没开始的投递会取消，正在进行的一轮不会被打断。取消隐身后从那一刻起恢复正常。'];
+  const lines = [t("把 {name} 设为隐身？", { name: member.name }),
+    t("隐身期间它收不到任何消息（@、@all、任务通知都不投递，也不算未读），除你和协调员外其他成员看不到它；它调用 orrery 工具只会得到“已被设为隐身”的说明，什么也不执行。已经排队还没开始的投递会取消，正在进行的一轮不会被打断。取消隐身后从那一刻起恢复正常。")];
   if (held.executing.length || held.reviewing.length) {
-    lines.push('', '它手上的任务保持不变（不会自动改派，需要时请你或协调员改派）：');
-    if (held.executing.length) lines.push('执行：', ...held.executing.map(taskLine));
-    if (held.reviewing.length) lines.push('验收：', ...held.reviewing.map(taskLine));
+    lines.push('', t("它手上的任务保持不变（不会自动改派，需要时请你或协调员改派）："));
+    if (held.executing.length) lines.push(t("执行："), ...held.executing.map(taskLine));
+    if (held.reviewing.length) lines.push(t("验收："), ...held.reviewing.map(taskLine));
   } else {
-    lines.push('', '它手上没有未完成的任务。');
+    lines.push('', t("它手上没有未完成的任务。"));
   }
   return lines.join('\n');
 }
@@ -1071,7 +1111,7 @@ export function hiddenMentionHint(text, members) {
     const name = mentionAt(text, i, names);
     if (name && hidden.has(name)) hit.add(name);
   }
-  return hit.size ? `${[...hit].map((n) => `@${n}`).join('、')} 隐身中，不会收到（消息照常发出，留在群聊记录里）。` : '';
+  return hit.size ? t("{value1} 隐身中，不会收到（消息照常发出，留在群聊记录里）。", { value1: [...hit].map((n) => `@${n}`).join(t("、")) }) : '';
 }
 
 /** How many avatars the member panel toggle stacks; the rest are only counted in the summary. */
@@ -1096,9 +1136,9 @@ export const UNGROUPED = '未分组';
 /** The group field's text → { category } (trimmed; '' = ungrouped) for PATCH /api/clusters/:id, or { error }. */
 export function categoryInput(text) {
   const raw = String(text ?? '');
-  if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(raw)) return { error: '分组名不能含换行或控制字符' };
+  if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(raw)) return { error: t("分组名不能含换行或控制字符") };
   const category = raw.trim();
-  if ([...category].length > MAX_CATEGORY) return { error: `分组名最多 ${MAX_CATEGORY} 个字` };
+  if ([...category].length > MAX_CATEGORY) return { error: t("分组名最多 {MAX_CATEGORY} 个字", { MAX_CATEGORY: MAX_CATEGORY }) };
   return { category };
 }
 
@@ -1142,7 +1182,7 @@ export function moveGroup(groups, name, delta) {
 
 /** The "移到分组" menu of a cluster in `current` ('' = ungrouped): every group, then 未分组; the current one is marked. */
 export function moveTargets(groups, current) {
-  return [...groups.map((name) => ({ name, label: name })), { name: '', label: UNGROUPED }]
+  return [...groups.map((name) => ({ name, label: name })), { name: '', label: t(UNGROUPED) }]
     .map((t) => ({ ...t, current: t.name === (current ?? '').trim() }));
 }
 
@@ -1158,7 +1198,7 @@ export const unreadLabel = (count) => count > 99 ? '99+' : count > 0 ? String(co
 /** Same Unicode length and character rules as Hub.checkClusterName. */
 export function clusterNameInput(value) {
   if (typeof value !== 'string' || !value.trim() || /[\\/:*?"<>|\p{Cc}\p{Zl}\p{Zp}]/u.test(value)
-    || value.trim().startsWith('.') || [...value.trim()].length > 60) return { error: '群名不能为空、不能以点开头，最多 60 个字符，且不能包含路径符号或控制字符。' };
+    || value.trim().startsWith('.') || [...value.trim()].length > 60) return { error: t("群名不能为空、不能以点开头，最多 60 个字符，且不能包含路径符号或控制字符。") };
   return { name: value.trim() };
 }
 
@@ -1262,7 +1302,7 @@ export const activeMembers = (members, clusterId) => members.filter((m) => m.clu
 /** The member, if it is still in that cluster; a removed member cannot be edited. */
 export const activeMember = (members, clusterId, id) => activeMembers(members, clusterId).find((m) => m.id === id) ?? null;
 
-/** The Hub's channel status for a member; native siblings can share a busy channel. */
+/** The Hub's channel status for a member; memberships of one conversation share a busy channel. */
 export function memberStatus(member, harnessAvailable, running) {
   if (member.removedAt || !harnessAvailable) return 'offline';
   if (running || member.status === 'busy') return 'busy';
@@ -1270,8 +1310,8 @@ export function memberStatus(member, harnessAvailable, running) {
 }
 
 export function memberStatusLabel(member, status) {
-  if (status === 'busy') return '投递通道占用';
-  return status === 'offline' ? '离线' : '空闲';
+  if (status === 'busy') return t("投递通道占用");
+  return status === 'offline' ? t("离线") : t("空闲");
 }
 
 /** What avatarEl's orbit shows for a member status (memberStatus: 'idle', 'busy' or 'offline'). */
@@ -1285,8 +1325,8 @@ export function conversations(members, clusters) {
     if (m.removedAt) continue;
     const sessionId = m.workerSessionId || null;
     const key = JSON.stringify([m.harness, sessionId, sessionId ? null : m.id]);
-    if (!grouped.has(key)) grouped.set(key, { harness: m.harness, mode: 'native', sessionId, memberships: [] });
-    grouped.get(key).memberships.push({ clusterId: m.clusterId, clusterName: byCluster.get(m.clusterId)?.name ?? '(未知集群)', memberId: m.id, memberName: m.name });
+    if (!grouped.has(key)) grouped.set(key, { harness: m.harness, sessionId, memberships: [] });
+    grouped.get(key).memberships.push({ clusterId: m.clusterId, clusterName: byCluster.get(m.clusterId)?.name ?? t('(未知集群)'), memberId: m.id, memberName: m.name });
   }
   return [...grouped.values()].sort((a, b) => a.harness.localeCompare(b.harness) || (a.sessionId ?? '').localeCompare(b.sessionId ?? ''));
 }
@@ -1310,16 +1350,16 @@ export function conversationActivity(memberships, activity) {
 export function activitySummary(snapshot, failed = false, now = Date.now()) {
   const seen = snapshot?.lastSeenAt && Number.isFinite(Date.parse(snapshot.lastSeenAt)) ? snapshot.lastSeenAt : null;
   const at = snapshot?.lastActivityAt && Number.isFinite(Date.parse(snapshot.lastActivityAt)) ? snapshot.lastActivityAt : null;
-  const labels = { unknown: '暂无观察', observing: '观察中', stale: '观察已过期', disconnected: '观察已断开' };
+  const labels = { unknown: t("暂无观察"), observing: t("观察中"), stale: t("观察已过期"), disconnected: t("观察已断开") };
   let state = labels[snapshot?.state] ?? labels.unknown;
-  if (snapshot?.state === 'unknown' && (seen || at)) state = '仅历史';
+  if (snapshot?.state === 'unknown' && (seen || at)) state = t("仅历史");
   if (snapshot?.state === 'observing' && (!seen || now - Date.parse(seen) > (snapshot.staleAfterMs || 45_000))) state = labels.stale;
-  if (failed) state = seen ? '观察查询暂不可用' : '暂无观察 · 查询暂不可用';
-  const fmt = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '未知';
+  if (failed) state = seen ? t("观察查询暂不可用") : t("暂无观察 · 查询暂不可用");
+  const fmt = (iso) => iso ? new Date(iso).toLocaleString(language() === 'en' ? 'en-GB' : 'zh-CN', { hour12: false }) : t("未知");
   const event = snapshot?.event;
   const phases = event?.kind === 'tool'
-    ? { requested: '工具请求', started: '工具开始/分派', finished: '工具返回', failed: '工具失败' }
-    : event?.kind === 'turn' ? { started: '轮次开始', finished: '轮次结束', failed: '轮次失败' } : {};
+    ? { requested: t("工具请求"), started: t("工具开始/分派"), finished: t("工具返回"), failed: t("工具失败") }
+    : event?.kind === 'turn' ? { started: t("轮次开始"), finished: t("轮次结束"), failed: t("轮次失败") } : {};
   const label = phases[event?.phase];
   const toolName = event?.kind === 'tool' && typeof event.toolName === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(event.toolName)
     ? ` ${event.toolName}` : '';
@@ -1327,17 +1367,18 @@ export function activitySummary(snapshot, failed = false, now = Date.now()) {
   return {
     state,
     source,
+    hasChannel: Boolean(seen || at || (!failed && ['observing', 'stale', 'disconnected'].includes(snapshot?.state))),
     seen: seen ? fmt(seen) : null,
     activity: at ? `${fmt(at)}${label ? ` · ${label}${toolName}` : ''}` : null,
   };
 }
 
-/** An existing session is unavailable only when it already belongs to the target cluster. */
+/** An existing session is unavailable only when it is already a member of the same cluster. */
 export function sessionAvailability(session, clusterId) {
   const memberships = Array.isArray(session.memberships) ? session.memberships : null;
-  if (!memberships) return { disabled: false, reason: '', memberships: [] };
+  if (!memberships) return { disabled: session.memberId != null, reason: session.memberId != null ? t('已是群员') : '', memberships: [] };
   const inCluster = clusterId && memberships.some((m) => m.clusterId === clusterId);
-  return { disabled: Boolean(inCluster), reason: inCluster ? '已在当前群' : '', memberships };
+  return { disabled: Boolean(inCluster), reason: inCluster ? t("已在当前群") : '', memberships };
 }
 
 /** What the user should read before moving `member` to the listed conversation `session` (the dialog of docs/cluster-members.md). */
@@ -1345,10 +1386,10 @@ export function rebindWarnings(member, session, { busy = false } = {}) {
   const path = (p) => String(p ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   const others = (session.memberships ?? []).filter((m) => m.clusterId !== member.clusterId);
   return [
-    others.length ? `这个对话已在其他群：${others.map((m) => `${m.clusterName}（群内名：${m.memberName}）`).join('、')}。换过去后它同时在这些群里。` : null,
-    session.online === false ? '这个对话现在离线：排队给这个成员的消息会记为离线、不会重发，换对话的通知也一样；消息留在未读里，它上线后自己读。orrery 不会替你打开应用。' : null,
-    path(member.cwd) !== path(session.cwd) ? `工作目录和原对话不同：原来是 ${member.cwd}，换过去是 ${session.cwd}。原目录里的改动不会跟过去。` : null,
-    busy ? '这个成员现在有投递在途：结果会记为未知，那些消息保持未读。' : null,
+    others.length ? t("这个对话已在其他群：{value1}。换过去后它同时在这些群里。", { value1: others.map((m) => t("{clusterName}（群内名：{memberName}）", { clusterName: m.clusterName, memberName: m.memberName })).join(t("、")) }) : null,
+    session.online === false ? t("这个对话现在离线：排队给这个成员的消息会记为离线、不会重发，换对话的通知也一样；消息留在未读里，它上线后自己读。orrery 不会替你打开应用。") : null,
+    path(member.cwd) !== path(session.cwd) ? t("工作目录和原对话不同：原来是 {cwd}，换过去是 {value2}。原目录里的改动不会跟过去。", { cwd: member.cwd, value2: session.cwd }) : null,
+    busy ? t("这个成员现在有投递在途：结果会记为未知，那些消息保持未读。") : null,
   ].filter(Boolean);
 }
 
@@ -1364,10 +1405,10 @@ export async function editFields(member, { name, emoji, file, preset = null }, r
   emoji = emoji.trim();
   if (name !== member.name) fields.name = name;
   if (file) {
-    if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) return { error: '只支持 PNG、JPEG、GIF、WebP 图片' };
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) return { error: t("只支持 PNG、JPEG、GIF、WebP 图片") };
     const url = await readDataUrl(file);
-    if (url.length > MAX_AVATAR) return { error: `图片太大：转换后 ${Math.ceil(url.length / 1024)} KB，上限 256 KB` };
-    if (!DATA_URL_RE.test(url)) return { error: '图片格式无法识别' };
+    if (url.length > MAX_AVATAR) return { error: t("图片太大：转换后 {value1} KB，上限 256 KB", { value1: Math.ceil(url.length / 1024) }) };
+    if (!DATA_URL_RE.test(url)) return { error: t("图片格式无法识别") };
     fields.avatar = url;
   } else if (emoji && emoji !== member.avatar) {
     fields.avatar = emoji;
@@ -1397,7 +1438,7 @@ export function createRequest(clusterId, name, choices) {
     if (r.error) return { error: r.error, harness: c.harness };
     specs.push(...r.specs);
   }
-  if (!specs.length) return { error: '至少勾选一个 harness' };
+  if (!specs.length) return { error: t("至少勾选一个 harness") };
   return { request: memberSubmission(clusterId, name, specs) };
 }
 
@@ -1409,12 +1450,12 @@ export function createRequest(clusterId, name, choices) {
  */
 export function appRowSummary(c) {
   const picked = c.sessions.length;
-  if (!c.checked) return { text: picked ? `未勾选 · 已选 ${picked} 个对话` : '未勾选', problem: null };
-  if (c.loadFailed) return { text: '', problem: '列表加载失败' };
+  if (!c.checked) return { text: picked ? t("未勾选 · 已选 {picked} 个对话", { picked: picked }) : t("未勾选"), problem: null };
+  if (c.loadFailed) return { text: t('已勾选'), problem: t("列表加载失败") };
   const r = harnessSpecs(c);
-  if (r.error) return { text: '', problem: c.create ? r.error : '还没选对话' };
-  const what = [picked && `选了 ${picked} 个对话`, c.create && '新建 1 个对话'].filter(Boolean).join('，');
-  return { text: [what, `添加 ${r.specs.length} 个成员`].filter(Boolean).join(' · '), problem: c.memberProblem ? '成员名字有问题' : null };
+  if (r.error) return { text: t('已勾选'), problem: c.create ? r.error : t("还没选对话") };
+  const what = [picked && t("选了 {picked} 个对话", { picked: picked }), c.create && t("新建 1 个对话")].filter(Boolean).join(t("，"));
+  return { text: [what, t("添加 {length} 个成员", { length: r.specs.length })].filter(Boolean).join(' · '), problem: c.memberProblem ? t("成员名字有问题") : null };
 }
 
 /**
@@ -1424,8 +1465,8 @@ export function appRowSummary(c) {
  */
 export function memberNameProblem(name, taken = new Set(), others = []) {
   if (!name) return null;
-  if (!/^[\p{L}\p{N}_.-]+$/u.test(name) || RESERVED_NAMES.has(name)) return '名字无效';
-  return taken.has(name) || others.includes(name) ? '重名（会自动加 -2）' : null;
+  if (!/^[\p{L}\p{N}_.-]+$/u.test(name) || RESERVED_NAMES.has(name)) return t("名字无效");
+  return taken.has(name) || others.includes(name) ? t("重名（会自动加 -2）") : null;
 }
 
 /**
@@ -1445,18 +1486,18 @@ export function rowAfterKey(index, count, key) {
 
 /** Shown in a confirm dialog before a setting is saved as unlimited; cancelling sends nothing. */
 export const UNLIMITED_WARNING = {
-  maxHops: '无限仅取消消息链跳数限制，可能增加代理自动往返、运行时间和模型用量。每条链轮次上限按它自己的设置生效，每小时轮次上限和暂停始终有效。',
-  maxTurnsPerChain: '设为无限后，代理之间可以一直互相 @ 下去，直到每小时轮次上限或暂停开关让它们停下（跳数上限是有限值时，也会在那里停下），运行时间和模型用量可能明显增加。',
+  get maxHops() { return t("无限仅取消消息链跳数限制，可能增加代理自动往返、运行时间和模型用量。每条链轮次上限按它自己的设置生效，每小时轮次上限和暂停始终有效。"); },
+  get maxTurnsPerChain() { return t("设为无限后，代理之间可以一直互相 @ 下去，直到每小时轮次上限或暂停开关让它们停下（跳数上限是有限值时，也会在那里停下），运行时间和模型用量可能明显增加。"); },
 };
 
 // name: shown in the sidebar; env: the start-up variable; sourceKey: where GET /api/settings puts the source.
 const LIMITS = {
-  maxHops: { name: '跳数上限', env: 'ORRERY_MAX_HOPS', sourceKey: 'source' },
-  maxTurnsPerChain: { name: '每条链轮次上限', env: 'ORRERY_MAX_TURNS_PER_CHAIN', sourceKey: 'maxTurnsPerChainSource' },
+  maxHops: { get name() { return t("跳数上限"); }, env: 'ORRERY_MAX_HOPS', sourceKey: 'source' },
+  maxTurnsPerChain: { get name() { return t("每条链轮次上限"); }, env: 'ORRERY_MAX_TURNS_PER_CHAIN', sourceKey: 'maxTurnsPerChainSource' },
 };
 
 const sourceText = (env, source) =>
-  ({ saved: `已在网页上保存；${env} 不再起作用`, startup: `来自 ${env}，保存后以这里为准`, default: '默认值' })[source] ?? '';
+  ({ saved: t("已在网页上保存；{env} 不再起作用", { env: env }), startup: t("来自 {env}，保存后以这里为准", { env: env }), default: t("默认值") })[source] ?? '';
 
 /** What the sidebar shows for one setting (`maxHops` or `maxTurnsPerChain`) of GET /api/settings; null while unknown. */
 export function limitView(setting, settings) {
@@ -1464,7 +1505,7 @@ export function limitView(setting, settings) {
   if (!limit) return null;
   const { name, env, sourceKey } = LIMITS[setting];
   const unlimited = limit.kind === 'unlimited';
-  return { label: `${name}：${unlimited ? '无限' : limit.value}`, unlimited, source: sourceText(env, settings[sourceKey]) };
+  return { label: t("{name}：{value2}", { name: name, value2: unlimited ? t("无限") : limit.value }), unlimited, source: sourceText(env, settings[sourceKey]) };
 }
 
 /**
@@ -1487,11 +1528,11 @@ export function limitSubmission(setting, { unlimited, value }) {
   if (unlimited) {
     return {
       body: { [setting]: { kind: 'unlimited' }, confirmUnlimited: true },
-      confirm: { title: `把${name}设为无限？`, message: UNLIMITED_WARNING[setting], confirmText: '设为无限', danger: true },
+      confirm: { title: t("把{name}设为无限？", { name: name }), message: UNLIMITED_WARNING[setting], confirmText: t("设为无限"), danger: true },
     };
   }
   const v = value.trim();
-  if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v))) return { error: `${name}要填非负整数，或勾选"无限"` };
+  if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v))) return { error: t("{name}要填非负整数，或勾选\"无限\"", { name: name }) };
   return { body: { [setting]: { kind: 'finite', value: Number(v) } } };
 }
 
@@ -1499,7 +1540,7 @@ export function limitSubmission(setting, { unlimited, value }) {
 // ---- coordinator notification settings (docs/collaboration.md): stalled-member threshold ----
 
 const NOTIFIES = {
-  stalledMemberMinutes: { name: '成员无活动提醒阈值', unit: '分钟', defaultValue: 30,
+  stalledMemberMinutes: { get name() { return t("成员无活动提醒阈值"); }, get unit() { return t("分钟"); }, defaultValue: 30,
     sourceKey: 'stalledMemberMinutesSource' },
 };
 
@@ -1508,15 +1549,15 @@ export function notifyView(setting, settings) {
   const value = settings?.[setting];
   if (typeof value !== 'number') return null;
   const { name, unit, defaultValue, sourceKey } = NOTIFIES[setting];
-  const source = ({ saved: '已在网页上保存', default: `默认值（${defaultValue} ${unit}）` })[settings[sourceKey]] ?? '';
-  return { label: `${name}：${value} ${unit}`, value, source };
+  const source = ({ saved: t("已在网页上保存"), default: t("默认值（{defaultValue} {unit}）", { defaultValue: defaultValue, unit: unit }) })[settings[sourceKey]] ?? '';
+  return { label: t("{name}：{value} {unit}", { name: name, value: value, unit: unit }), value, source };
 }
 
 /** The PATCH /api/settings body for one notification setting's value, or { error }. */
 export function notifySubmission(setting, value) {
   const { name, unit } = NOTIFIES[setting];
   const v = String(value ?? '').trim();
-  if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v))) return { error: `${name}要填非负整数（${unit}）` };
+  if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v))) return { error: t("{name}要填非负整数（{unit}）", { name: name, unit: unit }) };
   return { body: { [setting]: Number(v) } };
 }
 
@@ -1545,7 +1586,7 @@ export const isImage = (mime) => /^image\/(png|jpeg|gif|webp)$/.test(mime ?? '')
 export const fileUrl = (id, download = false) => `/api/files/${encodeURIComponent(id)}${download ? '?download=1' : ''}`;
 
 /** "name（1.5 KB）", or just the name of a file known only by its id. */
-export const fileLabel = (f) => (f.size == null ? f.name : `${f.name}（${fmtSize(f.size)}）`);
+export const fileLabel = (f) => (f.size == null ? f.name : t("{name}（{size}）", { name: f.name, size: fmtSize(f.size) }));
 
 /** One pending attachment row; its owner keeps the upload state and remove/lock behavior. */
 export function pendingFileNode(file, remove, preview = null, disabled = false) {
@@ -1554,8 +1595,8 @@ export function pendingFileNode(file, remove, preview = null, disabled = false) 
   return h('li', { class: `pending-file ${file.state}`, title: file.error ?? fileLabel(file) },
     mark,
     h('span', { class: 'file-name' }, file.name),
-    h('span', { class: 'muted' }, file.state === 'uploading' ? '上传中…' : file.state === 'error' ? `上传失败：${file.error}` : fmtSize(file.size)),
-    h('button', { type: 'button', class: 'icon', 'aria-label': `移除 ${file.name}`, disabled, onclick: remove }, icon('close', 'ico-sm')));
+    h('span', { class: 'muted' }, file.state === 'uploading' ? t("上传中…") : file.state === 'error' ? t("上传失败：{error}", { error: file.error }) : fmtSize(file.size)),
+    h('button', { type: 'button', class: 'icon', 'aria-label': t("移除 {name}", { name: file.name }), disabled, onclick: remove }, icon('close', 'ico-sm')));
 }
 
 /**
@@ -1564,11 +1605,11 @@ export function pendingFileNode(file, remove, preview = null, disabled = false) 
  * else fails to load and stays a download. File names reach text nodes and attribute values only.
  */
 export function attachmentNode(f, openViewer) {
-  const chip = () => h('a', { class: 'file-chip', href: fileUrl(f.id, true), download: f.name, title: `下载 ${fileLabel(f)}` },
+  const chip = () => h('a', { class: 'file-chip', href: fileUrl(f.id, true), download: f.name, title: t("下载 {f}", { f: fileLabel(f) }) },
     icon('file', 'ico-sm'), h('span', { class: 'file-name' }, f.name), f.size == null ? null : h('span', { class: 'muted' }, fmtSize(f.size)));
   if (f.mime !== undefined && !isImage(f.mime)) return chip();
-  const missing = () => h('span', { class: 'thumb-missing', title: `${f.name} 加载失败` }, '图片加载失败');
-  const thumb = h('button', { type: 'button', class: 'thumb', title: `${fileLabel(f)}，点击查看`, onclick: () => openViewer(f) },
+  const missing = () => h('span', { class: 'thumb-missing', title: t("{name} 加载失败", { name: f.name }) }, t("图片加载失败"));
+  const thumb = h('button', { type: 'button', class: 'thumb', title: t("{f}，点击查看", { f: fileLabel(f) }), onclick: () => openViewer(f) },
     h('img', { src: fileUrl(f.id), alt: f.name, loading: 'lazy', onerror: () => thumb.replaceWith(f.mime === undefined ? chip() : missing()) }));
   return thumb;
 }
@@ -1577,13 +1618,13 @@ export function attachmentNode(f, openViewer) {
  * Which of `incoming` ([{ name, size }]) may join the `pending` files of one message (or `owner`): each at most 20 MB,
  * at most 10 in all. Returns { accepted, errors } with one Chinese line per refusal, shown in the page.
  */
-export function pickFiles(pending, incoming, owner = '一条消息') {
+export function pickFiles(pending, incoming, owner = t("一条消息")) {
   const accepted = [];
   const errors = [];
   for (const f of incoming) {
-    if (f.size > MAX_FILE_BYTES) errors.push(`「${f.name}」有 ${fmtSize(f.size)}，超过单个文件 20 MB 的上限`);
+    if (f.size > MAX_FILE_BYTES) errors.push(t("「{name}」有 {size}，超过单个文件 20 MB 的上限", { name: f.name, size: fmtSize(f.size) }));
     else if (pending + accepted.length >= MAX_FILES) {
-      errors.push(`${owner}最多带 ${MAX_FILES} 个文件，「${f.name}」没有加上`);
+      errors.push(t("{owner}最多带 {MAX_FILES} 个文件，「{name}」没有加上", { owner: owner, MAX_FILES: MAX_FILES, name: f.name }));
     } else accepted.push(f);
   }
   return { accepted, errors };
@@ -1609,7 +1650,7 @@ export function noticeBoard() {
 export function pasteName(type, date) {
   const ext = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }[type] ?? 'png';
   const p = (n) => String(n).padStart(2, '0');
-  return `粘贴的图片-${date.getFullYear()}${p(date.getMonth() + 1)}${p(date.getDate())}-${p(date.getHours())}${p(date.getMinutes())}${p(date.getSeconds())}.${ext}`;
+  return t("粘贴的图片-{value1}{value2}{value3}-{value4}{value5}{value6}.{ext}", { value1: date.getFullYear(), value2: p(date.getMonth() + 1), value3: p(date.getDate()), value4: p(date.getHours()), value5: p(date.getMinutes()), value6: p(date.getSeconds()), ext: ext });
 }
 
 /** The files a paste attaches, each clipboard image with a usable name in `as`; null for a paste that also carries text. */
@@ -1770,17 +1811,17 @@ export function fmtTokens(n) {
 export function usageAlertText(row) {
   const alert = row?.alert;
   if (!alert) return '';
-  const fmt = (n) => n === null ? '未知' : fmtTokens(n);
-  return `对话已很长（单轮 ${fmt(alert.turnTokens)} / 合计 ${fmt(alert.conversationTokens)}），建议在应用里开新对话或压缩。`;
+  const fmt = (n) => n === null ? t("未知") : fmtTokens(n);
+  return t("对话已很长（单轮 {turnTokens} / 合计 {conversationTokens}），建议在应用里开新对话或压缩。", { turnTokens: fmt(alert.turnTokens), conversationTokens: fmt(alert.conversationTokens) });
 }
 
 /** Every token of a TokenTotals (output includes reasoning). */
 export const tokenSum = (t) => t.input + t.cachedInput + t.cacheWrite + t.output;
 
 /** "共 1.2M：输入 3.4K · 缓存读 1.1M · 缓存写 0 · 输出 12K（推理 2K）". */
-export function tokenText(t) {
-  const reasoning = t.reasoning ? `（推理 ${fmtTokens(t.reasoning)}）` : '';
-  return `共 ${fmtTokens(tokenSum(t))}：输入 ${fmtTokens(t.input)} · 缓存读 ${fmtTokens(t.cachedInput)} · 缓存写 ${fmtTokens(t.cacheWrite)} · 输出 ${fmtTokens(t.output)}${reasoning}`;
+export function tokenText(totals) {
+  const reasoning = totals.reasoning ? t("（推理 {reasoning}）", { reasoning: fmtTokens(totals.reasoning) }) : '';
+  return t("共 {totals}：输入 {input} · 缓存读 {cachedInput} · 缓存写 {cacheWrite} · 输出 {output}{reasoning}", { totals: fmtTokens(tokenSum(totals)), input: fmtTokens(totals.input), cachedInput: fmtTokens(totals.cachedInput), cacheWrite: fmtTokens(totals.cacheWrite), output: fmtTokens(totals.output), reasoning: reasoning });
 }
 
 /** When a window resets, said plainly: "已重置" once the time has passed, else "2 小时 5 分后重置" / "3 天后重置". */
@@ -1788,38 +1829,38 @@ export function resetText(resetsAt, now = Date.now()) {
   if (!resetsAt) return '';
   const ms = Date.parse(resetsAt) - now;
   if (!Number.isFinite(ms)) return '';
-  if (ms <= 0) return '已重置';
+  if (ms <= 0) return t("已重置");
   const mins = Math.ceil(ms / 60_000);
-  if (mins < 60) return `${mins} 分后重置`;
+  if (mins < 60) return t("{mins} 分后重置", { mins: mins });
   const hours = Math.floor(mins / 60);
-  if (hours < 48) return `${hours} 小时 ${mins % 60} 分后重置`;
-  return `${Math.floor(hours / 24)} 天后重置`;
+  if (hours < 48) return t("{hours} 小时 {value2} 分后重置", { hours: hours, value2: mins % 60 });
+  return t("{value1} 天后重置", { value1: Math.floor(hours / 24) });
 }
 
 /** One harness's quota as lines: { label, percent (null when reset), note }, or one "暂不支持" / "还没有读到" line. */
 export function quotaLines(quota, now = Date.now()) {
-  if (!quota?.supported) return [{ label: '额度', percent: null, note: '暂不支持' }];
+  if (!quota?.supported) return [{ label: t("额度"), percent: null, note: t("暂不支持") }];
   const s = quota.snapshot;
-  if (!s) return [{ label: '额度', percent: null, note: quota.error ? `读取失败：${quota.error}` : '还没有读到' }];
+  if (!s) return [{ label: t("额度"), percent: null, note: quota.error ? t("读取失败：{error}", { error: quota.error }) : t("还没有读到") }];
   return s.windows.map((w) => {
     const reset = resetText(w.resetsAt, now);
     // Past its reset the old percentage no longer holds: shown as reset, not as the stale number.
-    return reset === '已重置' ? { label: w.label, percent: null, note: '已重置' } : { label: w.label, percent: Math.round(w.usedPercent), note: reset };
+    return reset === t("已重置") ? { label: w.label, percent: null, note: t("已重置") } : { label: w.label, percent: Math.round(w.usedPercent), note: reset };
   });
 }
 
 /** "截至 14:05" (fmtTime) plus the source's last error, if any. */
 export function quotaAsOf(quota, fmt = fmtTime) {
   if (!quota?.snapshot) return '';
-  return `截至 ${fmt(quota.snapshot.observedAt)}${quota.error ? `（最近一次读取失败：${quota.error}）` : ''}`;
+  return t("截至 {observedAt}{value2}", { observedAt: fmt(quota.snapshot.observedAt), value2: quota.error ? t("（最近一次读取失败：{error}）", { error: quota.error }) : '' });
 }
 
 /** The cluster total next to the chat title: "token：经 orrery 1.2M · 对话合计 3.4M", or '' when nothing is known. */
 export function clusterUsageText(usage) {
   if (!usage?.members?.length) return '';
-  const via = usage.members.some((m) => m.viaOrrery) ? `经 orrery ${fmtTokens(tokenSum(usage.cluster.viaOrrery))}` : '';
-  const conv = usage.members.some((m) => m.conversation) ? `对话合计 ${fmtTokens(tokenSum(usage.cluster.conversation))}` : '';
-  return via || conv ? `token：${[via, conv].filter(Boolean).join(' · ')}` : '';
+  const via = usage.members.some((m) => m.viaOrrery) ? t("经 orrery {viaOrrery}", { viaOrrery: fmtTokens(tokenSum(usage.cluster.viaOrrery)) }) : '';
+  const conv = usage.members.some((m) => m.conversation) ? t("对话合计 {conversation}", { conversation: fmtTokens(tokenSum(usage.cluster.conversation)) }) : '';
+  return via || conv ? t("token：{value1}", { value1: [via, conv].filter(Boolean).join(' · ') }) : '';
 }
 
 /** One harness's quota lines and "截至 …" (shared by usageView and quotaPanel). */
@@ -1827,21 +1868,21 @@ function quotaRows(quota, now) {
   const rows = quotaLines(quota, now).map((l) => h('div', { class: 'quota-line' },
     h('span', { class: 'quota-label' }, l.label),
     l.percent === null ? h('span', { class: 'muted quota-note' }, l.note)
-      : [h('span', { class: 'quota-bar', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': l.percent, title: `已用 ${l.percent}%` },
+      : [h('span', { class: 'quota-bar', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': l.percent, title: t("已用 {percent}%", { percent: l.percent }) },
         h('span', { style: `width: ${Math.max(0, Math.min(100, l.percent))}%` })),
-      h('span', { class: 'quota-pct' }, `已用 ${l.percent}%${l.note ? ` · ${l.note}` : ''}`)]));
+      h('span', { class: 'quota-pct' }, t("已用 {percent}%{value2}", { percent: l.percent, value2: l.note ? ` · ${l.note}` : '' }))]));
   const asOf = quotaAsOf(quota);
   return asOf ? [...rows, h('p', { class: 'muted usage-note' }, asOf)] : rows;
 }
 
-const refreshButton = (onRefresh) => h('button', { type: 'button', class: 'small', onclick: onRefresh }, '刷新额度');
+const refreshButton = (onRefresh) => h('button', { type: 'button', class: 'small', onclick: onRefresh }, t("刷新额度"));
 
 /** A member row's short token line: "经 orrery 47K（1 轮）· 对话 10M", or '' when nothing is known. */
 export function memberTokensText(row) {
   if (!row) return '';
   const parts = [];
-  if (row.viaOrrery) parts.push(`经 orrery ${fmtTokens(tokenSum(row.viaOrrery.totals))}（${row.viaOrrery.turns} 轮）`);
-  if (row.conversation) parts.push(`对话 ${fmtTokens(tokenSum(row.conversation))}`);
+  if (row.viaOrrery) parts.push(t("经 orrery {totals}（{turns} 轮）", { totals: fmtTokens(tokenSum(row.viaOrrery.totals)), turns: row.viaOrrery.turns }));
+  if (row.conversation) parts.push(t("对话 {conversation}", { conversation: fmtTokens(tokenSum(row.conversation)) }));
   return parts.join(' · ');
 }
 
@@ -1868,22 +1909,22 @@ export function memberDetails(member, row, quota, { usageLoaded = Boolean(row ||
   const old = (at, ms) => Number.isFinite(Date.parse(at)) && now - Date.parse(at) > ms;
   let model;
   if (session?.model) {
-    model = { text: old(session.observedAt, SESSION_STALE_MS) ? `${session.model}（${fmt(session.observedAt)} 读到）` : session.model,
-      title: `模型：${session.model}，${fmt(session.observedAt)} 从应用的本机记录读到` };
+    model = { text: old(session.observedAt, SESSION_STALE_MS) ? t("{model}（{observedAt} 读到）", { model: session.model, observedAt: fmt(session.observedAt) }) : session.model,
+      title: t("模型：{model}，{observedAt} 从应用的本机记录读到", { model: session.model, observedAt: fmt(session.observedAt) }) };
   } else if (member.model) {
-    model = { text: `${member.model}（加入时）`, title: `模型：${member.model}，是加入群或换对话时读到的；之后在应用里换了模型这里不会知道` };
+    model = { text: t("{model}（加入时）", { model: member.model }), title: t("模型：{model}，是加入群或换对话时读到的；之后在应用里换了模型这里不会知道", { model: member.model }) };
   } else {
-    model = { text: '模型未知', title: '应用没有给出这个对话的模型' };
+    model = { text: t("模型未知"), title: t("应用没有给出这个对话的模型") };
   }
   const name = projectName(member.cwd);
-  const project = name ? { text: name, title: `项目（工作目录）：${member.cwd}` } : { text: '项目未知', title: '没有记录工作目录' };
+  const project = name ? { text: name, title: t("项目（工作目录）：{cwd}", { cwd: member.cwd }) } : { text: t("项目未知"), title: t("没有记录工作目录") };
   let conversation;
   if (session?.title) {
-    conversation = { text: session.title, prefix: old(session.observedAt, SESSION_STALE_MS) ? `（${fmt(session.observedAt)} 读到）` : undefined,
-      title: `对话标题：${session.title}\n${fmt(session.observedAt)} 读到\n会话 ID：${member.workerSessionId}` };
+    conversation = { text: session.title, prefix: old(session.observedAt, SESSION_STALE_MS) ? t("（{observedAt} 读到）", { observedAt: fmt(session.observedAt) }) : undefined,
+      title: t("对话标题：{title}\n{observedAt} 读到\n会话 ID：{workerSessionId}", { title: session.title, observedAt: fmt(session.observedAt), workerSessionId: member.workerSessionId }) };
   } else {
-    conversation = { text: '对话标题未知',
-      title: `这次 Hub 运行中还没读到这个对话的标题（加入、换对话或在添加成员里列出对话时会读到）\n会话 ID：${member.workerSessionId}` };
+    conversation = { text: t("对话标题未知"),
+      title: t("这次 Hub 运行中还没读到这个对话的标题（加入、换对话或在添加成员里列出对话时会读到）\n会话 ID：{workerSessionId}", { workerSessionId: member.workerSessionId }) };
   }
   return { model, project, conversation, quota: usageLoaded ? quotaChip(member, quota, { now, fmt, old: (at) => old(at, QUOTA_STALE_MS) }) : null };
 }
@@ -1904,20 +1945,20 @@ export function currentSession(member, row) {
  * used up or used up one says so in words, with its window.
  */
 function quotaChip(member, quota, { now, fmt, old }) {
-  const head = `${member.harness} 账号的额度，同一应用的群员共用`;
+  const head = t("{harness} 账号的额度，同一应用的群员共用", { harness: member.harness });
   const plain = (text, title, level = 'unknown') => ({ text, short: text, percent: null, title, level });
-  if (!quota) return plain('额度未知', '只统计原生群员所在应用的额度');
-  if (!quota.supported) return plain('额度不支持', `${member.harness} 没有可读的额度来源`);
-  if (!quota.snapshot) return plain('额度未读到', quota.error ? `读取失败：${quota.error}` : '还没有读到');
+  if (!quota) return plain(t("额度未知"), t("只统计群员所在应用的额度"));
+  if (!quota.supported) return plain(t("额度不支持"), t("{harness} 没有可读的额度来源", { harness: member.harness }));
+  if (!quota.snapshot) return plain(t("额度未读到"), quota.error ? t("读取失败：{error}", { error: quota.error }) : t("还没有读到"));
   const lines = quotaLines(quota, now);
-  const detail = [head, ...lines.map((l) => `${l.label}：${l.percent === null ? l.note : `已用 ${l.percent}%${l.note ? ` · ${l.note}` : ''}`}`), quotaAsOf(quota, fmt)].join('\n');
+  const detail = [head, ...lines.map((l) => t("{label}：{value2}", { label: l.label, value2: l.percent === null ? l.note : t("已用 {percent}%{value2}", { percent: l.percent, value2: l.note ? ` · ${l.note}` : '' }) })), quotaAsOf(quota, fmt)].join('\n');
   const top = lines.filter((l) => l.percent !== null).sort((a, b) => b.percent - a.percent)[0];
-  if (!top) return { ...plain(`${member.harness} 额度已重置`, detail, 'ok'), short: '额度已重置' };
+  if (!top) return { ...plain(t("{harness} 额度已重置", { harness: member.harness }), detail, 'ok'), short: t("额度已重置") };
   const level = top.percent >= 100 ? 'exhausted' : top.percent >= 90 ? 'warning' : 'ok';
-  const word = level === 'exhausted' ? '已用完 ' : level === 'warning' ? '快用完 ' : '';
-  const asOf = old(quota.snapshot.observedAt) ? `，截至 ${fmt(quota.snapshot.observedAt)}` : '';
-  const short = level === 'ok' ? `${top.percent}%${asOf ? `（截至 ${fmt(quota.snapshot.observedAt)}）` : ''}` : `额度${word}${top.percent}%（${top.label}${asOf}）`;
-  return { text: `${member.harness} 额度 ${word}${top.percent}%（${top.label}${asOf}）`, short, percent: top.percent, title: detail, level };
+  const word = level === 'exhausted' ? t("已用完 ") : level === 'warning' ? t("快用完 ") : '';
+  const asOf = old(quota.snapshot.observedAt) ? t("，截至 {observedAt}", { observedAt: fmt(quota.snapshot.observedAt) }) : '';
+  const short = level === 'ok' ? `${top.percent}%${asOf ? t("（截至 {observedAt}）", { observedAt: fmt(quota.snapshot.observedAt) }) : ''}` : t("额度{word}{percent}%（{label}{asOf}）", { word: word, percent: top.percent, label: top.label, asOf: asOf });
+  return { text: t("{harness} 额度 {word}{percent}%（{label}{asOf}）", { harness: member.harness, word: word, percent: top.percent, label: top.label, asOf: asOf }), short, percent: top.percent, title: detail, level };
 }
 
 /**
@@ -1937,44 +1978,43 @@ export function memberDetailsView(d, { tokens = '', alert = '' } = {}) {
       h('span', { style: `width: ${Math.max(0, Math.min(100, q.percent))}%` })),
     q.short === q.text ? q.text : [h('span', { 'aria-hidden': 'true' }, q.short), h('span', { class: 'sr-only' }, q.text)]);
   return h('div', { class: 'member-details' },
-    h('div', { class: 'member-line member-line-model' }, part('member-model', d.model, ['chip', '模型 '])),
+    h('div', { class: 'member-line member-line-model' }, part('member-model', d.model, ['chip', t("模型 ")])),
     h('div', { class: 'member-line member-line-where' },
-      part('member-project', d.project, ['project', '项目 ']), part('member-conversation', d.conversation, ['comment', '对话 '])),
+      part('member-project', d.project, ['project', t("项目 ")]), part('member-conversation', d.conversation, ['comment', t("对话 ")])),
     quota || tokens ? h('div', { class: 'member-line member-usage' }, quota,
       // The token parts break only between each other, never inside, and are never cut short.
-      tokens ? h('span', { class: 'member-tokens', title: '不同模型的 token 不能直接比较' },
+      tokens ? h('span', { class: 'member-tokens', title: t("不同模型的 token 不能直接比较") },
         tokens.split(' · ').flatMap((t, i) => [i ? ' · ' : null, h('span', { class: 'nowrap' }, t)])) : null) : null,
     alert ? h('p', { class: 'member-length-alert' }, icon('alert'), h('span', {}, alert)) : null);
 }
 
 /**
- * The confirmation before removing a member (confirmDialog options): what ends and what is kept, said for the
- * attached application conversation (docs/cluster-members.md「移出成员」).
+ * The confirmation before removing a member (confirmDialog options): what ends and what is kept
+ * (docs/cluster-members.md「移出成员」).
  */
 export function removeMemberConfirm(member) {
-  const kept = '群聊和投递记录都会保留，历史里仍显示它的名字和头像。还在排队的投递会取消。';
-  const message = `${kept}应用里的这个对话不会被删除或改动；它已经开始的一轮可能继续运行。以后可以把这个对话重新加进来，会成为一个新成员。`;
-  return { title: `将“${member.name}”移出集群？`, message, confirmText: '移出集群', danger: true };
+  const kept = t("群聊和投递记录都会保留，历史里仍显示它的名字和头像。还在排队的投递会取消。");
+  const message = t("{kept}应用里的这个对话不会被删除或改动；它已经开始的一轮可能继续运行。以后可以把这个对话重新加进来，会成为一个新成员。", { kept: kept });
+  return { title: t("将“{name}”移出集群？", { name: member.name }), message, confirmText: t("移出集群"), danger: true };
 }
 
-/** A member row's app name, for the app icon's tooltip and accessible name. */
+/** A member row's app as words, for the app icon's tooltip and accessible name: "Claude". */
 export function memberAppText(appName) {
   return appName;
 }
 
 /**
  * The icon buttons of a member row, in order: { key, icon (index.html sprite id without "i-"), label (the tooltip),
- * name (the accessible name, which says whose row), danger? }. Changing the conversation is always available;
- * hide/show says which way it goes.
+ * name (the accessible name, which says whose row), danger? }. Hide/show says which way it goes.
  */
 export function memberRowActions(member) {
   const hidden = Boolean(member.hiddenAt);
   return [
-    { key: 'edit', icon: 'pencil', label: '改名/头像' },
-    { key: 'rebind', icon: 'swap', label: '换对话' },
-    { key: 'hide', icon: hidden ? 'eye' : 'eye-off', label: hidden ? '取消隐身' : '设为隐身' },
-    { key: 'remove', icon: 'user-minus', label: '移出集群', danger: true },
-  ].map((a) => ({ ...a, name: `${a.label}：${member.name}` }));
+    { key: 'edit', icon: 'pencil', label: t("改名/头像") },
+    { key: 'rebind', icon: 'swap', label: t("换对话") },
+    { key: 'hide', icon: hidden ? 'eye' : 'eye-off', label: hidden ? t("取消隐身") : t("设为隐身") },
+    { key: 'remove', icon: 'user-minus', label: t("移出集群"), danger: true },
+  ].map((a) => ({ ...a, name: t("{label}：{name}", { label: a.label, name: member.name }) }));
 }
 
 /**
@@ -1984,16 +2024,16 @@ export function memberRowActions(member) {
 export function usageView(member, usage, { onRefresh = null, now = Date.now() } = {}) {
   const row = usage?.members?.find((m) => m.memberId === member.id) ?? null;
   const quota = usage?.quotas?.find((q) => q.harness === member.harness) ?? null;
-  const box = h('section', { class: 'usage', 'aria-label': '额度与 token' });
+  const box = h('section', { class: 'usage', 'aria-label': t("额度与 token") });
   if (!usage) return box;
-  box.append(h('div', { class: 'usage-head' }, h('span', {}, `${member.harness} 额度`),
+  box.append(h('div', { class: 'usage-head' }, h('span', {}, t("{harness} 额度", { harness: member.harness })),
     onRefresh && quota?.supported ? refreshButton(onRefresh) : null));
   box.append(...quotaRows(quota, now));
-  const via = row?.viaOrrery ? `${tokenText(row.viaOrrery.totals)}（${row.viaOrrery.turns} 轮）` : '暂无记录';
-  const conv = row?.conversation ? tokenText(row.conversation) : row?.conversationSupported ? '读不到' : '暂不支持';
+  const via = row?.viaOrrery ? t("{totals}（{turns} 轮）", { totals: tokenText(row.viaOrrery.totals), turns: row.viaOrrery.turns }) : t("暂无记录");
+  const conv = row?.conversation ? tokenText(row.conversation) : row?.conversationSupported ? t("读不到") : t("暂不支持");
   box.append(h('dl', { class: 'info usage-tokens' },
-    h('dt', {}, '经 orrery'), h('dd', {}, via),
-    h('dt', {}, '整个对话'), h('dd', {}, conv)));
+    h('dt', {}, t("经 orrery")), h('dd', {}, via),
+    h('dt', {}, t("整个对话")), h('dd', {}, conv)));
   return box;
 }
 

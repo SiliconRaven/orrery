@@ -13,5 +13,6 @@ contextBridge.exposeInMainWorld('orrery', {
   use: (app, token) => ipcRenderer.send('settings:use', { app: id(app), token: id(token) }),
   pick: (app) => ipcRenderer.send('settings:pick', id(app)),
   clear: (app) => ipcRenderer.send('settings:clear', id(app)),
+  language: (value) => { if (value === 'zh' || value === 'en') ipcRenderer.send('settings:language', value); },
   close: () => ipcRenderer.send('settings:close'),
 });

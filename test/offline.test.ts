@@ -9,13 +9,13 @@ import { parseEnvelopes } from './mock.ts';
 import { createMockNativeAdapter, type MockNativeOptions } from '../src/adapters/mock/native.ts';
 import type { BridgeConnection } from '../src/core/hub.ts';
 import { registries } from '../src/adapters/index.ts';
-import { fixtureNativeMock, tempDir, waitFor } from './helpers.ts';
+import { tempDir, waitFor } from './helpers.ts';
 
 const OFFLINE = { state: 'offline', error: '成员离线，未投递' };
 
 /**
- * An in-process Hub with native mock members A (session s1) and B (s2) and isolated I. `online` decides whether the
- * native members are online (kind 'queue'); kind 'bridge' follows the Hub's bridges instead.
+ * An in-process Hub with mock members A (session s1) and B (s2), and I of another harness that is always online.
+ * `online` decides whether A and B are online (kind 'queue'); kind 'bridge' follows the Hub's bridges instead.
  */
 async function offlineHub(opts: { store?: Store; dir?: string; native?: MockNativeOptions; limits?: Partial<Limits> } = {}) {
   const dir = opts.dir ?? tempDir();
@@ -25,7 +25,7 @@ async function offlineHub(opts: { store?: Store; dir?: string; native?: MockNati
   if ((opts.native?.kind ?? 'queue') === 'queue') native.isOnline = () => state.online;
   const store = opts.store ?? new Store(':memory:');
   const hub = new Hub({
-    store, nativeAdapters: { mock: native, unrelated: fixtureNativeMock(dir, { harness: 'unrelated' }) },
+    store, nativeAdapters: { mock: native, other: createMockNativeAdapter({ harness: 'other' }) },
     limits: { startupGraceMs: 0, ...opts.limits },
   });
   hub.start();
@@ -34,7 +34,7 @@ async function offlineHub(opts: { store?: Store; dir?: string; native?: MockNati
 
 const cluster = (hub: Hub) => hub.createCluster('c', [
   { harness: 'mock', mode: 'native', sessionId: 's1', name: 'A' }, { harness: 'mock', mode: 'native', sessionId: 's2', name: 'B' },
-  { projectPath: tempDir(), harness: 'unrelated', name: 'I' },
+  { harness: 'other', mode: 'native', name: 'I', projectPath: '/work' },
 ]);
 const deliveryOf = (store: Store, messageId: string, memberId: string) =>
   store.withDeliveries([store.getMessage(messageId)!])[0].deliveries.find((d) => d.memberId === memberId)!;
@@ -56,7 +56,7 @@ test('offline: a message for an offline member ends "offline" at once, stays unr
     assert.deepEqual(pick(deliveryOf(store, m.id, a.id)), OFFLINE, 'decided when posted');
     assert.equal(attempts(store, deliveryOf(store, m.id, a.id).id), 0, 'not a chain turn');
     assert.equal((hub as any).turnStarts.get(a.id), undefined, 'not an hourly turn');
-    await waitFor(() => deliveryOf(store, m.id, i.id).state === 'done', 'the unrelated native member is unaffected');
+    await waitFor(() => deliveryOf(store, m.id, i.id).state === 'done', 'a member of another harness is unaffected');
 
     // Posted while paused: still decided at once, so unpausing once the member is back sends nothing.
     hub.setPaused(true);
@@ -265,7 +265,7 @@ test('offline: the default Hub registers no mock (ORRERY_MOCK=1 adds it); old mo
   assert.deepEqual(Object.keys(registries(false)).sort(), ['antigravity', 'claude', 'codex', 'cursor', 'deepseek', 'kimi', 'qoder', 'workbuddy', 'zcode']);
   assert.deepEqual(Object.keys(registries(true)).sort(), ['antigravity', 'claude', 'codex', 'cursor', 'deepseek', 'kimi', 'mock', 'qoder', 'workbuddy', 'zcode']);
 
-  // A database made by a Hub that had mock: one native and one isolated mock member, a message queued while paused.
+  // A database made by a Hub that had mock (and the test harness 'other'): a message queued while paused.
   const dir = tempDir();
   const store = new Store(join(dir, 'old.db'));
   const first = await offlineHub({ store, dir });
@@ -276,8 +276,8 @@ test('offline: the default Hub registers no mock (ORRERY_MOCK=1 adds it); old mo
   assert.deepEqual([a, i].map((m) => deliveryOf(store, old.id, m.id).state), ['queued', 'queued']);
   await first.hub.close();
 
-  // The same data under a Hub without mock: offline, the queued deliveries end offline, new ones too; nothing throws.
-  const hub = new Hub({ store, nativeAdapters: {},  limits: { startupGraceMs: 0 } });
+  // The same data under a Hub without those harnesses: offline, the queued deliveries end offline, new ones too; nothing throws.
+  const hub = new Hub({ store, nativeAdapters: {}, limits: { startupGraceMs: 0 } });
   hub.start();
   try {
     assert.deepEqual(hub.listMembers(c.id).map((m) => m.status), ['offline', 'offline', 'offline']);

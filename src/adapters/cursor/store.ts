@@ -123,5 +123,13 @@ export function createCursorStore(cursorHome: string, cursorData: string) {
     return null;
   }
 
-  return { listProjects, listSessions, get };
+  /** Candidate JSONL paths for `id` across Cursor's project folders (checked for existence/confinement by reader). */
+  async function transcriptCandidates(id: string): Promise<string[]> {
+    if (!SESSION_ID_RE.test(id) || id === '.' || id === '..') return [];
+    let keys: string[] = [];
+    try { keys = await readdir(projectsDir); } catch { return []; }
+    return keys.map((key) => join(projectsDir, key, 'agent-transcripts', id, `${id}.jsonl`));
+  }
+
+  return { listProjects, listSessions, get, transcriptCandidates };
 }

@@ -7,11 +7,27 @@ import { join } from 'node:path';
 export interface SkillInfo { name: string; description: string }
 
 const MAX_READ = 16 * 1024;     // only the start of SKILL.md is read: the frontmatter
-const MAX_SKILLS = 500;
+export const MAX_SKILLS = 500;
 const MAX_DESCRIPTION = 300;
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 
-function head(path: string): string | null {
+/** A skill name the `$` picker and the installer accept: letters, digits and `_ . : -`, at most 64, not starting with a sign. */
+export const isSkillName = (name: unknown): name is string => typeof name === 'string' && NAME_RE.test(name);
+
+/**
+ * A skill's name and description from the start of its SKILL.md (`text`), the frontmatter's name when valid, else the
+ * folder's; null when neither is a valid name. The description is one line, at most MAX_DESCRIPTION characters.
+ */
+export function skillInfoOf(folder: string, text: string): SkillInfo | null {
+  const fm = parseFrontmatter(text);
+  const name = fm.name && NAME_RE.test(fm.name) ? fm.name : folder;
+  if (!NAME_RE.test(name)) return null;
+  const description = (fm.description ?? '').replace(/\s+/g, ' ').trim();
+  return { name, description: [...description].length > MAX_DESCRIPTION ? `${[...description].slice(0, MAX_DESCRIPTION - 1).join('')}…` : description };
+}
+
+/** The first 16 KB of a file (enough for the frontmatter), or null when it cannot be read. */
+export function head(path: string): string | null {
   let fd: number | undefined;
   try {
     fd = openSync(path, 'r');
@@ -56,14 +72,12 @@ export function listSkills(dir: string | undefined): SkillInfo[] {
     return [];
   }
   const byName = new Map<string, SkillInfo>();
-  for (const folder of folders.sort().slice(0, MAX_SKILLS)) {
+  // Dot folders are skipped: the installer's temporary folders (skill-install.ts) and hidden ones.
+  for (const folder of folders.filter((f) => !f.startsWith('.')).sort().slice(0, MAX_SKILLS)) {
     const text = head(join(dir, folder, 'SKILL.md'));
     if (text === null) continue;
-    const fm = parseFrontmatter(text);
-    const name = fm.name && NAME_RE.test(fm.name) ? fm.name : folder;
-    if (!NAME_RE.test(name) || byName.has(name)) continue;
-    const description = (fm.description ?? '').replace(/\s+/g, ' ').trim();
-    byName.set(name, { name, description: [...description].length > MAX_DESCRIPTION ? `${[...description].slice(0, MAX_DESCRIPTION - 1).join('')}…` : description });
+    const info = skillInfoOf(folder, text);
+    if (info && !byName.has(info.name)) byName.set(info.name, info);
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }

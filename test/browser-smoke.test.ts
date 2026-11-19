@@ -4,6 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { acquireTestQueue } from '../scripts/test-queue.ts';
 import { findBrowser, launchBrowser, type Browser } from './browser.ts';
 import { DEFAULT_DB_MODE } from '../src/core/store.ts';
 import { startTestHub, TEST_TOKEN } from './helpers.ts';
@@ -151,18 +153,23 @@ test('browser smoke: the settings dialog switches sections by mouse and keyboard
   }
 });
 
-test('browser start-up: a DevTools handshake that never opens fails in bounded time and leaves no browser or profile', { skip, timeout: 60_000 }, async () => {
+test('browser start-up: a DevTools handshake that never opens fails in bounded time, leaves no browser and frees its profile slot', { skip, timeout: 60_000 }, async () => {
   assert.ok(found.path, `ORRERY_REQUIRE_BROWSER=1 but ${found.path === null ? found.reason : ''}`);
   // A socket that never fires open or error: launchBrowser has to give up on its own and clean up, since the caller
   // gets no handle to close.
   class StuckSocket extends EventTarget { close() {} send() {} }
   let started: { pid: number | undefined; profile: string } | undefined;
+  let hadCache = false;
   const begin = Date.now();
   await assert.rejects(launchBrowser(found.path, {
-    connectTimeoutMs: 300, WebSocket: StuckSocket as unknown as typeof WebSocket, onStart: (s) => { started = s; },
+    connectTimeoutMs: 300, WebSocket: StuckSocket as unknown as typeof WebSocket,
+    onStart: (s) => { started = s; hadCache = existsSync(join(s.profile, 'Local State')); },
   }), /DevTools connect/);
   assert.ok(Date.now() - begin < 30_000, `took ${Date.now() - begin} ms`);
   assert.ok(started?.pid, 'the browser was started');
-  assert.equal(existsSync(started.profile), false, 'the profile directory is removed');
+  // The slot is reused, not deleted: a cache that was there (the earlier tests in this file leave one) is kept.
+  if (hadCache) assert.ok(existsSync(join(started.profile, 'Local State')), 'the slot keeps Local State');
+  const again = await acquireTestQueue({ lockPath: `${started.profile}.lock`, timeoutMs: 0 });
+  again.release();   // the slot lock could be taken again: it was freed
   assert.throws(() => process.kill(started!.pid!, 0), { code: 'ESRCH' }, 'the browser process is gone');
 });

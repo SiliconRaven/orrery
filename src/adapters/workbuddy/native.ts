@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path';
 import { WORKBUDDY_WAIT, type NativeAdapter } from '../../core/types.ts';
 import { createWaitDelivery } from '../shared/wait-native.ts';
 import { createWorkbuddyStore } from './store.ts';
+import { readWorkbuddyTranscript } from './transcript.ts';
 
 export const NOT_REARMED = 'WorkBuddy 没有重新挂上等待：在这个对话里说一句「挂上 orrery」（或用 orrery skill），它运行等待命令后才会在线。在那之前它离线，发给它的消息不会投递。';
 
@@ -31,6 +32,8 @@ export function createWorkbuddyNativeAdapter(opts: {
     localSessions: true,   // attachSession reads only local files: the member list shows the current title and model
     listProjects: () => store.listProjects(),
     listSessions: (projectPath) => store.listSessions(projectPath),
+    transcript: (sessionId, request) =>
+      readWorkbuddyTranscript(join(workbuddyHome, 'projects'), () => store.transcriptCandidates(sessionId), sessionId, request),
     async attachSession(sessionId) {
       const info = await store.get(sessionId);
       if (!info) throw new Error(`workbuddy conversation ${sessionId} not found among the local WorkBuddy conversations under ${workbuddyHome}`);

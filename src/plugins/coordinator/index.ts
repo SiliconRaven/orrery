@@ -9,6 +9,7 @@ import { coordinatorSnapshot } from './store.ts';
 
 // References are checked by the actions themselves; an entry keeps a stray messageId from being resolved like a plugin message ref.
 const noRefs = ({ command }: PluginRefContext): CollaborationCommand => command;
+const COORDINATOR_ACTIONS = ['coordinator.set', 'coordinator.instruction.add', 'coordinator.instruction.edit', 'coordinator.instruction.remove'];
 
 const view = (store: Store): CoordinatorView => {
   const policy = (clusterId: string) => coordinatorSnapshot(store, clusterId).coordinator;
@@ -49,7 +50,7 @@ const view = (store: Store): CoordinatorView => {
 
 export const coordinator: OfficialPlugin = {
   id: 'coordinator',
-  version: '0.10.0-beta.1',
+  version: '0.10.0-beta.2',
   name: '协调员',
   description: 'Beta 测试版。让一名成员按授权协调本群：主动派工、收用户未点名的消息、交接时带上摘要；关闭后没写收件人的消息只留在群聊记录里。',
   requires: ['tasks'],
@@ -79,4 +80,18 @@ export const coordinator: OfficialPlugin = {
     'coordinator.instruction.remove': noRefs,
   },
   coordinatorView: view,
+  // The standing instructions' text stays out: it is the user's brief to the coordinator, not cluster chat.
+  eventSource: (store) => ({ types: [{
+    type: 'coordinator.changed', from: 'collaboration',
+    description: '本群协调员被设置、更换、停用，或用户的长期要求被增删改。',
+    fields: 'clusterId, action, memberId（协调员；没有时为 null）, enabled, mode（suggest 或 execute）, generation, permissions（八项委托权限的开关）, instructionCount, by, at',
+    build: (event) => {
+      const p = (event.payload ?? {}) as Record<string, unknown>;
+      if (p.suggested || typeof p.action !== 'string' || !COORDINATOR_ACTIONS.includes(p.action)) return null;
+      const { coordinator: policy, generation } = coordinatorSnapshot(store, event.clusterId!);
+      return { clusterId: event.clusterId, action: p.action, memberId: policy?.memberId ?? null, enabled: policy?.enabled ?? false,
+        mode: policy?.mode ?? null, generation, permissions: policy ? { ...policy.permissions } : null,
+        instructionCount: policy?.standingInstructions?.length ?? 0, by: event.memberId ?? null, at: event.createdAt };
+    },
+  }] }),
 };

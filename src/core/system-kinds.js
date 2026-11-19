@@ -15,13 +15,19 @@ export const SYSTEM_KINDS = Object.freeze({
   task_attention: { category: 'warning', level: 'attention' },   // a question or attention item on a task waits
   review_downgraded: { category: 'warning', level: 'attention' },// a reviewer took a task over and it is now self-reviewed
   plugin_rate_limit: { category: 'warning', level: 'attention' },// a plugin hit its send limit
+  plugin_refused: { category: 'warning', level: 'attention' },   // a gate plugin refused a member's message (not stored)
+  plugin_check_failed: { category: 'warning', level: 'problem' },// a gate plugin did not answer; the message went through
+  plugin_restarted: { category: 'warning', level: 'problem' },   // a plugin failed and is restarted automatically, or no longer is
   task: { category: 'task', level: null },                       // task created, assigned, started, submitted, approved, merged...
   coordinator: { category: 'coordinator', level: null },         // coordinator set, handed over, removed
   idle: { category: 'coordinator', level: null },                // members idle while tasks wait (to the coordinator)
   quota_recovered: { category: 'coordinator', level: null },     // a used-up quota window is usable again
   rebind: { category: 'member', level: null },                   // a member moved to another conversation
+  member_renamed: { category: 'member', level: null },           // a visible member's name changed
   member_shown: { category: 'member', level: null },             // a hidden member is shown again: what it holds
   settings: { category: 'member', level: null },                 // cluster collaboration settings changed (roles, labels...)
+  plugin_tool_call: { category: 'member', level: null },         // a member called a third-party plugin's tool (aggregated per minute)
+  mode_removed: { category: 'member', level: null },             // schema v30 moved out the members of the removed isolated mode
   receipt: { category: 'other', level: null },                   // old acknowledgement receipts (no longer written)
 });
 

@@ -1,3 +1,4 @@
+import { t, language } from './i18n.js';
 // The chat's history search (docs/collaboration.md「搜索群聊记录」): a side sheet that asks the Hub
 // (GET /api/clusters/:id/messages/search) about the cluster's whole history, and jumps to a result through the page's
 // one jump (app.js openMessage). The pure helpers at the top are what test/web-ui.test.ts checks; createChatSearch
@@ -5,12 +6,12 @@
 import { chatRowState, emptyState, h, icon, isSystemMessage } from './ui.js';
 import { SYSTEM_CATEGORY_LABELS, WARNING_LEVEL_LABELS, systemClass } from './system-kinds.js';
 
-export const FIXED_SENDERS = Object.freeze([{ value: 'user', label: '你' }, { value: 'system', label: 'Orrery 系统' }]);
+export const FIXED_SENDERS = Object.freeze([{ value: 'user', get label() { return t("你"); } }, { value: 'system', get label() { return t("Orrery 系统"); } }]);
 
 /**
  * The members of cluster `cid` as sender choices `{ value, label, removed, hidden }`, by identity: current names, the
  * members still in the cluster first (hidden ones marked 隐身), then removed ones (已移出). Members sharing a name also
- * show their app and mode; a short id suffix tells apart any that still read the same.
+ * show their app; a short id suffix tells apart any that still read the same.
  */
 export function senderChoices(members, cid, appName = (harness) => harness) {
   const list = [...members].filter((m) => m && m.clusterId === cid);
@@ -19,9 +20,9 @@ export function senderChoices(members, cid, appName = (harness) => harness) {
   for (const m of list) named.set(m.name, (named.get(m.name) ?? 0) + 1);
   const extras = (m) => [
     named.get(m.name) > 1 ? appName(m.harness) : null,
-    m.removedAt ? '已移出' : null, m.hiddenAt && !m.removedAt ? '隐身' : null,
+    m.removedAt ? t("已移出") : null, m.hiddenAt && !m.removedAt ? t("隐身") : null,
   ].filter(Boolean);
-  const label = (name, parts) => (parts.length ? `${name}（${parts.join(' · ')}）` : name);
+  const label = (name, parts) => (parts.length ? t("{name}（{value2}）", { name: name, value2: parts.join(' · ') }) : name);
   const choices = list.map((m) => ({ value: m.id, label: label(m.name, extras(m)), removed: Boolean(m.removedAt), hidden: Boolean(m.hiddenAt) }));
   const seen = new Map();
   for (const c of choices) seen.set(c.label, (seen.get(c.label) ?? 0) + 1);
@@ -32,17 +33,17 @@ export function senderChoices(members, cid, appName = (harness) => harness) {
 export function senderLabel(from, choices) {
   const fixed = FIXED_SENDERS.find((s) => s.value === from);
   if (fixed) return fixed.label;
-  if (typeof from === 'string' && from.startsWith('plugin:')) return `插件 ${from.slice(7)}`;
-  return choices.find((c) => c.value === from)?.label ?? '（未知成员）';
+  if (typeof from === 'string' && from.startsWith('plugin:')) return t("插件 {value1}", { value1: from.slice(7) });
+  return choices.find((c) => c.value === from)?.label ?? t("（未知成员）");
 }
 
 /** The category select: '' (any message), a system category, or warning:<level>. */
 export const CATEGORY_CHOICES = Object.freeze([
-  { value: '', label: '不限类别' },
-  { value: 'warning', label: `${SYSTEM_CATEGORY_LABELS.warning}（全部）` },
-  { value: 'warning:problem', label: `${SYSTEM_CATEGORY_LABELS.warning} · ${WARNING_LEVEL_LABELS.problem}` },
-  { value: 'warning:attention', label: `${SYSTEM_CATEGORY_LABELS.warning} · ${WARNING_LEVEL_LABELS.attention}` },
-  ...['task', 'coordinator', 'member', 'other'].map((c) => ({ value: c, label: SYSTEM_CATEGORY_LABELS[c] })),
+  { value: '', get label() { return t("不限类别"); } },
+  { value: 'warning', get label() { return t("{warning}（全部）", { warning: SYSTEM_CATEGORY_LABELS.warning }); } },
+  { value: 'warning:problem', get label() { return `${SYSTEM_CATEGORY_LABELS.warning} · ${WARNING_LEVEL_LABELS.problem}`; } },
+  { value: 'warning:attention', get label() { return `${SYSTEM_CATEGORY_LABELS.warning} · ${WARNING_LEVEL_LABELS.attention}`; } },
+  ...['task', 'coordinator', 'member', 'other'].map((c) => ({ value: c, get label() { return SYSTEM_CATEGORY_LABELS[c]; } })),
 ]);
 
 export const EMPTY_CRITERIA = Object.freeze({ q: '', sender: '', category: '', from: '', to: '', files: false, order: 'desc' });
@@ -63,7 +64,7 @@ function localDay(text) {
 export function searchQuery(criteria, cursor = null) {
   const params = new URLSearchParams();
   const q = criteria.q.trim();
-  if (q.length > 200) return { error: '关键词最多 200 个字。' };
+  if (q.length > 200) return { error: t("关键词最多 200 个字。") };
   if (q) params.set('q', q);
   if (criteria.sender) params.set('sender', criteria.sender);
   if (criteria.category) {
@@ -73,8 +74,8 @@ export function searchQuery(criteria, cursor = null) {
   }
   const from = criteria.from ? localDay(criteria.from) : null;
   const to = criteria.to ? localDay(criteria.to) : null;
-  if ((criteria.from && !from) || (criteria.to && !to)) return { error: '日期写法不对，请用日期选择器选一天。' };
-  if (from && to && from > to) return { error: '开始日期晚于结束日期。' };
+  if ((criteria.from && !from) || (criteria.to && !to)) return { error: t("日期写法不对，请用日期选择器选一天。") };
+  if (from && to && from > to) return { error: t("开始日期晚于结束日期。") };
   if (from) params.set('from', from.toISOString());
   if (to) params.set('to', new Date(new Date(to.getFullYear(), to.getMonth(), to.getDate() + 1).getTime() - 1).toISOString());
   if (criteria.files) params.set('files', '1');
@@ -125,28 +126,28 @@ export function hiddenWarnings(messages, filter, jumpId = null) {
  */
 export function warningBadge(hidden, arrived) {
   if (!hidden && !arrived) return { shown: false, fresh: false, text: '', title: '', note: '' };
-  const here = hidden ? `已加载的消息里有 ${hidden} 条警告被筛选隐藏` : '';
-  const fresh = arrived ? `上次看筛选以后新到 ${arrived} 条被隐藏的警告` : '';
+  const here = hidden ? t("已加载的消息里有 {hidden} 条警告被筛选隐藏", { hidden: hidden }) : '';
+  const fresh = arrived ? t("上次看筛选以后新到 {arrived} 条被隐藏的警告", { arrived: arrived }) : '';
   return {
     shown: true, fresh: arrived > 0,
-    text: `${hidden || ''}${hidden && arrived ? ' · ' : ''}${arrived ? `新 ${arrived}` : ''}`,
-    title: [here, fresh].filter(Boolean).join('；'),
-    note: `${[here, fresh].filter(Boolean).join('；')}。${arrived ? '新到的可能不在当前显示的这段里；关上这个面板后不再算新。' : ''}`,
+    text: `${hidden || ''}${hidden && arrived ? ' · ' : ''}${arrived ? t("新 {arrived}", { arrived: arrived }) : ''}`,
+    title: [here, fresh].filter(Boolean).join(t("；")),
+    note: t("{value1}。{value2}", { value1: [here, fresh].filter(Boolean).join(t("；")), value2: arrived ? t("新到的可能不在当前显示的这段里；关上这个面板后不再算新。") : '' }),
   };
 }
 
 /** The text after the results: what the Hub said about the next page. */
 export function moreLabel(reason, order) {
-  if (reason === 'limit') return '加载更多';
-  if (reason === 'scan') return order === 'asc' ? '继续搜索更新的消息' : '继续搜索更早的消息';
+  if (reason === 'limit') return t("加载更多");
+  if (reason === 'scan') return order === 'asc' ? t("继续搜索更新的消息") : t("继续搜索更早的消息");
   return null;
 }
 
 /** The status line after an answer: how many were found, and whether history goes on. */
 export function resultText(count, reason, order) {
-  const rest = order === 'asc' ? '更新' : '更早';
-  if (!count) return reason === 'scan' ? `最近查过的一批消息里没有，${rest}的还没查。` : '没有找到符合条件的消息。';
-  return `找到 ${count} 条${reason === 'limit' ? '，还有更多' : reason === 'scan' ? `，${rest}的消息还没查完` : ''}。`;
+  const rest = order === 'asc' ? t("更新") : t("更早");
+  if (!count) return reason === 'scan' ? t("最近查过的一批消息里没有，{rest}的还没查。", { rest: rest }) : t("没有找到符合条件的消息。");
+  return t("找到 {count} 条{value2}。", { count: count, value2: reason === 'limit' ? t("，还有更多") : reason === 'scan' ? t("，{rest}的消息还没查完", { rest: rest }) : '' });
 }
 
 // ---- the sheet's state: one value, changed only by nextSearch (like ui.js nextJump) ----
@@ -213,8 +214,8 @@ export function nextSearch(state, event) {
     case 'failed': {
       const r = state.request;
       if (!r || r.token !== event.token) return state;
-      if (r.append) return { ...state, status: 'idle', error: { text: `继续搜索失败：${event.message}`, append: true }, request: null };
-      return { ...state, criteria: r.criteria, rows: [], next: null, status: 'error', error: { text: `搜索失败：${event.message}`, append: false }, request: null };
+      if (r.append) return { ...state, status: 'idle', error: { text: t("继续搜索失败：{message}", { message: event.message }), append: true }, request: null };
+      return { ...state, criteria: r.criteria, rows: [], next: null, status: 'error', error: { text: t("搜索失败：{message}", { message: event.message }), append: false }, request: null };
     }
     case 'close': {
       const settled = state.request ? { ...state, ...state.request.restore, request: null } : state;
@@ -233,17 +234,17 @@ export function searchView(state) {
   const { status, criteria, rows, next, error } = state;
   const order = criteria?.order ?? state.draft.order;
   const nothing = !criteria || criteriaEmpty(criteria);
-  const idleHint = '每一项都可以单独用：比如只选一个发送者，或只选“警告 · 问题”。';
-  if (status === 'loading') return { kind: 'loading', text: '正在搜索…', hint: '', more: null, stale: rows.length > 0 };
-  if (status === 'appending') return { kind: 'loading', text: '正在继续搜索…', hint: '', more: null, stale: false };
+  const idleHint = t("每一项都可以单独用：比如只选一个发送者，或只选“警告 · 问题”。");
+  if (status === 'loading') return { kind: 'loading', text: t("正在搜索…"), hint: '', more: null, stale: rows.length > 0 };
+  if (status === 'appending') return { kind: 'loading', text: t("正在继续搜索…"), hint: '', more: null, stale: false };
   if (status === 'error') return { kind: 'error', text: error.text, hint: '', more: null, stale: false };
-  if (nothing) return { kind: 'idle', text: '在本群的全部历史里查找，已移出成员的发言也在内。', hint: idleHint, more: null, stale: false };
+  if (nothing) return { kind: 'idle', text: t("在本群的全部历史里查找，已移出成员的发言也在内。"), hint: idleHint, more: null, stale: false };
   const text = resultText(rows.length, next?.reason ?? null, order) + (error?.append ? ` ${error.text}` : '');
-  return { kind: error?.append ? 'error' : 'done', text, hint: rows.length ? '' : '试试换个关键词，或放宽发送者、类别和日期。',
+  return { kind: error?.append ? 'error' : 'done', text, hint: rows.length ? '' : t("试试换个关键词，或放宽发送者、类别和日期。"),
     more: sameSearch(state.draft, criteria) ? moreLabel(next?.reason ?? null, order) : null, stale: false };
 }
 
-const fullTime = (iso) => new Date(iso).toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const fullTime = (iso) => new Date(iso).toLocaleString(language() === 'en' ? 'en-GB' : 'zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 /**
  * The search sheet: draws `nextSearch`'s state and turns the user's actions and the Hub's answers into its events.
@@ -259,35 +260,35 @@ export function createChatSearch(deps) {
   let choicesSig = '';
   let drawnRows = null;
 
-  const q = h('input', { type: 'search', class: 'search-q', placeholder: '关键词', 'aria-label': '关键词', maxlength: '200', autocomplete: 'off' });
-  const sender = h('select', { 'aria-label': '发送者' });
-  const category = h('select', { 'aria-label': '系统消息类别' }, CATEGORY_CHOICES.map((c) => h('option', { value: c.value }, c.label)));
-  const from = h('input', { type: 'date', 'aria-label': '开始日期' });
-  const to = h('input', { type: 'date', 'aria-label': '结束日期' });
+  const q = h('input', { type: 'search', class: 'search-q', placeholder: t("关键词"), 'aria-label': t("关键词"), maxlength: '200', autocomplete: 'off' });
+  const sender = h('select', { 'aria-label': t("发送者") });
+  const category = h('select', { 'aria-label': t("系统消息类别") }, CATEGORY_CHOICES.map((c) => h('option', { value: c.value }, c.label)));
+  const from = h('input', { type: 'date', 'aria-label': t("开始日期") });
+  const to = h('input', { type: 'date', 'aria-label': t("结束日期") });
   const files = h('input', { type: 'checkbox' });
-  const order = h('button', { type: 'button', class: 'small search-order', title: '切换结果顺序' });
-  const reset = h('button', { type: 'button', class: 'small' }, '清空条件');
+  const order = h('button', { type: 'button', class: 'small search-order', title: t("切换结果顺序") });
+  const reset = h('button', { type: 'button', class: 'small' }, t("清空条件"));
   const status = h('p', { class: 'search-status muted', role: 'status' });
-  const list = h('ol', { class: 'search-results', 'aria-label': '搜索结果' });
+  const list = h('ol', { class: 'search-results', 'aria-label': t("搜索结果") });
   const more = h('button', { type: 'button', class: 'small search-more', hidden: true });
   const empty = emptyState('');   // its sentence is the search's hint, set on each draw
   empty.hidden = true;
-  const closeButton = h('button', { type: 'button', class: 'icon-button ghost', title: '关闭搜索', 'aria-label': '关闭搜索' }, icon('close'));
+  const closeButton = h('button', { type: 'button', class: 'icon-button ghost', title: t("关闭搜索"), 'aria-label': t("关闭搜索") }, icon('close'));
   const body = h('div', { class: 'search-body' }, empty, list, more);
   const sheet = h('section', { id: 'chat-search', class: 'chat-search', role: 'dialog', 'aria-modal': 'false', 'aria-labelledby': 'chat-search-title', hidden: true },
-    h('header', { class: 'search-head' }, h('h2', { id: 'chat-search-title' }, '搜索群聊记录'), closeButton),
+    h('header', { class: 'search-head' }, h('h2', { id: 'chat-search-title' }, t("搜索群聊记录")), closeButton),
     h('div', { class: 'search-form' },
       h('div', { class: 'search-q-row' }, icon('search'), q),
       h('div', { class: 'search-grid' },
-        h('label', {}, h('span', {}, '发送者'), sender),
-        h('label', {}, h('span', {}, '系统消息'), category),
-        h('label', {}, h('span', {}, '从'), from),
-        h('label', {}, h('span', {}, '到'), to)),
+        h('label', {}, h('span', {}, t("发送者")), sender),
+        h('label', {}, h('span', {}, t("系统消息")), category),
+        h('label', {}, h('span', {}, t("从")), from),
+        h('label', {}, h('span', {}, t("到")), to)),
       h('div', { class: 'search-row' },
-        h('label', { class: 'search-check' }, files, '只看带附件的'),
+        h('label', { class: 'search-check' }, files, t("只看带附件的")),
         h('span', { class: 'search-row-end' }, reset, order))),
     status, body,
-    h('p', { class: 'search-foot muted' }, '名字是成员现在的名字；已移出的成员也能选。'));
+    h('p', { class: 'search-foot muted' }, t("名字是成员现在的名字；已移出的成员也能选。")));
   document.body.append(sheet);
 
   // Events after which a pending keyword pause must not fire: it would search in a context that has moved on.
@@ -320,9 +321,9 @@ export function createChatSearch(deps) {
     choices = fresh;
     drawnRows = null;   // result rows name senders by these labels
     const active = choices.filter((c) => !c.removed), removed = choices.filter((c) => c.removed);
-    sender.replaceChildren(h('option', { value: '' }, '所有人'), ...FIXED_SENDERS.map((s) => h('option', { value: s.value }, s.label)),
-      active.length ? h('optgroup', { label: '成员' }, active.map((c) => h('option', { value: c.value }, c.label))) : null,
-      removed.length ? h('optgroup', { label: '已移出的成员' }, removed.map((c) => h('option', { value: c.value }, c.label))) : null);
+    sender.replaceChildren(h('option', { value: '' }, t("所有人")), ...FIXED_SENDERS.map((s) => h('option', { value: s.value }, s.label)),
+      active.length ? h('optgroup', { label: t("成员") }, active.map((c) => h('option', { value: c.value }, c.label))) : null,
+      removed.length ? h('optgroup', { label: t("已移出的成员") }, removed.map((c) => h('option', { value: c.value }, c.label))) : null);
     sender.value = state.draft.sender;   // new options reset the shown choice; a member who left is still in the list
     // A chosen member gone from the list (its cluster purged): back to everyone, searched again.
     const chosen = state.draft.sender;
@@ -341,7 +342,7 @@ export function createChatSearch(deps) {
         mark ? h('span', { class: `search-mark${mark.level ? ` ${mark.level}` : ''}` }, mark.label) : null,
         h('time', { datetime: item.createdAt }, fullTime(item.createdAt))),
       parts.length ? h('p', { class: 'search-snippet' }, parts.map((p) => (p.hit ? h('mark', {}, p.text) : p.text)))
-        : h('p', { class: 'search-snippet muted' }, '（没有文字）')));
+        : h('p', { class: 'search-snippet muted' }, t("（没有文字）"))));
   }
 
   function draw() {
@@ -353,7 +354,7 @@ export function createChatSearch(deps) {
     if (from.value !== d.from) from.value = d.from;
     if (to.value !== d.to) to.value = d.to;
     files.checked = d.files;
-    order.textContent = d.order === 'asc' ? '最早在前' : '最新在前';
+    order.textContent = d.order === 'asc' ? t("最早在前") : t("最新在前");
     const view = searchView(state);
     if (state.rows !== drawnRows) { list.replaceChildren(...state.rows.map(row)); drawnRows = state.rows; }
     list.classList.toggle('stale', view.stale);

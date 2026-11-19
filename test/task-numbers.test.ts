@@ -13,14 +13,14 @@ import { Store } from '../src/core/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
 import { collaborationTask, MIGRATIONS, saveCollaborationTask } from '../src/plugins/tasks/store.ts';
 import { taskSummary } from '../src/plugins/tasks/tools.ts';
-import { nativeHeaders, holdScript, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { bearer, holdScript, startTestHub, tempDir, waitFor, turnsOf, memberHeaders } from './helpers.ts';
 
 const user: CollaborationActor = { kind: 'user' };
 
 function fixture(path = ':memory:', host = new PluginHost(officialPlugins)) {
   const store = new Store(path, host);
   const member = (id: string, clusterId: string) => ({ id, clusterId, name: id, avatar: null, harness: 'mock', model: null, effort: null,
-    mode: 'native' as const, workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null });
+    workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null });
   for (const [clusterId, members] of [['c', ['a', 'coord']], ['other', ['x']], ['empty', []]] as const) {
     if (!store.getCluster(clusterId, { includeDeleted: true })) {
       store.insertCluster({ id: clusterId, name: clusterId, category: '', createdAt: '2026-01-01' }, members.map((id) => member(id, clusterId)));
@@ -241,9 +241,10 @@ test('HTTP workspace and the MCP task tools carry the number, and MCP task comma
     assert.deepEqual(workspace.tasks.map((t: any) => t.number), [1], 'the web workspace, which the all-tasks page also reads');
 
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@A hold' });
+    await waitFor(() => turnsOf(app, a.id) > 0, 'member turn');
     client = new Client({ name: 'test', version: '0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), {
-      requestInit: { headers: nativeHeaders(app, a.id) },
+      requestInit: { headers: memberHeaders(app, a.id) },
     }));
     const call = async (name: string, args: Record<string, unknown>) => {
       const result = await client!.callTool({ name, arguments: args });
@@ -290,9 +291,10 @@ test('every task-referencing MCP tool accepts #number, full ID and 8+ prefix, ke
     saveCollaborationTask(app.store, { ...t1, id: '12345678-0000-4000-8000-000000000001', number: 4, title: 'numeric prefix' });
 
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@A hold' });
+    await waitFor(() => turnsOf(app, a.id) > 0, 'member turn');
     client = new Client({ name: 'test', version: '0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), {
-      requestInit: { headers: nativeHeaders(app, a.id) },
+      requestInit: { headers: memberHeaders(app, a.id) },
     }));
     const raw = (name: string, args: Record<string, unknown>) => client!.callTool({ name, arguments: args });
     const ok = async (name: string, args: Record<string, unknown>) => {

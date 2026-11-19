@@ -21,10 +21,11 @@ import { readdir, readFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type { NativeAdapter, ProjectInfo, QuotaSnapshot, SessionInfo, TokenTotals } from '../../core/types.ts';
+import { emptyTranscriptPage, type NativeAdapter, type ProjectInfo, type QuotaSnapshot, type SessionInfo, type TokenTotals } from '../../core/types.ts';
 import { createSessionStore, SESSION_ID_RE } from './store.ts';
 import { addTokens } from '../shared/jsonl.ts';
 import { marker } from '../shared/marker.ts';
+import { readKimiTranscript } from './transcript.ts';
 import { createKimiUsage, fromOauthUsage, normalize as normalizeUsage } from './usage.ts';
 import { connectWs, type WsConnection } from './ws.ts';
 
@@ -440,6 +441,12 @@ export function createKimiNativeAdapter(opts: KimiNativeOptions = {}): NativeAda
     },
 
     conversationTokens: (sessionId: string) => (SESSION_ID_RE.test(sessionId) ? usage.sessionTokens(sessionId) : Promise.resolve(null)),
+
+    async transcript(sessionId, request) {
+      if (!SESSION_ID_RE.test(sessionId)) return emptyTranscriptPage('refused');
+      const candidates = await store.transcriptCandidates(sessionId);
+      return readKimiTranscript(join(kimiHome, 'sessions'), candidates, sessionId, request);
+    },
 
 
     async deliver(sessionId, text, ctx) {

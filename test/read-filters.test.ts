@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { nativeHeaders, holdScript, startTestHub, waitFor } from './helpers.ts';
+import { bearer, holdScript, startTestHub, waitFor, turnsOf, memberHeaders } from './helpers.ts';
 
 /** A message written by a member or the Hub; mentions decide which members see it as relevant unread. */
 function rawMessage(app: any, clusterId: string, from: string, body: string, mentions: string[] = [], kind = 'chat') {
@@ -124,8 +124,10 @@ test('MCP read_messages and skip_unread expose the filters', async () => {
     fromB(app, cluster.id, b, '@A needle from B', [a.id]);
     fromB(app, cluster.id, b, '@A plain', [a.id]);
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@A hold' });
+    await waitFor(() => turnsOf(app, a.id) > 0, 'member turn');
+    const token = memberHeaders(app, a.id);
     client = new Client({ name: 'test', version: '0' });
-    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: nativeHeaders(app, a.id) } }));
+    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: token } }));
     const call = async (name: string, args: Record<string, unknown>) => {
       const result = await client!.callTool({ name, arguments: args });
       const text = (result.content as any)[0].text;

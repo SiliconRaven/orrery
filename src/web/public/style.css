@@ -137,6 +137,10 @@ button.icon:hover, button.icon-button.ghost:hover, button.icon-button[aria-expan
   background: var(--accent); color: var(--on-accent); box-shadow: var(--halo);
   font-size: var(--f-xs); font-weight: 700; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums;
 }
+.icon-button[data-update-available]::after {
+  content: ''; position: absolute; top: 2px; right: 2px; width: var(--s-2); height: var(--s-2);
+  border-radius: 50%; background: var(--accent); box-shadow: var(--halo); pointer-events: none;
+}
 /* ---- what is chosen: three kinds, each one look everywhere ----
    A current row in a list or a section rail (vertical): the accent-soft fill and the accent bar on its left.
    A current page tab (the workbench's tabs; the settings and roles rails when they turn into a row on a narrow screen):
@@ -169,20 +173,20 @@ button.icon:hover, button.icon-button.ghost:hover, button.icon-button[aria-expan
 .matrix-coordinator, .hidden-mark, .plugin-risk,
 .workbench-badge, .wb-group-count, .wb-task-label-more, .wb-fb-badge, .wb-fb-qcount, .wb-filter-chip, .wb-status, .wb-priority, .wb-warn,
 .wb-mode, .wb-role, .wb-tag, .wb-label, .wb-count, .wb-presence, .wb-verdict, .wb-rp-perm, .wb-lp-required, .wb-lm-badge,
-.restart-badge, .plugin-chip, .search-mark, .chat-filter-warnings {
+.restart-badge, .plugin-chip, .search-mark, .chat-filter-warnings, .ext-chip, .ext-count, .plugin-run-chip, .pui-chip {
   display: inline-flex; flex: none; align-items: center; gap: var(--s-1); max-width: 100%; padding: 0 var(--s-2);
   border: 1px solid var(--line); border-radius: var(--r-pill); background: transparent; color: var(--muted);
   font-size: var(--f-sm); font-weight: 400; line-height: 18px; white-space: nowrap;
 }
 /* Counts: a number, centred, round when it is one digit. */
-.unread-badge, .menu-count, .wb-fb-badge, .wb-fb-qcount, .wb-group-count, .wb-count {
+.unread-badge, .menu-count, .wb-fb-badge, .wb-fb-qcount, .wb-group-count, .wb-count, .ext-count {
   justify-content: center; min-width: 20px; padding: 0 var(--s-1); font-weight: 700; font-variant-numeric: tabular-nums;
 }
 /* Clickable chips that remove a filter or pick a label: the same shape, a larger target. */
 .wb-filter-chip, .wb-lp-chip { min-height: 26px; padding: 0 var(--s-1) 0 var(--s-2); }
 @media (max-width: 700px) { .wb-filter-chip, .wb-lp-chip { min-height: 36px; } }
 /* Tones. Soft: a grey fill instead of the line. */
-.conversation-mode, .session .online, .entry-row .online, .hidden-mark, .wb-count, .wb-lm-badge, .wb-fb-qcount, .restart-badge, .plugin-chip {
+.session .online, .entry-row .online, .hidden-mark, .wb-count, .wb-lm-badge, .wb-fb-qcount, .restart-badge, .plugin-chip, .ext-chip, .ext-count {
   border-color: transparent; background: var(--surface-2);
 }
 /* Accent: counts and the few marks that must stand out. */
@@ -195,10 +199,13 @@ button.icon:hover, button.icon-button.ghost:hover, button.icon-button[aria-expan
 }
 /* Tinted: a state colour (--tone) for the text, a stronger edge and a faint fill. */
 .wb-status, .wb-mode, .wb-priority-high, .wb-verdict, .wb-presence-observing, .wb-presence-busy, .wb-presence-running, .matrix-coordinator,
-.notice-mark.problem, .search-mark.problem, .plugin-chip.on, .plugin-chip.bad {
+.notice-mark.problem, .search-mark.problem, .plugin-chip.on, .plugin-chip.bad, .ext-chip.on, .plugin-run-chip, .pui-chip {
   border-color: color-mix(in srgb, var(--tone) 45%, transparent); background: color-mix(in srgb, var(--tone) 12%, transparent); color: var(--tone);
 }
 .notice-mark.problem, .search-mark.problem, .plugin-chip.bad, .wb-priority-high { --tone: var(--failed); }
+.ext-chip.on { --tone: var(--done); }
+.plugin-run-chip { --tone: var(--running); }
+.pui-chip { --tone: var(--accent); }
 .matrix-coordinator { --tone: var(--accent); }
 
 input, select, textarea {
@@ -291,16 +298,13 @@ body.resizing { cursor: col-resize; user-select: none; }
   color: var(--muted); font-size: var(--f-md); text-align: center;
 }
 .empty-state > p { margin: 0; line-height: 1.5; }
-.empty-art { flex: none; width: 48px; height: 48px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
-.empty-art .ring { opacity: .55; }
-.empty-art .sun { fill: currentColor; stroke: none; opacity: .8; }
-.empty-art .planet { fill: var(--accent); stroke: none; }
+.empty-art { flex: none; width: 48px; height: 48px; color: var(--accent); }
 .empty-state.compact {
   display: flex; flex-wrap: wrap; align-items: center; justify-items: start; max-width: none; margin: 0; padding: var(--s-2) 0;
   text-align: left;
 }
 .empty-state.compact > p { flex: 1 1 0; min-width: 8em; }   /* beside the picture; an action moves under it only when tight */
-.empty-state.compact .empty-art { width: 20px; height: 20px; stroke-width: 2.5; }
+.empty-state.compact .empty-art { width: 20px; height: 20px; }
 #cluster-list .empty-state.compact { padding: var(--s-1) 10px var(--s-2); }
 .messages > .empty-state { margin-top: 12vh; }
 .side-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
@@ -353,7 +357,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* ---- chat ---- */
 /* One line while it fits: the title takes the room it needs before the token line gets any, and is cut short only once
    nothing else can give. With less than 9em left for the title, the tools (actions and member toggle) go on a second line. */
-.chat-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); min-height: 56px; }
+.chat-head { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); min-height: 56px; }
 .chat-head h1 { flex: 1000 1 9em; min-width: 0; max-width: max-content; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-tools { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px 2px; min-width: 0; margin-left: auto; }
 .chat-tools .members-toggle { margin-left: 8px; }
@@ -502,6 +506,129 @@ body.resizing { cursor: col-resize; user-select: none; }
   box-shadow: var(--shadow-popover); z-index: 5;
 }
 .mention-menu li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--r-sm); cursor: pointer; }
+/* ---- plugin commands (docs/external-plugins.md「命令」): the composer's "/" menu and parameter form, the header chip of
+   running commands and the corner notices of ended ones. ---- */
+.mention-menu li.picker-footer { display: block; margin-top: 4px; padding: 6px 8px 2px; border-top: 1px solid var(--line); border-radius: 0;
+  color: var(--muted); font-size: var(--f-sm); cursor: default; }
+.mention-menu.command-menu { width: min(440px, 100%); min-width: 0; max-width: 100%; }
+.command-menu li { flex-wrap: wrap; gap: 2px 8px; }
+.command-row { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; }
+/* The form's slot sits right above the composer, outside its <form>, in the chat column's flow (the messages give room). */
+.command-form-slot { flex: none; padding: var(--s-2) 18px 0; }
+.command-form {
+  width: min(480px, 100%);
+  display: grid; gap: var(--s-3); max-height: min(50vh, 480px); overflow-y: auto; padding: var(--s-4);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-popover);
+}
+.command-form-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-2); }
+.command-form-head b { font-size: var(--f-base); }
+.command-form p { margin: 0; }
+.command-field { display: grid; gap: var(--s-1); }
+.command-field > label { color: var(--text); }
+.command-field > input, .command-field > select { margin: 0; }
+label.command-check { display: flex; align-items: center; gap: var(--s-2); }
+.command-check input { width: auto; margin: 0; }
+.plugin-runs { position: static; }
+.plugin-runs > summary { list-style: none; cursor: pointer; }
+.plugin-runs > summary::-webkit-details-marker { display: none; }
+.plugin-run-text { min-width: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.plugin-run-panel {
+  position: absolute; right: var(--s-2); top: calc(100% + 4px); z-index: 70; display: grid; gap: var(--s-2); width: min(340px, calc(100vw - 24px));
+  padding: var(--s-2); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--shadow-popover);
+}
+.plugin-run { display: grid; gap: var(--s-1); padding: var(--s-2); border-radius: var(--r-sm); background: var(--surface-2); }
+.plugin-run-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-2); }
+.plugin-run-progress { margin: 0; font-size: var(--f-md); overflow-wrap: anywhere; }
+.plugin-run-bar { height: 4px; border-radius: var(--r-pill); background: linear-gradient(var(--accent), var(--accent)) 0 / var(--fraction, 0%) 100% no-repeat var(--line); }
+/* ---- third-party plugin UIs (plugin-ui.js, docs/external-plugins.md「网页界面」): a chip per plugin in the title bar with
+   one popover panel, and the same host-drawn shell (name, 第三方插件 tag) around every frame. The frame stays inside its
+   body: the shell clips it, and a frame cannot draw outside its own box. ---- */
+.pui-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1); }
+.pui-chips[hidden] { display: none; }
+.pui-chip-wrap { position: static; }
+.pui-chip { cursor: pointer; }
+.pui-chip:hover { background: color-mix(in srgb, var(--tone) 20%, transparent); }
+.pui-chip[aria-expanded="true"] { background: color-mix(in srgb, var(--tone) 24%, transparent); }
+.pui-chip.pui-idle { --tone: var(--muted); }
+.pui-chip.pui-running { --tone: var(--running); }
+.pui-chip.pui-done { --tone: var(--done); }
+.pui-chip.pui-failed { --tone: var(--failed); }
+.pui-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pui-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.pui-panel {
+  position: absolute; right: var(--s-2); top: calc(100% + 4px); z-index: 70; width: 360px; max-width: calc(100vw - 24px);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--shadow-popover); overflow: hidden;
+}
+.pui-shell { display: flex; flex-direction: column; min-height: 0; overflow: hidden; contain: paint; }
+.pui-head { display: flex; align-items: center; gap: var(--s-2); min-height: 36px; padding: var(--s-1) var(--s-2) var(--s-1) var(--s-3);
+  border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.pui-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.pui-tag { margin-left: 0; }
+.pui-head .pui-close { margin-left: auto; }
+.pui-body { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
+.pui-at-titlebar > .pui-body { flex: none; }   /* its height is the plugin's declared panel height */
+.pui-frame { display: block; flex: 1; width: 100%; height: 100%; border: 0; background: transparent; }
+.pui-placeholder { display: grid; align-content: center; justify-items: center; gap: var(--s-2); flex: 1; margin: 0; padding: var(--s-4); color: var(--muted); text-align: center; }
+.pui-placeholder p { margin: 0; }
+@media (max-width: 640px) {
+  .pui-panel { left: 0; right: 0; width: auto; max-width: none; border-radius: 0; border-left: 0; border-right: 0; }
+}
+/* Marks on messages, members and tasks (plugin-ui.js marksSlot): host-drawn, dashed (never like orrery's own solid labels),
+   the third-party icon first, the state as a dot in the running/done/failed colour or the accent for info. */
+.pui-marks { position: relative; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.pui-marks[hidden] { display: none; }
+.pui-marks-message { display: flex; margin-top: var(--s-1); }
+.pui-marks-member { margin-left: 6px; vertical-align: middle; }
+.pui-mark, .pui-marks-more {
+  --tone: var(--muted); position: relative; display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%; height: 20px;
+  padding: 0 7px 0 5px; border: 1px dashed color-mix(in srgb, var(--tone) 65%, var(--line)); border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--tone) 8%, transparent); color: var(--text); font-size: var(--f-sm); font-weight: 400; line-height: 18px;
+  white-space: nowrap; cursor: default;
+}
+.pui-mark-running { --tone: var(--running); }
+.pui-mark-done { --tone: var(--done); }
+.pui-mark-failed { --tone: var(--failed); }
+.pui-mark-info { --tone: var(--accent); }
+.pui-mark .pui-dot { width: 6px; height: 6px; color: var(--tone); }
+.pui-mark-icon { flex: none; color: var(--muted); }
+.pui-mark-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pui-mark:focus-visible, .pui-marks-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Under the mark by default; plugin-ui.js fit() narrows, shifts or lifts it into the visible area when it shows. */
+.pui-mark-tip {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; display: none; gap: 2px; width: max-content; max-width: min(280px, 80vw);
+  padding: 4px 8px; border-radius: var(--r-sm); background: var(--text); color: var(--surface); white-space: normal; overflow-wrap: anywhere;
+  text-align: left; pointer-events: none;
+}
+.pui-mark:hover > .pui-mark-tip, .pui-mark:focus-visible > .pui-mark-tip { display: grid; }
+.pui-marks-more { padding: 0 7px; border-style: solid; cursor: pointer; }
+.pui-marks-more:hover, .pui-marks-more[aria-expanded="true"] { background: color-mix(in srgb, var(--tone) 18%, transparent); }
+.pui-marks-all {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 35; display: grid; gap: 6px; width: max-content; max-width: min(340px, calc(100vw - 32px));
+  padding: var(--s-2); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--shadow-popover);
+  white-space: normal; text-align: left;
+}
+.pui-marks-all-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 2px 8px; }
+.pui-marks-all-who { color: var(--muted); font-size: var(--f-sm); overflow-wrap: anywhere; }
+.pui-marks-all-tip { grid-column: 1 / -1; font-size: var(--f-sm); overflow-wrap: anywhere; }
+.run-notices { position: absolute; top: calc(100% + var(--s-2)); right: var(--s-4); z-index: 60; display: grid; gap: var(--s-2); width: min(360px, calc(100vw - 32px)); }
+.run-notices:empty { display: none; }
+.run-notice {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 2px var(--s-2); padding: var(--s-2) var(--s-2) var(--s-3) var(--s-3);
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--done); border-radius: var(--r-md); box-shadow: var(--shadow-popover);
+}
+.run-notice > .ico { color: var(--done); }
+.run-notice.failed { border-left-color: var(--failed); }
+.run-notice.failed > .ico { color: var(--failed); }
+.run-notice-title { min-width: 0; overflow-wrap: anywhere; }
+.run-notice-plugin, .run-notice-text { grid-column: 2 / 4; }
+.run-notice-text { margin: 0; font-size: var(--f-md); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow-y: auto; }
+@media (max-width: 640px) {
+  .mention-menu.command-menu { right: 0; width: auto; }
+  .command-form { width: auto; }
+  .command-form-slot { padding: var(--s-2) 12px 0; }
+  .plugin-run-text { max-width: 32vw; }
+  .run-notices { right: var(--s-2); left: var(--s-2); width: auto; }
+}
 
 /* ---- avatars ---- */
 .avatar {
@@ -676,7 +803,8 @@ button.app-row-main {
 .session .online.on { color: var(--done); }
 label.inline { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-size: var(--f-md); }
 label.inline > input { width: auto; margin: 0; }
-.session-body { display: grid; gap: 8px; }
+.modes { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.mode-body { display: grid; gap: 8px; }
 .project-row { display: flex; align-items: flex-end; gap: 8px; }
 .project-row > label { flex: 1; min-width: 0; }
 .fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
@@ -743,7 +871,7 @@ button.entry-main { flex: 1; min-width: 0; display: grid; gap: 1px; padding: 5px
   .entry-list { max-height: none; }
   .entry-row, button.entry-main { min-height: 44px; }
   .entry-editor-wrap { display: none; }
-  .harness-body.show-entry > :not(.session-body):not(.form-error), .harness-body.show-entry .session-body > :not(.entry-area),
+  .harness-body.show-entry > :not(.mode-body):not(.form-error), .harness-body.show-entry .mode-body > :not(.entry-area),
   .harness-body.show-entry .entry-list { display: none; }
   .harness-body.show-entry .entry-editor-wrap { display: grid; gap: 8px; justify-items: start; }
   .harness-body.show-entry .entry-editor { justify-self: stretch; }
@@ -754,7 +882,8 @@ button.entry-main { flex: 1; min-width: 0; display: grid; gap: 1px; padding: 5px
 }
 
 /* ---- membership management (the member panel's list) ---- */
-#empty-members, #update-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+#empty-members, #update-banner, #trust-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+#trust-banner > button { flex-shrink: 0; white-space: nowrap; }
 #message-sync-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .harness-list { border: 0; padding: 0; margin: 0; min-width: 0; }
 /* The member list (app.js renderManage): one card per member on the page background. Colours come from the page's
@@ -835,6 +964,10 @@ button.icon-button.ghost.member-action.danger { margin-left: 6px; color: var(--f
 
 /* ---- confirm / notice dialog (ui.js confirmDialog, noticeDialog) ---- */
 dialog.ask { width: min(420px, calc(100vw - 32px)); }
+/* What the user typed into a plugin's form when the plugin was detached (plugin-slots.js): not modal, bottom right. */
+dialog.kept-input { position: fixed; inset: auto 16px 16px auto; margin: 0; z-index: 50; width: min(440px, calc(100vw - 32px)); }
+.kept-input form { padding: var(--s-4); display: grid; gap: var(--s-3); }
+.kept-input-text { width: 100%; box-sizing: border-box; resize: vertical; }
 .ask form { display: grid; gap: 12px; }
 .ask-message { margin: 0; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* Recycle bin and its permanent delete (trash.js). */

@@ -70,15 +70,28 @@ export function fromAppServer(result: any, observedAt: string): QuotaSnapshot | 
 
 const ROLLOUT_RE = /^rollout-.*\.jsonl$/;
 
+async function rolloutNames(dir: string): Promise<string[]> {
+  try { return await readdir(dir, { recursive: true, encoding: 'utf8' }); }
+  catch { return []; }
+}
+
+async function findRollout(dir: string, threadId: string, extensions: string[]): Promise<string | null> {
+  const names = await rolloutNames(dir);
+  for (const extension of extensions) {
+    const suffix = `-${threadId.toLowerCase()}${extension}`;
+    const found = names.find((name) => {
+      const base = name.split(/[\\/]/).pop()!.toLowerCase();
+      return base.startsWith('rollout-') && base.endsWith(suffix);
+    });
+    if (found) return join(dir, found);
+  }
+  return null;
+}
+
 /** Every rollout file with its mtime. shortcut: stats every file on each call; index by day folder if users have many thousands. */
 async function rollouts(codexHome: string): Promise<{ file: string; mtimeMs: number }[]> {
   const dir = join(codexHome, 'sessions');
-  let names: string[];
-  try {
-    names = await readdir(dir, { recursive: true, encoding: 'utf8' });
-  } catch {
-    return [];
-  }
+  const names = await rolloutNames(dir);
   const out: { file: string; mtimeMs: number }[] = [];
   for (const n of names) {
     const base = n.split(/[\\/]/).pop()!;
@@ -100,13 +113,26 @@ export function createCodexUsage(codexHome: string) {
     if (known) {
       try { await stat(known); return known; } catch { fileOf.delete(threadId); }
     }
-    const found = (await rollouts(codexHome)).find((r) => r.file.endsWith(`-${threadId}.jsonl`));
-    if (found) fileOf.set(threadId, found.file);
-    return found?.file ?? null;
+    const found = await findRollout(join(codexHome, 'sessions'), threadId, ['.jsonl']);
+    if (found) {
+      try {
+        if ((await stat(found)).isFile()) {
+          fileOf.set(threadId, found);
+          return found;
+        }
+      } catch { /* moved since the directory was read */ }
+    }
+    return null;
   }
 
   return {
     rolloutOf,
+
+    async transcriptRolloutOf(threadId: string): Promise<string | null> {
+      return await rolloutOf(threadId)
+        ?? await findRollout(join(codexHome, 'archived_sessions'), threadId, ['.jsonl', '.jsonl.zst'])
+        ?? await findRollout(join(codexHome, 'sessions'), threadId, ['.jsonl.zst']);
+    },
 
     /** The newest rate limits any rollout file recorded (no network). Read again only when the newest file changed. */
     async quotaFromRollouts(): Promise<QuotaSnapshot | null> {

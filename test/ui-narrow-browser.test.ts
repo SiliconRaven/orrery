@@ -26,13 +26,28 @@ async function noSideScroll(page: Page, view: string, pane?: string) {
   if (pane) assert.ok(o.pane !== null && o.pane <= 0, `${view}: ${pane} scrolls sideways by ${o.pane}px`);
 }
 
+async function checkBatchDetails(page: Page, label: string, title: string, missing: string) {
+  const button = `document.querySelector('.wb-group-batch .wb-batch-progress button')`;
+  const dialog = `document.querySelector('dialog.wb-batch-dialog[open]')`;
+  await page.waitFor(button, 'the review batch details button');
+  await page.click(button, 'the review batch details button');
+  await page.waitFor(dialog, 'the review batch details dialog', 5_000);
+  assert.equal(await page.evaluate(`${dialog}.getAttribute('aria-label')`), label);
+  assert.equal(await page.evaluate(`${dialog}.querySelector('div.workbench-form h2').textContent`), title);
+  assert.ok(await page.evaluate(`[...${dialog}.querySelectorAll('p.muted')].some((p) => p.textContent === ${JSON.stringify(missing)})`));
+  await page.click(`${dialog}.querySelector('button.primary')`, 'close the batch details dialog');
+}
+
 test('375 px: chat, workbench tasks, roles and settings have no sideways scroll; the narrow fixes hold', { skip, timeout: 120_000 }, async () => {
   assert.ok(found.path, `ORRERY_REQUIRE_BROWSER=1 but ${found.path === null ? found.reason : ''}`);
   const hub = await startTestHub();
   let browser: Browser | null = null;
   try {
     // No coordinator in this cluster: the long-term instructions card shows why its add button is disabled.
-    await hub.cluster('narrow', ['alpha', 'beta']);
+    const { cluster } = await hub.cluster('narrow', ['alpha', 'beta']);
+    const command = (data: object) => hub.api('POST', `/api/clusters/${cluster.id}/collaboration`, { ...data, operationId: crypto.randomUUID() });
+    const { batch } = await command({ action: 'batch.create', title: 'Browser fixture', reviewer: { kind: 'user' } });
+    for (const title of ['One', 'Two']) await command({ action: 'task.create', title, scope: 'Review', acceptance: 'Checked', batchId: batch.id });
     browser = await launchBrowser(found.path, { redact: [TEST_TOKEN] });
     const page = browser.page;
     await page.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: false });
@@ -46,6 +61,7 @@ test('375 px: chat, workbench tasks, roles and settings have no sideways scroll;
     await page.evaluate(`document.getElementById('open-workbench').click()`);
     await page.waitFor(`document.querySelector('dialog[open] .workbench-tabs')`, 'the workbench');
     await noSideScroll(page, 'workbench tasks', 'dialog[open] .workbench-content');
+    await checkBatchDetails(page, '批次 B1', '批次 B1 · Browser fixture', '还差：#1 待开工、#2 待开工');
 
     await page.evaluate(`[...document.querySelectorAll('dialog[open] .workbench-tabs button')].find((b) => /^角色/.test(b.textContent)).click()`);
     await page.waitFor(`document.querySelector('dialog[open] .wb-rp-hint')`, 'the roles page with a disabled reason');
@@ -69,6 +85,29 @@ test('375 px: chat, workbench tasks, roles and settings have no sideways scroll;
         assert.equal(new Set(tops).size, 1, `the four theme options are on one row: ${tops}`);
       }
     }
+    // Switching languages with a draft shows the page confirmation, and cancelling leaves the composer as it was.
+    const draft = '待发送草稿';
+    await page.evaluate(`document.getElementById('settings-tab-appearance').click();
+      document.getElementById('composer-input').value = ${JSON.stringify(draft)};`);
+    const chooseEnglish = `(() => {
+      const language = document.getElementById('ui-language');
+      language.value = 'en';
+      language.dispatchEvent(new Event('change'));
+    })()`;
+    await page.evaluate(chooseEnglish);
+    await page.waitFor(`document.querySelector('dialog.ask[open] #ask-title')?.textContent === '切换语言并刷新页面？'`, 'language change confirmation');
+    await page.evaluate(`document.querySelector('dialog.ask[open] button[value=cancel]').click()`);
+    await page.waitFor(`document.getElementById('ui-language').value === 'zh'`, 'the original language selection');
+    assert.equal(await page.evaluate(`document.getElementById('composer-input').value`), draft);
+    assert.equal(await page.evaluate(`document.documentElement.lang`), 'zh-CN');
+    await page.evaluate(`document.getElementById('composer-input').value = '';`);
+    await page.evaluate(chooseEnglish);
+    await page.waitFor(`document.documentElement.lang === 'en' && document.getElementById('open-settings').title === 'Settings'`, 'the reloaded English interface');
+    await page.evaluate(`document.getElementById('open-settings').click()`);
+    await page.waitFor(`document.getElementById('settings-dialog').open`, 'English settings');
+    await noSideScroll(page, 'English appearance settings', '#settings-dialog .settings-panels');
+    await page.evaluate(`document.getElementById('settings-dialog').close(); document.getElementById('open-workbench').click()`);
+    await checkBatchDetails(page, 'Batch B1', 'Batch B1 · Browser fixture', 'Still needed: #1 待开工, #2 待开工');
     assert.deepEqual(browser.problems().exceptions, []);
   } finally {
     await browser?.close();

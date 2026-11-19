@@ -37,6 +37,17 @@ orrery 不替用户修改 `~/.zcode` 下的任何配置文件。完整工具文�
   1. `wait.mjs` 在 Windows 上启动时定位首个非 shell 祖先进程并每 5 秒探活，祖先消失即静默退出；
   2. Hub 适配器周期通过 `tasklist` 检查当前用户 `ZCode.exe` 存活情况（结果缓存 10 秒，投递前现查），应用不在即视为离线且拒绝投递。
 
+## 读对话原文
+
+进程内的 `Hub.memberTranscript` 经 `src/adapters/zcode/transcript.ts` 读取群员当前绑定的 ZCode 对话（契约见 [架构说明](../architecture.md#读取群员当前绑定的原生对话)）。按 ZCode 桌面 3.18.2（CLI 0.17.1）的表结构实现，2026-11-19 核对；表结构不是 ZCode 的对外接口，升级后可能变化。
+
+- **来源**：`<ZCODE_HOME 或 ~/.zcode>/cli/db/db.sqlite` 的 `message`（每条消息一行，`data` 为 JSON）和 `part`（消息的各部分）。用共用读取器 `src/adapters/shared/sqlite-transcript.ts` 在原处只读打开，不复制整个库；每页最多扫描 1000 行的键，再逐行读取内容。只读绑定会话的行；会话不存在或已删除时返回 `missing`，缺少用到的表或列时返回 `unsupported`，会话 id 格式不对时返回 `refused`。
+- **归类**：用户自己输入的文字 → `user`；ZCode 自己加给模型的上下文（提醒、后台任务通知等，标为 synthetic / model-only）→ `system`；助手文字 → `assistant`；推理 → `thinking`，只显示占位，不显示推理正文；工具 → `tool_call` 和完成或出错后的 `tool_result`；换模型 → `system`；`step-start`、`step-finish` 不显示；其他类型 → `unknown` 并计数。超过 256 KiB 的行显示为一条截断的 `unknown`。工具还没完成、文字还没写完的行，下次往后读时会再读一次（条目 ID 不变）；已经写完的行被原地改写时，指向它的游标返回 `reset`。
+- **投递**：等待命令把投递打印进后台命令的输出文件，群员用 `Read` 读这个文件。只有从第 1 行起逐行编号、首行是 `wait.mjs` 的开头句、结尾的重新挂上说明带**这个会话**票据的 `Read` 结果，才把其中的信封（或无信封直发的正文）作为候选交给 Hub；Hub 只在这条投递真的发给了这个群员时才把它标成 orrery 投递。用户自己输入的文字是用户消息，不是工具结果，长得像信封也不会被当成投递；其他工具的输出、只读了一部分的 `Read` 也不算。票据能用来占用这个会话的等待，所以返回的每段文字里 orrery 票据的签名部分都换成 `<hidden>`，判断证据仍用原始记录。
+- **发言**：ZCode 在 MCP 调用里记下的服务器名和工具名（`state.metadata.display`）决定是不是 `send_message`，不写死服务器名；成功结果里的 `messageId` 交给 Hub，Hub 核对这条消息确实是这个群员在这个群里发的。
+- **不写任何文件**：在合成的 WAL 库上实测（Node 24 自带 SQLite 3.53，写库的程序在另一个进程）：普通只读打开在没有 `-wal`/`-shm` 时会新建这两个文件，有写者时每次读都会改写 `-shm` 里的读标记。所以有 `-wal` 时用 `mode=ro&readonly_shm=1`，没有时用 `immutable=1`，读完核对库文件没变、`-wal` 仍不存在，否则按同样的检查重读。有 `-wal` 却没有 `-shm`（异常退出后 `-shm` 被删）时，`readonly_shm` 打开会建一个 0 字节的 `-shm`，`immutable` 又会漏掉 WAL 里的提交，所以不打开库，返回 `unsupported`：库在等 ZCode 恢复预写日志，ZCode 下次打开它后就能再读。剩下一个竞态：检查时 `-wal` 还在，到真正打开前的一瞬间 ZCode 正常关库删掉了 `-wal` 和 `-shm`，SQLite 会重新建出这两个空文件；没找到只读打开 WAL 库又不冒这个险的办法，ZCode 下次打开时照常使用它们。库文件及其 `-wal`、`-shm` 必须是 ZCode 目录下的普通文件，链接和硬链接一律拒绝。
+- **局限**：`Read` 只读了一部分或输出被截断、或用 `cat`、`TaskOutput` 读输出时，投递显示为普通工具结果；`message.sequence` 为空的行会让整个会话读作 `unsupported`。
+
 ## 投递证据与限制
 
 - **投递语义上限**：最多确认到等待命令已打印信封并收到后续重挂，不跟踪那一轮模型的完整结束状态与单轮精准 token。

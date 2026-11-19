@@ -1,19 +1,19 @@
-import { tempDir } from './helpers.ts';
 // The background-wait core with a harness that is not ZCode (docs/adapters/zcode.md, "共用等待核心"): everything that
 // varies comes from its WaitHarness, and the anti-loop and offline rules hold for it. Real Hub routes and the real
 // wait.mjs as a child process; nothing here runs a native app or calls a model.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { request } from 'node:http';
 import { basename, join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { copyFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { appProcessRunning, createWaitDelivery } from '../src/adapters/shared/wait-native.ts';
 import { ZCODE_WAIT, type BridgePort, type Member, type NativeAdapter, type NativeDeliverContext, type WaitHarness } from '../src/core/types.ts';
 import { REPO_ROOT } from '../src/main.ts';
 import { ARM_LIMIT, metaSession, NOT_MEMBER_TEXT, ticketFor, ticketSession, waitCommand, WAIT_SCRIPT } from '../src/mcp/wait-core.ts';
-import { startTestHub, waitFor, openSse } from './helpers.ts';
+import { startTestHub, tempDir, waitFor, openSse } from './helpers.ts';
 
 const WAIT = join(REPO_ROOT, 'plugins', 'zcode-orrery', 'wait.mjs');
 const waitModule = await import(pathToFileURL(WAIT).href);
@@ -87,7 +87,7 @@ test('wait core config: the ticket, the command and the _meta key come from the 
 });
 
 test('wait core config: the app process name comes from the config (tasklist, read-only)', { skip: process.platform !== 'win32' && 'tasklist' }, async () => {
-  // tasklist with a user filter can pass its 10 s limit while the full suite runs; null is "unknown", so ask again.
+  // A busy host can time out on the user filter. "Unknown" still has to resolve to the expected answer.
   const known = async (image: string) => {
     for (let i = 0; i < 3; i++) {
       const answer = await appProcessRunning(image);
@@ -95,8 +95,20 @@ test('wait core config: the app process name comes from the config (tasklist, re
     }
     return null;
   };
-  assert.equal(await known(basename(process.execPath)), true, 'this test runs under node.exe');
-  assert.equal(await known('orrery-no-such-app.exe'), false);
+  // Use one owned process of a unique name. Querying every node.exe also inspects unrelated user processes.
+  const image = `orrery-wait-${process.pid}.exe`;
+  const fixture = join(tempDir(), image);
+  copyFileSync(join(process.env.SystemRoot!, 'System32', 'sort.exe'), fixture);
+  const child = spawn(fixture, [], { windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
+  const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+  try {
+    await once(child, 'spawn');
+    assert.equal(await known(image), true, 'the fixture is running for this user');
+  } finally {
+    child.stdin.end();   // sort exits at EOF
+    await closed;
+  }
+  assert.equal(await known(image), false, 'the same fixture has exited');
 });
 
 test('wait core: a harness without a wait config gets no wait route', async () => {

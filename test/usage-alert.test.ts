@@ -1,4 +1,3 @@
-import { tempDir } from './helpers.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { usageAlert, type MemberUsage } from '../src/core/usage.ts';
@@ -18,7 +17,7 @@ test('a long native conversation shows on the usage report without a recorded tu
   const app = await startTestHub({ nativeAdapters: { mock: native }, limits: { idleSweepMs: 60_000, quotaPollMs: 0 } });
   try {
     const { cluster, members: [coordinator, member] } = await app.hub.createCluster('conversation', [
-      { projectPath: tempDir(), harness: 'mock', mode: 'native', name: 'Coordinator' },
+      { harness: 'mock', mode: 'native', name: 'Coordinator', projectPath: '/work' },
       { harness: 'mock', mode: 'native', sessionId: 'session', name: 'Member' },
     ]);
     app.hub.collaboration.command({ kind: 'user' }, cluster.id, { action: 'coordinator.set', operationId: 'coord', memberId: coordinator.id, enabled: true, mode: 'execute' });

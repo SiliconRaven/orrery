@@ -1,4 +1,3 @@
-import { tempDir } from './helpers.ts';
 // The chat filter's sender switch and hidden-warning count (ui.js), and the history search sheet's pure helpers
 // (chat-search.js), run in node. The sheet itself and the jump are exercised in a real page by test/chat-search-browser.test.ts.
 import { test } from 'node:test';
@@ -52,7 +51,7 @@ test('chat filter: the loaded warnings it hides are counted, not the ones a jump
   const html = readFileSync(join(REPO_ROOT, 'src', 'web', 'public', 'index.html'), 'utf8');
   assert.match(html, /id="chat-filter-live" class="sr-only" aria-live="polite"/);
   assert.match(app, /hiddenWarningArrived\(m\);/, 'every streamed message is checked');
-  assert.match(app, /setText\(\$\('chat-filter-live'\), `筛选隐藏了 \$\{count\} 条新到的警告。`\)/, 'the same number as the badge');
+  assert.match(app, /setText\(\$\('chat-filter-live'\), t\('筛选隐藏了 \{count\} 条新到的警告。', \{ count: count \}\)\)/, 'the same number as the badge');
 });
 
 test('chat filter: the warning badge shows the hidden loaded warnings and the hidden arrivals apart', () => {
@@ -69,7 +68,7 @@ test('chat filter: the warning badge shows the hidden loaded warnings and the hi
 });
 
 test('search: sender choices by identity, removed and hidden marked, same names told apart', () => {
-  const m = (id: string, name: string, extra: object = {}) => ({ id, clusterId: 'c1', name, harness: 'claude', mode: 'native', removedAt: null, hiddenAt: null, ...extra });
+  const m = (id: string, name: string, extra: object = {}) => ({ id, clusterId: 'c1', name, harness: 'claude', removedAt: null, hiddenAt: null, ...extra });
   const members = [
     m('aaaaaa-1', 'A'), m('bbbbbb-1', 'B', { hiddenAt: 't' }), m('cccccc-1', 'A', { removedAt: 't' }), m('dddddd-1', 'C', { removedAt: 't' }),
     m('eeeeee-1', 'D', { harness: 'codex' }), m('ffffff-1', 'D', { harness: 'codex' }), m('zzzzzz-1', 'A', { clusterId: 'c2' }),

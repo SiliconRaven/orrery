@@ -122,8 +122,10 @@ test('switch: every real role=switch in the page scripts and markup sits in the 
   const sites = sources.flatMap(([f, src]) => [...src.matchAll(/role(?:: '|=")switch/g)].map(() => f));
   // Each caller, and how its input reaches a .plugin-switch label. A new switch must be added here with its host.
   const hosts: [string, RegExp][] = [
-    ['plugins.js', /h\('label', \{ class: 'plugin-switch' \},\s*h\('input', \{\s*type: 'checkbox', role: 'switch', 'aria-label': `启用/],
+    ['plugins.js', /h\('label', \{ class: 'plugin-switch' \},\s*h\('input', \{\s*type: 'checkbox', role: 'switch', 'aria-label': t\("启用\{name\}"/],
     ['plugins.js', /const wake = [^;]*role: 'switch'[\s\S]*h\('label', \{ class: 'plugin-switch[ '][^}]*\}, wake, /],
+    ['plugins.js', /h\('label', \{ class: 'plugin-switch', title: hint \},\s*h\('input', \{ type: 'checkbox', role: 'switch'/],
+    ['updates.js', /const auto = h\('input', \{[^}]*role: 'switch'[\s\S]*h\('label', \{ class: 'plugin-switch', [^}]*\}, auto, /],
     ['workbench.js', /const settingSwitch = \(props\) => h\('label', \{ class: 'plugin-switch' \}, h\('input', \{ type: 'checkbox', role: 'switch'/],
   ];
   assert.deepEqual(sites.sort(), hosts.map(([f]) => f).sort(), 'every role=switch is one of the known callers');

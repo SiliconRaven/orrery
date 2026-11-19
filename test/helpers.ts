@@ -7,16 +7,16 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { keepTestTemp, removeTestDir, sleepSync, TEST_TEMP_PREFIX } from '../scripts/test-temp.ts';
 import { dbModeOf } from '../src/config.ts';
 import { startHub, type StartOptions } from '../src/main.ts';
-import { defaultScript, scriptedNative, type MockOptions, type MockScript } from './mock.ts';
-import { MOCK_MODEL } from '../src/adapters/mock/native.ts';
-import { createMockNativeAdapter, type MockNativeAdapter, type MockNativeOptions } from '../src/adapters/mock/native.ts';
+import { createMockNativeAdapter, MOCK_MODEL, type MockNativeAdapter, type MockNativeOptions } from '../src/adapters/mock/native.ts';
 import type { Store } from '../src/core/store.ts';
 import type { Cluster, Delivery, HubEvent, Member, Message } from '../src/core/types.ts';
+import { defaultScript, scriptedNative, type MockOptions, type MockScript } from './mock.ts';
 
 // Test Hubs skip flushing commits to disk (ORRERY_TEST_DB_SYNC, docs/architecture.md): startTestHub reads it here, and
 // a Hub a test spawns with { ...process.env } inherits it. Unsafe on power loss, which a test does not care about.
 // Tests about durability or the product default pass their own dbMode, or spawn without the variable.
 process.env.ORRERY_TEST_DB_SYNC = 'off';
+process.env.ORRERY_UPDATE_CHECKS = '0';
 
 /** The API token of every test Hub (startTestHub's default; tests that call startHub pass it themselves). */
 export const TEST_TOKEN = 'test-token-0123456789abcdefghijklmnopqrstuvwxyz';
@@ -116,7 +116,7 @@ function fixture(dir: string) {
   };
 }
 
-/** A native mock over two fixture conversations. */
+/** A plain native mock ('queue' kind: always online, completes, no script) over the fixture, so s1 and s2 can be attached. */
 export function fixtureNativeMock(dir: string, opts: MockNativeOptions = {}): MockNativeAdapter {
   return createMockNativeAdapter({ ...fixture(dir), model: MOCK_MODEL, ...opts });
 }
@@ -179,23 +179,45 @@ export function openSse(url: string, headers: Record<string, string>) {
 
 export const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
+/** The MCP headers a test member's own bridge would send: the bridge secret and its conversation (harness, session). */
+export function memberHeaders(app: Pick<TestHub, 'home' | 'store'>, memberId: string): Record<string, string> {
+  const member = app.store.getMember(memberId, { includeRemoved: true });
+  if (!member) throw new Error(`unknown test member ${memberId}`);
+  return { 'x-orrery-bridge': hubSecret(app.home), 'x-orrery-harness': member.harness, 'x-orrery-session': member.workerSessionId };
+}
+
+/** How many deliveries the test Hub's mock harness was handed for this member's conversation (each one a turn). */
+export function turnsOf(app: Pick<TestHub, 'native' | 'store'>, memberId: string): number {
+  const session = app.store.getMember(memberId, { includeRemoved: true })?.workerSessionId;
+  return app.native.delivered.filter((d) => d.sessionId === session).length;
+}
+
+/** The bridge secret of a test Hub, from its discovery file. */
+export function hubSecret(home: string): string {
+  return JSON.parse(readFileSync(join(home, 'hub.json'), 'utf8')).secret;
+}
+
 export type TestHub = Awaited<ReturnType<typeof startHub>> & {
   dir: string;
-  native: MockNativeAdapter;   // the native 'mock' harness (unless nativeAdapters was passed)
+  /** A project folder (empty at start) for new mock conversations: a new conversation must name its project. */
+  project: string;
+  /** The adapter registered as the 'mock' harness: the scripted mock (test/mock.ts), or the test's own opts.nativeAdapters.mock. */
+  native: MockNativeAdapter;
   events: HubEvent[];
   api(method: string, path: string, body?: unknown): Promise<any>;
-  /** A cluster of empty mock specs with the given member names. */
+  /** A cluster of new mock conversations in `project`, with the given member names. */
   cluster(name: string, memberNames: string[]): Promise<{ cluster: Cluster; members: Member[] }>;
   messages(clusterId: string): Promise<{ id: string; deliveries: Delivery[]; [k: string]: any }[]>;
   settled(clusterId: string): Promise<boolean>;
 };
 
 export async function startTestHub(
-  opts: Partial<StartOptions> & { mock?: MockOptions; native?: MockNativeOptions; dir?: string } = {},
+  opts: Partial<StartOptions> & { mock?: MockOptions; dir?: string } = {},
 ): Promise<TestHub> {
   const dir = opts.dir ?? tempDir();
+  // The scripted mock answers through the Hub's MCP endpoint, known once the Hub listens (a turn before that waits a tick).
   let endpoint: { url: string; secret: string } | null = null;
-  const native = scriptedNative({ ...fixture(dir), model: MOCK_MODEL, ...opts.mock, ...opts.native }, () => endpoint);
+  const native = scriptedNative({ ...fixture(dir), model: MOCK_MODEL, ...opts.mock }, () => endpoint);
   const app = await startHub({
     dbPath: join(dir, 'test.db'), port: 0, home: join(dir, 'home'),
     apiToken: TEST_TOKEN, dbMode: dbModeOf(process.env), ...opts, nativeAdapters: { mock: native, ...opts.nativeAdapters },
@@ -204,7 +226,9 @@ export async function startTestHub(
     // the window pass their own noticeWindowMs. The same for the member-message window (messageWindowMs).
     limits: { startupGraceMs: 0, noticeWindowMs: 0, messageWindowMs: 0, ...opts.limits },
   });
-  endpoint = { url: app.url, secret: JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8')).secret };
+  endpoint = { url: app.url, secret: hubSecret(app.home) };
+  const project = join(dir, 'work');
+  mkdirSync(project, { recursive: true });
   const events: HubEvent[] = [];
   app.hub.subscribe((e) => events.push(e));
   const api = async (method: string, path: string, body?: unknown) => {
@@ -215,9 +239,10 @@ export async function startTestHub(
   };
   const messages = (clusterId: string): ReturnType<TestHub["messages"]> => api('GET', `/api/clusters/${clusterId}/messages`);
   return Object.assign(app, {
-    dir, native, events, api, messages,
+    // The adapter the Hub really uses: a test's own 'mock' replaces the scripted one, so assertions on app.native see its calls.
+    dir, project, native: (opts.nativeAdapters?.mock ?? native) as MockNativeAdapter, events, api, messages,
     cluster: (name: string, memberNames: string[]) =>
-      api('POST', '/api/clusters', { name, members: memberNames.map((n) => ({ harness: 'mock', name: n, projectPath: join(dir, 'project-1') })) }),
+      api('POST', '/api/clusters', { name, members: memberNames.map((n) => ({ harness: 'mock', mode: 'native', name: n, projectPath: project })) }),
     settled: async (clusterId: string) => {
       const msgs = await messages(clusterId);
       return msgs.length > 0 && msgs.every((m) => m.deliveries.every((d) => ['done', 'failed', 'offline', 'superseded'].includes(d.state)));
@@ -233,15 +258,4 @@ export async function waitFor<T>(fn: () => T | Promise<T>, what = 'condition', t
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
     await sleep(10);
   }
-}
-
-/** A test conversation's real native bridge identity. */
-export function nativeHeaders(app: Pick<TestHub, 'home' | 'store'>, memberId: string): Record<string, string> {
-  const member = app.store.getMember(memberId, { includeRemoved: true });
-  if (!member) throw new Error('unknown test member');
-  return {
-    'x-orrery-bridge': JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8')).secret,
-    'x-orrery-harness': member.harness,
-    'x-orrery-session': member.workerSessionId,
-  };
 }

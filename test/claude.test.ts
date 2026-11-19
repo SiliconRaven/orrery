@@ -1,14 +1,20 @@
-// Native transcript discovery uses synthetic files.
+// Claude without a real model: the session-store reader uses a synthetic protocol transcript plus hand-made edge cases.
+// The CLI helpers (finding the CLI, its environment and stopping an overrunning helper) use node and PowerShell stand-ins.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { cutRecordHead, cutRecordTail } from '../src/adapters/claude/store.ts';
+import { cliEnv, resolveClaudeCommand, stopHelper, type StopHelperOptions } from '../src/adapters/claude/cli.ts';
 import { createClaudeNativeAdapter } from '../src/adapters/claude/native.ts';
-import { tempDir } from './helpers.ts';
+import { cutRecordHead, cutRecordTail } from '../src/adapters/claude/store.ts';
+import { tempDir, waitFor } from './helpers.ts';
+
 const FIXTURES = join(import.meta.dirname, 'fixtures', 'claude');
 const FIXTURE_ID = '11111111-1111-4111-8111-000000000001';
 const FIXTURE_CWD = 'C:\\fixtures\\claude-project';
+
 // ───────────── session store ─────────────
 
 function line(o: object) {
@@ -80,8 +86,8 @@ test('claude store: sessions with titles, models and edge cases; files are left 
   const before = snapshot(dir);
   const adapter = createClaudeNativeAdapter({ claudeDir: dir });
 
-  const smoke = await adapter.listSessions(FIXTURE_CWD);
-  assert.deepEqual(smoke.map(({ updatedAt, ...s }) => s), [
+  const fixtureSessions = await adapter.listSessions(FIXTURE_CWD);
+  assert.deepEqual(fixtureSessions.map(({ updatedAt, ...s }) => s), [
     { id: FIXTURE_ID, title: 'Fixture conversation', model: 'claude-opus-5-5', cwd: FIXTURE_CWD },
   ]);
 
@@ -174,12 +180,176 @@ test('claude store: the cut-record scanner reads only top-level fields', () => {
   assert.equal(cutRecordHead('{"text":"a \\"cwd\\":\\"/esc\\" b'), null, 'an escaped key inside a string');
 });
 
-// ───────────── runTurn against the fake CLI ─────────────
+// ───────────── CLI helpers ─────────────
 
-const TOKEN = 'Q7zK9pL2mN4vC8cR5tW1';
-
-/** True when no 4+ character piece of the token appears in `s`. */
-function tokenFree(s: string): boolean {
-  for (let i = 0; i + 4 <= TOKEN.length; i++) if (s.includes(TOKEN.slice(i, i + 4))) return false;
-  return true;
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
+
+const handles = () => process.getActiveResourcesInfo().filter((r) => r === 'ProcessWrap' || r === 'PipeWrap').length;
+
+/**
+ * Starts a helper the way askUsage does (pipes, its own process group off Windows), lets it run `ms`, then stops it
+ * with stopHelper. Returns its pid, what it printed meanwhile, and stopHelper's report (null: stopped and confirmed).
+ */
+async function stopAfter(command: string, args: string[], ms: number, stop?: StopHelperOptions) {
+  const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
+  let stdout = '';
+  child.stdout.setEncoding('utf8').on('data', (d: string) => { stdout += d; });
+  child.stderr.resume();
+  child.on('error', () => {});
+  await new Promise((ok) => setTimeout(ok, ms));
+  const failure = await stopHelper(child, stop);
+  child.stdout.destroy();
+  child.stderr.destroy();
+  child.unref();
+  return { pid: child.pid, stdout, failure };
+}
+
+test('claude stopHelper: a helper that runs on is killed and confirmed dead', { timeout: 15_000 }, async () => {
+  const before = handles();
+  const r = await stopAfter(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], 200);
+  assert.equal(r.failure, null);
+  assert.equal(isAlive(r.pid!), false, 'the helper is dead when stopHelper returns');
+  await new Promise((ok) => setTimeout(ok, 100));
+  assert.ok(handles() <= before);
+});
+
+test('claude stopHelper: the helper\'s own child processes are killed too', { timeout: 15_000 }, async () => {
+  // The helper starts a long-lived grandchild, prints its pid, and then hangs itself. On Windows the helper is
+  // PowerShell, like the real ones: a node helper would prove nothing there, because libuv puts a node
+  // process's children in a job object that dies with it.
+  const [cmd, args] = process.platform === 'win32'
+    ? [join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command',
+      `$p = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e','setInterval(()=>{},1000)' -WindowStyle Hidden -PassThru; [Console]::Out.WriteLine($p.Id); [Console]::Out.Flush(); Start-Sleep -Seconds 60`]]
+    : [process.execPath, ['-e', "const c = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });"
+      + ' console.log(c.pid); setInterval(() => {}, 1000);']];
+  const r = await stopAfter(cmd, args, 5000);
+  const grandchild = Number(r.stdout.trim());
+  try {
+    assert.equal(r.failure, null);
+    assert.ok(r.pid !== undefined && !isAlive(r.pid), 'the helper is dead');
+    assert.ok(grandchild > 0, `the helper printed its child's pid (got ${JSON.stringify(r.stdout)})`);
+    let alive = isAlive(grandchild);
+    for (let i = 0; alive && i < 20; i++) { await new Promise((ok) => setTimeout(ok, 50)); alive = isAlive(grandchild); }
+    assert.equal(alive, false, 'the grandchild is dead too');
+  } finally {
+    if (grandchild > 0 && isAlive(grandchild)) try { process.kill(grandchild); } catch { /* gone */ }
+    if (r.pid !== undefined && isAlive(r.pid)) try { process.kill(r.pid); } catch { /* gone */ }
+  }
+});
+
+test('claude stopHelper: missing, non-zero, or hung taskkill reports unconfirmed tree cleanup and stops both processes',
+  { timeout: 15_000, skip: process.platform !== 'win32' && 'Windows taskkill only' }, async () => {
+    const dir = tempDir();
+    const killerPidFile = join(dir, 'killer.pid');
+    const missing = await stopAfter(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], 200,
+      { taskkill: { command: join(dir, 'no-such-taskkill.exe'), args: [] } });
+    try {
+      assert.match(missing.failure ?? '', /^taskkill could not start; tree cleanup unconfirmed$/);
+      assert.equal(isAlive(missing.pid!), false, 'helper stopped via fallback kill');
+    } finally {
+      if (missing.pid !== undefined && isAlive(missing.pid)) try { process.kill(missing.pid); } catch { /* gone */ }
+    }
+
+    const code128 = await stopAfter(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], 200,
+      { taskkill: { command: process.execPath, args: ['-e', 'process.exit(128)', '--'] } });
+    try {
+      assert.match(code128.failure ?? '', /^taskkill exited with code 128; tree cleanup unconfirmed$/);
+      assert.equal(isAlive(code128.pid!), false, 'helper stopped via fallback kill');
+    } finally {
+      if (code128.pid !== undefined && isAlive(code128.pid)) try { process.kill(code128.pid); } catch { /* gone */ }
+    }
+
+    const hung = await stopAfter(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], 200, {
+      taskkill: {
+        command: process.execPath,
+        args: ['-e', "require('fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)", killerPidFile, '--'],
+      },
+      treeKillWaitMs: 1500,
+    });
+    const killerPid = existsSync(killerPidFile) ? Number(readFileSync(killerPidFile, 'utf8').trim()) : 0;
+    try {
+      assert.ok(killerPid > 0, 'fake hung taskkill started');
+      assert.match(hung.failure ?? '', /^taskkill did not finish within 1500 ms; tree cleanup unconfirmed$/);
+      assert.equal(isAlive(hung.pid!), false, 'helper stopped via fallback kill');
+      assert.equal(isAlive(killerPid), false, 'hung taskkill itself was stopped');
+    } finally {
+      if (hung.pid !== undefined && isAlive(hung.pid)) try { process.kill(hung.pid); } catch { /* gone */ }
+      if (killerPid > 0 && isAlive(killerPid)) try { process.kill(killerPid); } catch { /* gone */ }
+    }
+  });
+
+test('claude stopHelper: an exited helper with an inherited pipe never runs taskkill against its old PID',
+  { timeout: 15_000, skip: process.platform !== 'win32' && 'Windows taskkill only' }, async () => {
+    const dir = tempDir();
+    const calledFile = join(dir, 'taskkill-called');
+    const ps = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const script = [
+      '$s = [System.Diagnostics.ProcessStartInfo]::new()',
+      `$s.FileName = '${process.execPath.replaceAll("'", "''")}'`,
+      '$s.Arguments = \'-e "setInterval(()=>{},1000)"\'',
+      '$s.UseShellExecute = $false',
+      '$s.CreateNoWindow = $true',
+      '$c = [System.Diagnostics.Process]::Start($s)',
+      '[Console]::Out.WriteLine("$PID $($c.Id)")',
+      '[Console]::Out.Flush()',
+    ].join('; ');
+    // The helper exits at once, but its child keeps the pipe open: by the time the helper is stopped it is gone.
+    const r = await stopAfter(ps, ['-NoProfile', '-NonInteractive', '-Command', script], 4000, {
+      taskkill: {
+        command: process.execPath,
+        args: ['-e', "require('fs').writeFileSync(process.argv[1], 'called')", calledFile, '--'],
+      },
+    });
+    const [parentPid, childPid] = r.stdout.trim().split(/\s+/).map(Number);
+    try {
+      assert.ok(parentPid > 0 && childPid > 0, `printed parent and child pids (got ${JSON.stringify(r.stdout)})`);
+      assert.equal(r.pid, parentPid);
+      assert.match(r.failure ?? '', new RegExp(`^helper pid ${parentPid} already exited; tree cleanup unconfirmed$`));
+      assert.equal(existsSync(calledFile), false, 'taskkill was never started against the exited parent PID');
+    } finally {
+      if (childPid > 0 && isAlive(childPid)) {
+        try { process.kill(childPid); } catch { /* gone */ }
+        await waitFor(() => !isAlive(childPid), 'inherited-pipe child to exit', 2000);
+      }
+      if (r.pid !== undefined && isAlive(r.pid)) try { process.kill(r.pid); } catch { /* gone */ }
+    }
+  });
+
+test('claude stopHelper: a helper that ignores SIGTERM is force-killed (POSIX)',
+  { timeout: 15_000, skip: process.platform === 'win32' && 'POSIX only; Windows has no SIGTERM to ignore' }, async () => {
+    const r = await stopAfter(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], 200);
+    assert.equal(r.failure, null);
+    assert.equal(isAlive(r.pid!), false);
+  });
+
+test('claude helpers: CLI environment and CLI resolution', () => {
+  const env = cliEnv({
+    Path: 'p', SystemRoot: 'r', OS: 'Windows_NT', LC_ALL: 'l', HTTPS_PROXY: 'x', ANTHROPIC_MODEL: 'm',
+    CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 's', CLAUDE_CODE_PLUGIN_DIRS: 'evil', ORRERY_MCP_TOKEN: 'inherited',
+    AWS_SECRET_ACCESS_KEY: 'k', ANTHROPIC_API_KEY: 'k', CLAUDE_CONFIG_DIR: '/x',
+  }, join(homedir(), '.claude'));
+  assert.deepEqual(env, { Path: 'p', SystemRoot: 'r', OS: 'Windows_NT', LC_ALL: 'l', HTTPS_PROXY: 'x', ANTHROPIC_MODEL: 'm',
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }, 'the default config dir is left to the CLI');
+  assert.equal(cliEnv({}, join(tempDir(), 'claude')).CLAUDE_CONFIG_DIR !== undefined, true, 'another config dir is named');
+
+  const dir = tempDir();
+  const exeDir = join(dir, 'exe');
+  const npmDir = join(dir, 'npm');
+  mkdirSync(exeDir);
+  mkdirSync(join(npmDir, 'node_modules', '@anthropic-ai', 'claude-code'), { recursive: true });
+  writeFileSync(join(exeDir, 'claude.exe'), '');
+  writeFileSync(join(npmDir, 'claude.cmd'), '');
+  writeFileSync(join(npmDir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'), '');
+  assert.deepEqual(resolveClaudeCommand({ PATH: `${exeDir};${npmDir}` }, 'win32'), { command: join(exeDir, 'claude.exe'), args: [] });
+  assert.deepEqual(resolveClaudeCommand({ Path: npmDir }, 'win32'),
+    { command: process.execPath, args: [join(npmDir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js')] });
+  assert.throws(() => resolveClaudeCommand({ PATH: join(dir, 'none') }, 'win32'), /not found on PATH/);
+  assert.deepEqual(resolveClaudeCommand({}, 'linux'), { command: 'claude', args: [] });
+});

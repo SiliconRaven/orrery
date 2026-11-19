@@ -8,6 +8,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { NativeAdapter } from '../../core/types.ts';
 import { createConversationStore } from './store.ts';
+import { readAntigravityTranscript } from './transcript.ts';
 
 const HARNESS = 'antigravity';
 
@@ -19,6 +20,7 @@ export function createAntigravityNativeAdapter(opts: { geminiHome?: string } = {
     localSessions: true,   // attachSession reads only local files: the member list shows the current title and model
     listProjects: () => store.listProjects(),
     listSessions: (projectPath) => store.listSessions(projectPath),
+    transcript: (sessionId, request) => readAntigravityTranscript(join(geminiHome, 'antigravity', 'brain'), sessionId, request),
     async attachSession(sessionId) {
       const info = await store.get(sessionId);
       if (!info) throw new Error(`antigravity conversation ${sessionId} not found among the Antigravity 2.0 conversations with a workspace under ${geminiHome}`);

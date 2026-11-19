@@ -266,9 +266,9 @@ test('a member has one shape wherever it is built: hiddenAt is always there, nul
   const { app, cluster, alice, hidey } = await fixture();
   try {
     const shape = (m: object) => { const { status: _status, longWaiting: _waiting, ...rest } = m as Record<string, unknown>; return rest; };
-    const { members: [isolated] } = await app.cluster('iso', ['Iso']);
+    const { members: [fresh] } = await app.cluster('iso', ['Iso']);
     const { members: [added] } = await app.hub.addMembers(cluster.id, [{ harness: 'mock', mode: 'native', sessionId: 'sx', name: 'Added' }]);
-    for (const created of [alice, isolated, added]) {
+    for (const created of [alice, fresh, added]) {
       assert.equal(created.hiddenAt, null, created.name);
       assert.deepEqual(shape(created), app.store.getMember(created.id), `${created.name}: created equals reloaded`);
     }
@@ -621,19 +621,19 @@ test('shown again: one task-status wake-up with what it holds (rejected while hi
   } finally { await app.close(); }
 });
 
-test('rebind keeps the hidden state, removal clears it, and the Hub runs no turn for a hidden isolated member', async () => {
-  const { app, cluster, hidey } = await fixture();
+test('rebind keeps the hidden state, removal clears it, and a hidden new conversation gets no delivery', async () => {
+  const { app, cluster, hidey, delivered } = await fixture();
   try {
     app.hub.setMemberHidden(hidey.id, true);
     const { member } = await app.hub.rebindMember(hidey.id, { harness: 'mock', sessionId: 's9', confirmStopped: true });
     assert.ok(member.hiddenAt, 'rebind keeps it');
     assert.equal(app.hub.removeMember(cluster.id, hidey.id).hiddenAt, null, 'removal clears it');
 
-    const { cluster: iso, members: [isolated] } = await app.cluster('iso', ['Iso']);
-    app.hub.setMemberHidden(isolated.id, true);
+    const { cluster: iso, members: [created] } = await app.cluster('iso', ['Iso']);
+    app.hub.setMemberHidden(created.id, true);
     const msg = await app.api('POST', `/api/clusters/${iso.id}/messages`, { body: '@Iso hi' });
     await sleep(50);
     assert.deepEqual((await app.messages(iso.id)).find((m) => m.id === msg.id)!.deliveries, []);
-    assert.equal(app.native.delivered.length, 0, 'no turn');
+    assert.equal(delivered.filter((d) => d.sessionId === created.workerSessionId).length, 0, 'no turn');
   } finally { await app.close(); }
 });

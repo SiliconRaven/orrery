@@ -8,13 +8,14 @@
 //     transport 'local' (a cloud task cannot reach this machine's Hub).
 //   workspaces: path, last_opened_at. Projects are the workspaces plus the folders of listable conversations.
 // Only rows whose id can name a wait ticket ([A-Za-z0-9._-]) are listed: the id goes into the wait command.
-import { basename } from 'node:path';
+import { readdir } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ProjectInfo, SessionInfo } from '../../core/types.ts';
 import { pathKey, tableRows, timeOf, truthy, withCopy } from '../shared/sqlite-copy.ts';
 
 const DB = 'workbuddy.db';
-const SESSION_RE = /^[A-Za-z0-9._-]{1,128}$/;
+export const SESSION_RE = /^[A-Za-z0-9._-]{1,128}$/;
 const TITLE_MAX = 200;
 
 const absent = (v: unknown) => v === null || v === undefined || v === '';
@@ -75,6 +76,13 @@ export function createWorkbuddyStore(workbuddyHome: string) {
     },
     async get(sessionId: string): Promise<SessionInfo | null> {
       return SESSION_RE.test(sessionId) ? (await readSessions()).find((s) => s.id === sessionId) ?? null : null;
+    },
+    async transcriptCandidates(sessionId: string): Promise<string[]> {
+      if (!SESSION_RE.test(sessionId) || sessionId === '.' || sessionId === '..') return [];
+      const projectsDir = join(workbuddyHome, 'projects');
+      let projects: string[] = [];
+      try { projects = await readdir(projectsDir); } catch { return []; }
+      return projects.map((proj) => join(projectsDir, proj, `${sessionId}.jsonl`));
     },
   };
 }

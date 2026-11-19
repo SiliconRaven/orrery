@@ -19,3 +19,14 @@
 - **唤醒前置实时现查**：入队后打开 `codex://threads/wake/<threadId>` 前跳过缓存现查一次桌面应用是否在运行；若此时已退出则尝试撤出队列并返回 `unknown`，绝不主动拉起关闭的应用（系统查询到打开链接之间的极短时间窗口仍为已知可接受剩余风险）。
 - **轮次观察与用量**：默认每 3 秒轮询一次（连续 3 次看到目标轮次仍在跑后降为 6 秒），排在另一运行中轮次后面的时间不计入 30 分钟空闲取件超时；读取 `$CODEX_HOME/thread-writer-locks/<threadId>.lock` 遇 `EBUSY` 继续等待，缺失队列项持续 3 次轮询且超 15 秒报 `unknown`。额度与按轮/会话 token 从本地最新 `rollout-*.jsonl` 只读提取（仅手动刷新额度调 `account/rateLimits/read`）。
 - **使用状态**：已有原生会话接入、与 Claude 互相发言、忙时合批、退出后离线和重开不补发均已有真机验证及日常使用记录。
+
+## 分页读取会话记录（`transcript`）
+
+插件经 Hub 读取群员绑定的原生对话时（见[架构说明](../architecture.md#读取群员当前绑定的原生对话)），适配器按绑定的线程 UUID 在 `sessions/` 或 `archived_sessions/` 里找到 rollout，并核对首条 `session_meta` 的线程 ID。只读本地文件，应用离线时也能读。
+
+- `.jsonl.zst` 用 Node 自带的 Zstandard 解压（压缩输入最多 16 MiB，解压输出最多 64 MiB），损坏或超限返回 `archived`；找不到文件返回 `missing`，路径或线程 ID 归属不符返回 `refused`。
+- 按 `session_meta.history_mode` 选事件格式：新版读完成的条目，旧版读独立的显示事件并跳过重复副本。fork 和子代理只显示明确属于本线程的记录，旧版复制的历史没有可靠归属标记时返回 `unsupported`。思考只取公开摘要或显示标记，未知记录保留一条占位说明。
+- 用户消息的 `client_id` 和发言工具返回的 `messageId` 只作为 Hub 核对的线索。
+- 已知限制：第一行 `session_meta` 超过 64 KiB 时读取返回 `unsupported`。
+
+`node --test test/codex-transcript.test.ts` 用手写的模拟文件检查分页、追加、归档、归属和工具结果；分页尚未在运行中的桌面应用里验收。格式依据 [Codex 0.165.0 的 rollout 保留策略](https://github.com/openai/codex/blob/rust-v0.165.0/codex-rs/rollout/src/policy.rs)。

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ship: merge a reviewed commit into the target branch (docs/collaboration.md). Run by a member, with that member's own permissions,
+// ship: merge a reviewed commit into the target branch (docs/collaboration.md, review levels and merging). Run by a member, with that member's own permissions,
 // from any worktree of the repository, using the command the Hub handed over. It never imports the Hub: all it knows
 // comes over HTTP, and the Hub takes the result only after checking it with read-only git (src/plugins/tasks/ship.ts).
 // A file lock in the git common dir serializes ship runs. Exit 0 only when merged and, with an origin, pushed.
@@ -13,11 +13,14 @@ import { acquireTestQueue, TestQueueTimeoutError, type TestQueueWaitInfo } from 
 
 /** `takeover`: a self review by the member who took the task over from its review (docs/collaboration.md「验收者接手」). */
 export interface Verified { taskId: string; shortId: string; commitSha: string; reviewer: string; round: number; verdict: 'pass' | 'self'; takeover?: boolean }
-export type ShipReport = { mergeCommit: string; pushed: boolean; retried: string[] } | { failed: { kind: 'conflict' | 'checks'; detail: string } };
-export interface HubClient {
-  verify(): Promise<Verified>;
+/** A conflict in a batch names the task whose branch did not merge. */
+export type ShipReport = { mergeCommit: string; pushed: boolean; retried: string[] } | { failed: { kind: 'conflict' | 'checks'; detail: string; taskId?: string } };
+export interface HubClient<V = Verified> {
+  verify(): Promise<V>;
   report(result: ShipReport): Promise<void>;
 }
+/** A review batch (docs/collaboration.md「验收批次」): its tasks in dependency order, each with its Reviewed-by fields. */
+export interface BatchVerified { batchId: string; number: number; title: string; tasks: (Verified & { number: number })[] }
 export interface ShipOptions {
   agent: string; type: string; summary: string; trailers: string[];
   /** Any directory inside the repository. */
@@ -26,7 +29,8 @@ export interface ShipOptions {
   hub: HubClient;
   log?: (line: string) => void;
 }
-export type ShipOutcome = { merged: true; mergeCommit: string; pushed: boolean; pushError?: string } | { merged: false; kind: 'conflict' | 'checks'; detail: string };
+export interface BatchShipOptions extends Omit<ShipOptions, 'hub'> { hub: HubClient<BatchVerified> }
+export type ShipOutcome = { merged: true; mergeCommit: string; pushed: boolean; pushError?: string } | { merged: false; kind: 'conflict' | 'checks'; detail: string; taskId?: string };
 
 /** A refusal: nothing changed, the Hub is not told, the ticket stays valid. */
 export class ShipRefused extends Error {}
@@ -102,10 +106,15 @@ export async function acquireLock(path: string, waitMs: number, log: (line: stri
   }
 }
 
+const reviewedBy = (v: Verified) => `Reviewed-by: ${v.reviewer.replace(/[\x00-\x1f\x7f]+/g, ' ')} (task ${v.shortId}, r${v.round}, ${v.verdict}, ${v.commitSha.slice(0, 7)}${v.takeover === true ? ', reviewer takeover' : ''})`;
+
 export function buildMessage(o: Pick<ShipOptions, 'agent' | 'type' | 'summary' | 'trailers'>, v: Verified): string {
-  const reviewer = v.reviewer.replace(/[\x00-\x1f\x7f]+/g, ' ');
-  return [`[${o.agent}] ${o.type}: ${o.summary}`, '',
-    `Reviewed-by: ${reviewer} (task ${v.shortId}, r${v.round}, ${v.verdict}, ${v.commitSha.slice(0, 7)}${v.takeover === true ? ', reviewer takeover' : ''})`, ...o.trailers].join('\n');
+  return [`[${o.agent}] ${o.type}: ${o.summary}`, '', reviewedBy(v), ...o.trailers].join('\n');
+}
+
+/** A batch merge commit: one Reviewed-by line per task, in dependency order. */
+export function buildBatchMessage(o: Pick<ShipOptions, 'agent' | 'type' | 'summary' | 'trailers'>, v: BatchVerified): string {
+  return [`[${o.agent}] ${o.type}: ${o.summary}`, '', ...v.tasks.map(reviewedBy), ...o.trailers].join('\n');
 }
 
 /** True when every changed path is documentation; renames count as both their paths. */
@@ -173,7 +182,7 @@ function removeWorktree(root: string, path: string, log: (line: string) => void)
   } catch (e) { log(`could not remove the temporary worktree ${path}: ${e instanceof Error ? e.message : String(e)}`); }
 }
 
-type Failed = { kind: 'conflict' | 'checks'; detail: string };
+type Failed = { kind: 'conflict' | 'checks'; detail: string; taskId?: string };
 type Landed = { mergeCommit: string; retried: string[]; checksSkipped: boolean; target: string } | Failed;
 
 interface MergeSpec {
@@ -183,6 +192,8 @@ interface MergeSpec {
   /** The target tip the merge is based on; landing is refused when the target no longer points here. */
   base: string;
   commit: string; message: string;
+  /** Builds the merge in the temporary worktree (checked out at base) instead of `merge --no-ff commit`; leaves HEAD at it. */
+  build?: (temp: string) => { mergeCommit: string } | Failed;
   /** Runs after the checks, right before landing. */
   beforeLand?: () => Promise<unknown>;
   log: (line: string) => void;
@@ -196,11 +207,16 @@ async function mergeChecked(s: MergeSpec): Promise<Landed> {
   const temp = mkdtempSync(join(tmpdir(), 'orrery-ship-'));
   try {
     git(at, 'worktree', 'add', '--detach', temp, base);
-    const merge = tryGit(temp, 'merge', '--no-ff', '-m', s.message, s.commit);
-    if (!merge.ok) {
-      const conflicts = git(temp, 'diff', '--name-only', '--diff-filter=U');
-      if (!conflicts) throw new ShipRefused(`git merge failed: ${merge.err.slice(-1000)}`);
-      return { kind: 'conflict', detail: `conflicting files:\n${conflicts}` };
+    if (s.build) {
+      const built = s.build(temp);
+      if ('kind' in built) return built;
+    } else {
+      const merge = tryGit(temp, 'merge', '--no-ff', '-m', s.message, s.commit);
+      if (!merge.ok) {
+        const conflicts = git(temp, 'diff', '--name-only', '--diff-filter=U');
+        if (!conflicts) throw new ShipRefused(`git merge failed: ${merge.err.slice(-1000)}`);
+        return { kind: 'conflict', detail: `conflicting files:\n${conflicts}` };
+      }
     }
     const mergeCommit = git(temp, 'rev-parse', 'HEAD');
     const changed = git(temp, 'diff', '--name-only', '--no-renames', '-z', base, mergeCommit).split('\0').filter(Boolean);
@@ -261,25 +277,84 @@ async function mergeUnderLock(o: ShipOptions, v: Verified, log: (line: string) =
     beforeLand: () => o.hub.verify() });   // the checks can take long enough for the task to be reopened or cancelled
 }
 
-export async function ship(o: ShipOptions): Promise<ShipOutcome> {
-  const log = o.log ?? (() => {});
-  await o.hub.verify();
-  // Again under the lock: waiting may have taken long enough for the task to change.
-  const landed = await underLock(o.cwd, o.lockWaitMs, log, async () => mergeUnderLock(o, await o.hub.verify(), log));
-  if ('kind' in landed) {
-    await o.hub.report({ failed: landed });
-    return { merged: false, ...landed };
+const isAncestor = (cwd: string, a: string, b: string) => tryGit(cwd, 'merge-base', '--is-ancestor', a, b).ok;
+
+/**
+ * A review batch: every reviewed commit merged into the target in one merge commit. In a temporary worktree the commits are
+ * merged one by one in dependency order, so a conflict names its task, and a commit already contained in what is merged
+ * (a chain continued on one branch) is skipped. One commit then takes the result's tree with the target and every
+ * commit no other one contains as parents, and one Reviewed-by line per task; the checks run once, on it.
+ */
+async function mergeBatchUnderLock(o: BatchShipOptions, v: BatchVerified, log: (line: string) => void): Promise<Landed> {
+  const target = targetBranch(o.cwd);
+  const ref = `refs/heads/${target}`;
+  const tree = branchWorktree(o.cwd, target);
+  if (dirty(tree)) throw new ShipRefused(`the ${target} worktree ${tree} has uncommitted changes`);
+  if (!v.tasks.length) throw new ShipRefused('the batch has no task to merge');
+  const commits = v.tasks.map((task) => {
+    const commit = tryGit(o.cwd, 'rev-parse', '--verify', '--end-of-options', `${task.commitSha}^{commit}`);
+    if (!commit.ok) throw new ShipRefused(`the reviewed commit ${task.commitSha} of task #${task.number} is not in this repository`);
+    return commit.out.trim();
+  });
+  const base = git(tree, 'rev-parse', ref);
+  v.tasks.forEach((task, i) => {
+    if (isAncestor(o.cwd, commits[i], base)) throw new ShipRefused(`the reviewed commit ${commits[i].slice(0, 7)} of task #${task.number} is already on ${target}`);
+    // As for one task: a branch must still point at it, unless another task of the batch was built on top of it.
+    const branches = git(o.cwd, 'for-each-ref', '--points-at', commits[i], '--format=%(refname)', 'refs/heads').split('\n').filter((name) => name && name !== ref);
+    if (!branches.length && !commits.some((other, j) => j !== i && other !== commits[i] && isAncestor(o.cwd, commits[i], other))) {
+      throw new ShipRefused(`no local branch points at the reviewed commit ${commits[i].slice(0, 7)} of task #${task.number}, and no other task of the batch builds on it: the branch moved on after review, or it was never fetched here`);
+    }
+  });
+  const heads = [...new Set(commits)].filter((sha) => !commits.some((other) => other !== sha && isAncestor(o.cwd, sha, other)));
+  const message = buildBatchMessage(o, v);
+  return mergeChecked({ cwd: o.cwd, target, tree, base, commit: commits.at(-1)!, message, log,
+    build: (temp) => {
+      for (const [i, task] of v.tasks.entries()) {
+        if (isAncestor(temp, commits[i], 'HEAD')) { log(`task #${task.number}: already contained in what is merged`); continue; }
+        const merge = tryGit(temp, 'merge', '--no-ff', '-m', `batch B${v.number}: task #${task.number}`, commits[i]);
+        if (!merge.ok) {
+          const conflicts = git(temp, 'diff', '--name-only', '--diff-filter=U');
+          if (!conflicts) throw new ShipRefused(`git merge of task #${task.number} failed: ${merge.err.slice(-1000)}`);
+          return { kind: 'conflict', taskId: task.taskId, detail: `task #${task.number} (${task.shortId}) does not merge; conflicting files:\n${conflicts}` };
+        }
+      }
+      const mergeCommit = git(temp, 'commit-tree', git(temp, 'rev-parse', 'HEAD^{tree}'), '-p', base, ...heads.flatMap((head) => ['-p', head]), '-m', message);
+      git(temp, 'checkout', '-q', '--detach', mergeCommit);   // the same tree: the checks run on exactly this commit
+      return { mergeCommit };
+    },
+    beforeLand: () => o.hub.verify() });   // the checks can take long enough for a task to be reopened or the batch cancelled
+}
+
+/** Pushes a landing on main, then tells the Hub; `fallback` names the way to record a merge the Hub did not take. */
+async function landed(o: { cwd: string; hub: HubClient<unknown> }, result: Landed, fallback: string): Promise<ShipOutcome> {
+  if ('kind' in result) {
+    await o.hub.report({ failed: result });
+    return { merged: false, ...result };
   }
   let pushed = false;
   let pushError: string | undefined;
   // Only a landing on main is pushed: any other target is an integration branch, pushed when someone asks for it.
-  if (landed.target === 'main') ({ pushed, pushError } = pushToOrigin(o.cwd, 'main') ?? { pushed: false });
+  if (result.target === 'main') ({ pushed, pushError } = pushToOrigin(o.cwd, 'main') ?? { pushed: false });
   try {
-    await o.hub.report({ mergeCommit: landed.mergeCommit, pushed, retried: landed.retried });
+    await o.hub.report({ mergeCommit: result.mergeCommit, pushed, retried: result.retried });
   } catch (e) {
-    throw new Error(`${landed.mergeCommit} is on ${landed.target}${pushed ? ' and pushed' : ''}, but the Hub did not record it (${e instanceof Error ? e.message : String(e)}); record it with task_action merge`);
+    throw new Error(`${result.mergeCommit} is on ${result.target}${pushed ? ' and pushed' : ''}, but the Hub did not record it (${e instanceof Error ? e.message : String(e)}); record it with ${fallback}`);
   }
-  return { merged: true, mergeCommit: landed.mergeCommit, pushed, ...(pushError ? { pushError } : {}) };
+  return { merged: true, mergeCommit: result.mergeCommit, pushed, ...(pushError ? { pushError } : {}) };
+}
+
+export async function ship(o: ShipOptions): Promise<ShipOutcome> {
+  const log = o.log ?? (() => {});
+  await o.hub.verify();
+  // Again under the lock: waiting may have taken long enough for the task to change.
+  return landed(o, await underLock(o.cwd, o.lockWaitMs, log, async () => mergeUnderLock(o, await o.hub.verify(), log)), 'task_action merge');
+}
+
+/** `--batch`: the whole review batch in one merge commit, the checks run once (docs/collaboration.md「验收批次」). */
+export async function shipBatch(o: BatchShipOptions): Promise<ShipOutcome> {
+  const log = o.log ?? (() => {});
+  await o.hub.verify();
+  return landed(o, await underLock(o.cwd, o.lockWaitMs, log, async () => mergeBatchUnderLock(o, await o.hub.verify(), log)), 'manage_batch merge');
 }
 
 export interface ReleaseOptions {
@@ -352,7 +427,7 @@ export async function release(o: ReleaseOptions): Promise<ReleaseOutcome> {
 }
 
 /** The Hub, over the loopback HTTP routes in src/plugins/tasks/routes.ts. */
-export function httpHub(hubUrl: string, ticket: string): HubClient {
+export function httpHub<V = Verified>(hubUrl: string, ticket: string): HubClient<V> {
   if (!/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(hubUrl)) throw new ShipRefused(`--hub must be a loopback Hub address: ${hubUrl}`);
   const post = async (route: string, body: object) => {
     const res = await fetch(`${hubUrl}/bridge/${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket, ...body }) });
@@ -360,19 +435,22 @@ export function httpHub(hubUrl: string, ticket: string): HubClient {
     if (!res.ok) throw new ShipRefused(`the Hub refused: ${data.error ?? res.status}`);
     return data;
   };
-  return { verify: () => post('ship-verify', {}) as Promise<Verified>, report: async (result) => { await post('ship-result', result); } };
+  return { verify: () => post('ship-verify', {}) as Promise<V>, report: async (result) => { await post('ship-result', result); } };
 }
 
 /** The command line, validated: Hub-issued placeholders that were not filled in fail here. */
 export function parseCommandLine(argv: string[]) {
   const { values } = parseArgs({ args: argv, options: {
-    ticket: { type: 'string' }, hub: { type: 'string' }, agent: { type: 'string' }, type: { type: 'string' }, summary: { type: 'string' },
+    ticket: { type: 'string' }, batch: { type: 'string' }, hub: { type: 'string' }, agent: { type: 'string' }, type: { type: 'string' }, summary: { type: 'string' },
     trailer: { type: 'string', multiple: true }, 'lock-wait': { type: 'string' },
     release: { type: 'boolean' }, 'user-approved': { type: 'boolean' }, from: { type: 'string' }, into: { type: 'string' }, 'no-push': { type: 'boolean' },
   } });
-  const { ticket, hub, agent, type, summary, trailer: trailers = [], from, into } = values;
+  const { hub, agent, type, summary, trailer: trailers = [], from, into } = values;
+  // --batch <ticket> ships a review batch; it takes the place of --ticket.
+  if (values.ticket !== undefined && values.batch !== undefined) throw new ShipRefused('give --ticket for one task or --batch for a review batch, not both');
+  const ticket = values.ticket ?? values.batch;
   if (values.release) {
-    if (ticket !== undefined || hub !== undefined) throw new ShipRefused('--release does not talk to the Hub: leave out --ticket and --hub');
+    if (ticket !== undefined || hub !== undefined) throw new ShipRefused('--release does not talk to the Hub: leave out --ticket, --batch and --hub');
     if (type !== undefined) throw new ShipRefused('--release always commits as chore: leave out --type');
     // A speed bump, not a security control: whoever can run this can also add the flag or merge with git by hand.
     // It makes the agent state, in its own command, that the user asked for this release.
@@ -380,7 +458,7 @@ export function parseCommandLine(argv: string[]) {
     for (const name of [from, into]) if (name !== undefined && !BRANCH_NAME.test(name)) throw new ShipRefused(`--from and --into must name branches: ${name}`);
   } else {
     if (values['user-approved'] || from !== undefined || into !== undefined || values['no-push']) throw new ShipRefused('--user-approved, --from, --into and --no-push only go with --release');
-    if (!ticket || !hub) throw new ShipRefused('--ticket and --hub are required');
+    if (!ticket || !hub) throw new ShipRefused('--ticket (or --batch) and --hub are required');
   }
   if (!agent || !/^[a-z0-9][a-z0-9/_.-]{0,63}$/.test(agent)) throw new ShipRefused('--agent must be a lowercase short name such as claude-code or claude-code/topic');
   if (!values.release && (!type || !TYPES.has(type))) throw new ShipRefused(`--type must be one of ${[...TYPES].join(', ')}`);
@@ -390,7 +468,7 @@ export function parseCommandLine(argv: string[]) {
   if (!Number.isFinite(lockWait) || lockWait < 0) throw new ShipRefused('--lock-wait must be seconds');
   const lockWaitMs = lockWait * 1000;
   if (values.release) return { mode: 'release' as const, agent, summary, trailers, lockWaitMs, from, into, push: !values['no-push'] };
-  return { mode: 'ship' as const, ticket: ticket!, hub: hub!, agent, type: type!, summary, trailers, lockWaitMs };
+  return { mode: values.batch !== undefined ? 'batch' as const : 'ship' as const, ticket: ticket!, hub: hub!, agent, type: type!, summary, trailers, lockWaitMs };
 }
 
 async function releaseMain(o: ReleaseOptions): Promise<number> {
@@ -413,9 +491,11 @@ async function main(): Promise<number> {
   const args = parseCommandLine(process.argv.slice(2));
   const log = (line: string) => console.error(`ship: ${line}`);
   if (args.mode === 'release') return releaseMain({ ...args, cwd: resolve('.'), log });
-  const outcome = await ship({ ...args, cwd: resolve('.'), hub: httpHub(args.hub, args.ticket), log });
+  const outcome = args.mode === 'batch'
+    ? await shipBatch({ ...args, cwd: resolve('.'), hub: httpHub<BatchVerified>(args.hub, args.ticket), log })
+    : await ship({ ...args, cwd: resolve('.'), hub: httpHub(args.hub, args.ticket), log });
   if (!outcome.merged) {
-    log(`not merged (${outcome.kind}); the task went back to its executor:\n${outcome.detail}`);
+    log(`not merged (${outcome.kind}); ${args.mode === 'batch' ? 'the tasks responsible went back to their executors' : 'the task went back to its executor'}:\n${outcome.detail}`);
     return 1;
   }
   console.log(`merged ${outcome.mergeCommit}${outcome.pushed ? ' and pushed' : ''}`);

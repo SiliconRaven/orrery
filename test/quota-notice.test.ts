@@ -8,7 +8,7 @@ import { quotaLevel, UsageTracker } from '../src/core/usage.ts';
 import { idleTaskCandidates } from '../src/plugins/tasks/idle-candidates.ts';
 import type { Task } from '../src/core/collaboration-types.ts';
 import type { MemberStatus, QuotaSnapshot, QuotaWindow } from '../src/core/types.ts';
-import { fixtureNativeMock, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { startTestHub, tempDir, waitFor } from './helpers.ts';
 import { collaborationLinks } from '../src/plugins/tasks/store.ts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
@@ -76,7 +76,7 @@ const OFF = 600_000;   // automatic idle checks, sweeps and the Claude poll neve
 
 /**
  * A coordinator A and D on the quota-less 'mock' harness (native), B on a fake native 'claude' whose quota the test
- * sets, and C an isolated member on the same 'claude' harness. `refresh` makes the Hub read the quota now.
+ * sets, and C a new conversation on the same 'claude' harness. `refresh` makes the Hub read the quota now.
  */
 async function hubFixture(name: string, limits: Partial<Limits> = {}) {
   const dir = tempDir();
@@ -94,7 +94,7 @@ async function hubFixture(name: string, limits: Partial<Limits> = {}) {
   const { cluster, members: [a, b, c, d] } = await app.hub.createCluster(name, [
     { harness: 'mock', mode: 'native', sessionId: 's1', name: 'A' },
     { harness: 'claude', mode: 'native', sessionId: 's2', name: 'B' },
-    { projectPath: tempDir(), harness: 'claude', mode: 'native', name: 'C' },
+    { harness: 'claude', mode: 'native', name: 'C', projectPath: '/work' },
     { harness: 'mock', mode: 'native', sessionId: 's3', name: 'D' },
   ]);
   let serial = 0;
@@ -155,7 +155,7 @@ test('warning, then exhausted with the affected members and their open tasks; ea
     const used = quotaNotices()[1];
     assert.deepEqual(used.body.split('\n').slice(1), ['本群受影响的成员：B、C。', '执行：',
       `- B：任务 #1【写文档】（${nominated.id}，已分配）；任务 #2【改代码】（${working.id}，正在做）`,
-      '验收：', `- C：任务 #3【改接口】（${review.id}）`, '请按资格把未开始的任务改派，正在执行的不打断。'], 'native and isolated Claude members; D is not');
+      '验收：', `- C：任务 #3【改接口】（${review.id}）`, '请按资格把未开始的任务改派，正在执行的不打断。'], 'attached and created Claude members; D is not');
     assert.ok(used.body.startsWith(`额度用完：claude 的「5 小时」窗口已用 100%，${fmt(reset)} 重置`));
     assert.deepEqual(collaborationLinks(app.store, used.id).sort(), [nominated.id, working.id, review.id].sort());
     assert.equal(used.systemKind, 'quota_exhausted', 'a problem-level warning');

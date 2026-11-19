@@ -1,12 +1,14 @@
 // Native Qoder: the member is a conversation the user sees in the Qoder desktop app. Same background-wait route as
 // ZCode (../shared/wait-native.ts with Qoder's settings, src/mcp/wait-core.ts); the identity comes from the plugin's MCP
-// calls (src/mcp/qoder.ts). Conversations are read from a copy of Qoder's database (./store.ts). No createSession: the
+// calls (src/mcp/qoder.ts). Conversations are listed from a copy of Qoder's database (./store.ts); the bound
+// conversation's body is read in place, read-only (./transcript.ts). No createSession: the
 // user creates conversations in the app. No quota, no token counts yet. docs/adapters/qoder.md.
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { QODER_WAIT, type NativeAdapter } from '../../core/types.ts';
 import { createWaitDelivery } from '../shared/wait-native.ts';
 import { createQoderStore, defaultQoderData } from './store.ts';
+import { qoderTranscript } from './transcript.ts';
 
 export const NOT_REARMED = 'Qoder 没有重新挂上等待：在 Qoder 里对这个对话说一句「重新挂上 orrery」（或用 orrery skill）。在那之前它离线，发给它的消息不会投递。';
 
@@ -31,6 +33,7 @@ export function createQoderNativeAdapter(opts: {
       return info;
     },
     isOnline: delivery.isOnline,
+    transcript: (sessionId, request) => qoderTranscript(qoderData, sessionId, request),
     deliver: delivery.deliver,
   };
 }

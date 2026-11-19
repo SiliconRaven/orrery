@@ -290,7 +290,7 @@ test('codex native: an interrupted turn with an uncertain lock ends unknown and 
   const app = await startTestHub({ nativeAdapters: { codex: adapter } });
   try {
     const { cluster, members: [codex, next] } = await app.api('POST', '/api/clusters', { name: 'lock', members: [
-      { harness: 'codex', mode: 'native', sessionId: T1, name: 'Codex' }, { projectPath: tempDir(), harness: 'mock', name: 'Next' },
+      { harness: 'codex', mode: 'native', sessionId: T1, name: 'Codex' }, { harness: 'mock', mode: 'native', name: 'Next', projectPath: '/work' },
     ] });
     const msg = app.hub.sendFromUser(cluster.id, '@Codex work');
     await until(() => (fake.queue.get(T1) ?? []).length === 1, 'queued');
@@ -569,7 +569,7 @@ test('codex native + Hub: unanswered process checks produce a failed delivery wi
   const { fake, adapter, woken } = setup({ appRunning: async () => probe.up });
   fake.threads = [{ id: T1, preview: 'hi', model: 'm', cwd: CWD, name: 'my chat', updatedAt: 0 }];
   const store = new Store(':memory:');
-  const hub = new Hub({ store, nativeAdapters: { codex: adapter },  limits: { startupGraceMs: 0 } });
+  const hub = new Hub({ store, nativeAdapters: { codex: adapter }, limits: { startupGraceMs: 0 } });
   hub.start();
   try {
     const { cluster } = await hub.createCluster('c', [{ harness: 'codex', mode: 'native', sessionId: T1, name: 'X' }]);
@@ -658,7 +658,6 @@ test('codex native: concurrent confirmations share only a probe that has not sta
 
 test('codex native + Hub: a cold or stale "not running" never drops a message; confirmOnline asks afresh first', async () => {
   const store = new Store(':memory:');
-  const sandbox = join(tempDir(), 'sb');
   /** A Hub (no start-up grace) over a new adapter, so its "is the app running" cache is cold. */
   const open = (appRunning: () => Promise<boolean>) => {
     const s = setup({ appRunning, appCheckMs: 60_000 });
@@ -711,7 +710,7 @@ test('codex native + Hub: a cache that says running decides nothing; a stale "no
   const { fake, woken, adapter } = setup({ appRunning, appCheckMs: 60_000 });
   fake.threads = [{ id: T1, preview: 'hi', model: 'm', cwd: CWD, name: 'my chat', updatedAt: 0 }];
   const store = new Store(':memory:');
-  const hub = new Hub({ store, nativeAdapters: { codex: adapter },  limits: { startupGraceMs: 0 } });
+  const hub = new Hub({ store, nativeAdapters: { codex: adapter }, limits: { startupGraceMs: 0 } });
   hub.start();
   const stateOf = (messageId: string) => store.withDeliveries([store.getMessage(messageId)!])[0].deliveries[0].state;
   try {
@@ -1072,7 +1071,7 @@ test('codex native: every approval or prompt during the init turn is declined', 
   const byId = new Map(fake.replies.map((r) => [r.id, r]));
   assert.deepEqual(asked.map((id) => (byId.get(id) as any)?.result), [
     { decision: 'decline' }, { decision: 'decline' }, { action: 'decline', content: null, _meta: null }, { permissions: {}, scope: 'turn' },
-  ], 'even an orrery tool prompt, which isolated members accept');
+  ], 'even an orrery tool prompt');
   await adapter.close!();
 });
 
@@ -1118,7 +1117,7 @@ test('codex native: binary is the newest desktop codex.exe, else codex on PATH; 
   assert.equal(codexBinary({ LOCALAPPDATA: dir, ORRERY_CODEX_NATIVE_BIN: 'C:\\x\\codex.exe' }), 'C:\\x\\codex.exe');
 });
 
-test('codex native: registered for native mode, with createSession; isolated codex stays', () => {
+test('codex native: registered, with createSession', () => {
   const a = nativeFactories.codex();
   assert.equal(a.harness, 'codex');
   assert.equal(typeof a.createSession, 'function');
@@ -1183,14 +1182,15 @@ async function liveNative(scenario: 'held' | 'wake', create: { model?: string; e
     await new Promise<void>((ok) => model.listen(0, '127.0.0.1', ok));
 
     // The desktop app: an app-server that loads the thread (taking its writer lock) and runs its queue.
-    // Server requests are answered like a user who approves orrery's tools (decideServerRequest).
+    // Server requests are answered like a user who approves orrery's tools and declines everything else.
     let desktop: { child: ReturnType<typeof spawn>; rpc: RpcPeer } | null = null;
     const startDesktop = async (threadId: string) => {
       const child = spawnCodex();
       cleanup.push(() => stop(child));
       const rpc = new RpcPeer(child.stdin!, child.stdout!, {
         onNotification: () => {},
-        onRequest: async (m, p: any) => decideServerRequest(m, p).result,
+        onRequest: async (m, p: any) => (m === 'mcpServer/elicitation/request' && p?.serverName === 'orrery'
+          ? { action: 'accept', content: {}, _meta: null } : decideServerRequest(m, p).result),
         onClose: () => {},
       });
       child.once('exit', () => rpc.close('exited'));
@@ -1220,7 +1220,7 @@ async function liveNative(scenario: 'held' | 'wake', create: { model?: string; e
       // backend runs the queue on its own; nothing more to do here.
       openWake: (url) => { woken.push(url); if (!desktop && !wakeDone) wakeDone = startDesktop(url.split('/').pop()!); },
     });
-    const app = await startHub({ dbPath: join(root, 'hub.db'), port: 0,  home: join(root, 'hub'), nativeAdapters: { codex: adapter }, apiToken: TEST_TOKEN });
+    const app = await startHub({ dbPath: join(root, 'hub.db'), port: 0, home: join(root, 'hub'), nativeAdapters: { codex: adapter }, apiToken: TEST_TOKEN });
     cleanup.push(() => app.close());
     const { secret } = JSON.parse(readFileSync(join(root, 'hub', 'hub.json'), 'utf8'));
     const q = JSON.stringify;   // a JSON string literal is a valid TOML basic string

@@ -1,3 +1,4 @@
+import { t } from "./i18n.js";
 // Pure task-notice helpers: callers render every returned string as text, not HTML.
 const MAX_LCS_CELLS = 1_000_000;
 
@@ -97,5 +98,5 @@ export function parseLegacyTaskNotice(message) {
   const match = /^协作事件 (task\.[a-z][a-z0-9_]*)：任务「([\s\S]*?)」（([A-Za-z0-9_-]+)），事件 ([0-9]+)。请按需读取任务上下文。$/.exec(message.body);
   if (!match) return null;
   const [, action, taskTitle, taskId, eventId] = match;
-  return { action, actionLabel: TASK_ACTION_LABELS[action] ?? '其他任务事件', taskId, taskTitle, eventId, hasHistoryDiff: false };
+  return { action, actionLabel: TASK_ACTION_LABELS[action] ? t(TASK_ACTION_LABELS[action]) : t("其他任务事件"), taskId, taskTitle, eventId, hasHistoryDiff: false };
 }

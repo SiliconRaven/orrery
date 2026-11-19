@@ -176,7 +176,7 @@ test('timeline: a busy member and a running delivery', async () => {
 test('timeline: one message is one aggregate query, and the delivery must belong to the cluster', async () => {
   const f = await fixture('one-query');
   const { app, cluster, a, b, c, delivery, ended } = f;
-  const other = await app.hub.createCluster('other', [{ projectPath: tempDir(), harness: 'mock', name: 'X' }]);
+  const other = await app.hub.createCluster('other', [{ harness: 'mock', mode: 'native', name: 'X', projectPath: '/work' }]);
   try {
     const message = app.hub.sendFromUser(cluster.id, 'to all', [a.id, b.id, c.id]);
     await ended(message);
@@ -376,7 +376,7 @@ test('resend: refused for what is not a problem, for a removed member, and outsi
     const failed = app.hub.sendFromUser(cluster.id, 'fail-me', [b.id]);
     await waitFor(() => delivery(failed, b.id).state === 'failed');
     const source = delivery(failed, b.id);
-    const other = await app.hub.createCluster('outsider', [{ projectPath: tempDir(), harness: 'mock', name: 'X' }]);
+    const other = await app.hub.createCluster('outsider', [{ harness: 'mock', mode: 'native', name: 'X', projectPath: '/work' }]);
     await assert.rejects(app.api('POST', `/api/clusters/${other.cluster.id}/deliveries/${source.id}/resend`, {}), /unknown delivery/);
     app.hub.removeMember(cluster.id, b.id);
     await assert.rejects(resend(source), /removed/);
@@ -443,8 +443,9 @@ test('resend: a member cannot call it: no API token, no MCP tool', async () => {
     const post = (headers: Record<string, string>) => rawFetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{}' });
     assert.equal((await post({})).status, 401);
     const { secret } = JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8'));
-    assert.equal((await post({ 'x-orrery-bridge': secret, 'x-orrery-harness': a.harness, 'x-orrery-session': a.workerSessionId })).status,
-      401, 'native MCP credentials are not web API credentials');
+    assert.equal((await post({ 'x-orrery-bridge': secret })).status, 401, 'the bridge secret is not the API token');
+    assert.equal((await post({ 'x-orrery-bridge': secret, 'x-orrery-harness': a.harness, 'x-orrery-session': a.workerSessionId })).status, 401,
+      'nor is a member\'s own bridge identity');
     assert.equal(delivery(message).handoffMessageId, null);
 
     const listed = await rawFetch(`${app.url}/mcp`, { method: 'POST',

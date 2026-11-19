@@ -32,7 +32,7 @@ async function fixture(limits: Partial<Limits> = {}) {
   const foreign = createMockNativeAdapter({ harness: 'foreign', projects: [], sessions: [{ id: 'f1', title: 'f1', model: null, cwd: project, updatedAt: null }] });
   const app = await startTestHub({ dir, nativeAdapters: { mock: native, foreign }, limits });
   const { cluster, members } = await app.hub.createCluster('rebind', ['A', 'B', 'C'].map((name, i) =>
-    ({ harness: 'mock', mode: 'native' as const, sessionId: `s${i + 1}`, name })));
+    ({ harness: 'mock', sessionId: `s${i + 1}`, name })));
   const [a, b, c] = members;
   let serial = 0;
   const send = (actor: { kind: 'user' } | { kind: 'member'; memberId: string }, command: Record<string, unknown>) =>

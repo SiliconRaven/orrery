@@ -163,7 +163,7 @@ async function agCluster(app: AgHub) {
     members: [
       { harness: 'antigravity', mode: 'native', sessionId: C1, name: 'G1' },
       { harness: 'antigravity', mode: 'native', sessionId: C2, name: 'G2' },
-      { projectPath: tempDir(), harness: 'mock', name: 'A' },
+      { harness: 'mock', mode: 'native', name: 'A', projectPath: '/work' },
     ],
   });
   return { cluster, g1, g2, a };

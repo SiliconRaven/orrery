@@ -1130,7 +1130,7 @@ test('kimi 9c: a direct MCP message suppresses the same run\'s forwarded answer 
 
 test('kimi 10: the adapter never starts or opens Kimi and never changes session settings (source check)', () => {
   // Code only: comments may name what is avoided.
-  const src = ['native.ts', 'store.ts', 'ws.ts']
+  const src = ['native.ts', 'store.ts', 'ws.ts', 'transcript.ts']
     .map((f) => readFileSync(join(import.meta.dirname, '..', 'src', 'adapters', 'kimi', f), 'utf8'))
     .join('\n').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\s\/\/ .*$/gm, '');
   assert.doesNotMatch(src, /kimi-code:\/\//);

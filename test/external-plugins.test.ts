@@ -5,15 +5,20 @@ import { once } from 'node:events';
 import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { CollaborationActor, CollaborationCommand } from '../src/core/collaboration-types.ts';
-import { EXTERNAL_EVENTS, parseExternalManifest, readExternalPlugins, type ExternalInstallation } from '../src/core/external-plugin-config.ts';
-import { ExternalEventTranslator } from '../src/core/external-plugin-events.ts';
+import { parseExternalManifest, readExternalPlugins, type ExternalInstallation } from '../src/core/external-plugin-config.ts';
 import { ExternalPluginProcess, externalEnvironment } from '../src/core/external-plugin-process.ts';
+import { coreEventSource } from '../src/core/core-events.ts';
+import { EventRegistry } from '../src/core/event-registry.ts';
 import { ExternalPlugins } from '../src/core/external-plugins.ts';
 import type { OfficialPlugin } from '../src/core/plugin.ts';
 import { REPO_ROOT } from '../src/main.ts';
 import { Store } from '../src/core/store.ts';
 import type { HubEvent } from '../src/core/types.ts';
+import { findBrowser, launchBrowser } from './browser.ts';
 import { freePort, rawFetch, startTestHub, tempDir, TEST_TOKEN, waitFor } from './helpers.ts';
+
+/** The six types API v1 started with; they keep their names and fields (docs/external-plugins.md). */
+const EXTERNAL_EVENTS = ['message.created', 'task.submitted', 'task.approved', 'task.rejected', 'task.merged', 'member.status'];
 
 const manifest = { id: 'external-test', version: '1.0.0', apiVersion: 1, entry: 'main.mjs', permissions: ['clusters.read', 'messages.read'],
   commands: [{ id: 'test', title: 'Test' }] };
@@ -152,7 +157,10 @@ test('one broken external plugin no longer stops the Hub; a readable manifest sh
     assert.equal((await app.api('GET', '/api/health')).state, 'running');
     const listing = await app.api('GET', '/api/plugins');
     assert.equal(listing.installed.find((p: any) => p.id === 'external-test').runtime.state, 'ready');
-    assert.ok(!listing.installed.some((p: any) => p.unavailable), 'an unreadable manifest has no row');
+    assert.ok(!listing.installed.some((p: any) => p.unavailable));
+    assert.deepEqual(listing.skippedRegistrations, [{
+      index: 2, manifestPath: join(directory, 'gone', 'orrery-plugin.json'), reason: '无法读取清单或入口文件（ENOENT）。',
+    }]);
     await app.close();
     // A readable manifest whose entry is gone: the settings page lists it as failed with START_FAILED.
     writeFileSync(join(directory, 'orrery-plugin.json'), JSON.stringify({ ...manifest, entry: 'gone.mjs' }));
@@ -212,6 +220,22 @@ test('dependencies may be listed after their dependents; registration follows th
   assert.deepEqual(installations.map((p) => p.manifest.id), ['provider', 'dependent']);
 });
 
+test('a cyclic external plugin appears once as a failed plugin card', async () => {
+  const { home, directory } = fixture({ requires: ['external-test'] });
+  const { failures } = readExternalPlugins(home);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0].reason, /its dependencies form a cycle/);
+  const app = await startTestHub({ dir: directory });
+  try {
+    const { installed, skippedRegistrations } = await app.api('GET', '/api/plugins');
+    const rows = installed.filter((p: any) => p.id === 'external-test');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].runtime.state, 'failed');
+    assert.match(rows[0].runtime.error, /its dependencies form a cycle/);
+    assert.deepEqual(skippedRegistrations, []);
+  } finally { await app.close(); }
+});
+
 test('a skipped plugin named by ORRERY_DISABLED_PLUGINS no longer stops the Hub', async () => {
   const { directory } = fixture();
   writeFileSync(join(directory, 'orrery-plugin.json'), JSON.stringify({ ...manifest, id: 'disabled-broken', entry: 'gone.mjs' }));
@@ -234,8 +258,71 @@ test('a skipped external plugin cannot decorate or duplicate a registered offici
     assert.equal(rows.length, 1, 'one row for the official plugin');
     assert.equal(rows[0].enabled, true);
     assert.equal(rows[0].origin, undefined, 'not described as a failed external plugin');
-    assert.ok(!listing.installed.some((p: any) => p.unavailable), 'the skipped external plugin is log-only');
+    assert.ok(!listing.installed.some((p: any) => p.unavailable));
+    assert.deepEqual(listing.skippedRegistrations, [{
+      index: 1, manifestPath: join(directory, 'orrery-plugin.json'), reason: '无法读取清单或入口文件（ENOENT）。',
+    }]);
     assert.ok(listing.plugins.some((p: any) => p.id === 'tasks'), 'the official plugin still runs');
+  } finally { await app.close(); }
+});
+
+const browserProgram = findBrowser();
+test('browser: skipped registrations coexist with working and failed plugin cards', {
+  skip: !browserProgram.path && process.env.ORRERY_REQUIRE_BROWSER !== '1', timeout: 120_000,
+}, async () => {
+  assert.ok(browserProgram.path, 'ORRERY_REQUIRE_BROWSER=1 but no supported browser');
+  const { home, directory } = fixture({ name: '测试插件' });
+  const good = join(directory, 'orrery-plugin.json');
+  const broken = join(directory, 'broken.json');
+  const badJson = join(directory, 'invalid.json');
+  const badDefault = join(directory, 'bad-default.json');
+  const marker = 'fixture-sensitive-default';
+  writeFileSync(broken, JSON.stringify({ ...manifest, id: 'broken', name: '入口损坏插件', entry: 'missing.mjs' }));
+  writeFileSync(badJson, `{ "config": ${marker} }`);
+  writeFileSync(badDefault, JSON.stringify({ ...manifest, config: [
+    { name: 'limit', scope: 'global', type: 'number', label: 'Limit', default: marker },
+  ] }));
+  writeFileSync(join(home, 'external-plugins.json'), JSON.stringify({ plugins: [
+    { manifest: good }, { manifest: good }, { manifest: broken }, { manifest: badJson }, { manifest: badDefault },
+  ] }));
+  const app = await startTestHub({ dir: directory });
+  try {
+    const path = '/api/plugins';
+    assert.equal((await rawFetch(app.url + path)).status, 401);
+    const { installed, skippedRegistrations } = await app.api('GET', path);
+    assert.equal(installed.filter((p: any) => p.id === 'external-test').length, 1);
+    assert.equal(installed.find((p: any) => p.id === 'external-test').runtime.state, 'ready');
+    assert.equal(installed.find((p: any) => p.id === 'broken').runtime.state, 'failed');
+    assert.deepEqual(skippedRegistrations.map((r: any) => [r.index, r.manifestPath]), [[2, good], [4, badJson], [5, badDefault]]);
+    assert.match(skippedRegistrations[0].reason, /duplicate external plugin external-test/);
+    assert.match(skippedRegistrations[1].reason, /invalid external plugin JSON/);
+    assert.match(skippedRegistrations[2].reason, /default/);
+    assert.ok(!JSON.stringify(skippedRegistrations).includes(marker));
+
+    const browser = await launchBrowser(browserProgram.path, { redact: [TEST_TOKEN] });
+    try {
+      const { page } = browser;
+      const el = (selector: string) => `document.querySelector(${JSON.stringify(selector)})`;
+      const diagnostic = el('#plugin-list article[aria-label="登记项 #2 加载失败"]');
+      const state = el('[data-plugin-state-chip="external-test"]');
+      await page.navigate(`${app.url}/#token=${TEST_TOKEN}`);
+      await page.waitFor(el('#open-settings'), 'settings button');
+      await page.click(el('#open-settings'), 'settings');
+      await page.click(el('#settings-tab-plugins'), 'plugins tab');
+      await page.waitFor(diagnostic, 'duplicate registration diagnostic');
+      assert.equal(await page.evaluate(`${diagnostic}.querySelectorAll('button, input, a').length`), 0);
+      assert.ok(await page.evaluate(`${diagnostic}.textContent.includes(${JSON.stringify(good)})`));
+      if (process.env.ORRERY_PLUGIN_DIAGNOSTICS_SCREENSHOT) {
+        await page.evaluate(`${diagnostic}.scrollIntoView({ block: 'center' })`);
+        const { data } = await page.send('Page.captureScreenshot', { format: 'png' });
+        writeFileSync(process.env.ORRERY_PLUGIN_DIAGNOSTICS_SCREENSHOT, Buffer.from(data, 'base64'));
+      }
+      const ready = await page.evaluate(`${state}.textContent`);
+      await app.api('POST', '/api/plugins/external-test/stop', {});
+      await page.waitFor(`${state}.textContent !== ${JSON.stringify(ready)}`, 'live plugin updates over SSE');
+      assert.ok(await page.evaluate(`Boolean(${diagnostic})`));
+      assert.deepEqual(browser.problems(), { exceptions: [], console: [] });
+    } finally { await browser.close(); }
   } finally { await app.close(); }
 });
 
@@ -304,7 +391,7 @@ test('external broker limits permissions and clusters, omits private metadata an
       { command: 'test', arguments: { action: 'host', method, params } }) as { result?: any; error?: unknown };
     assert.deepEqual((await host('host.clusters.list')).result, { clusters: [{ id: 'one', name: 'one' }] });
     const messages = (await host('host.messages.list', { clusterId: 'one' })).result.messages;
-    assert.deepEqual(Object.keys(messages[0]), ['id', 'clusterId', 'from', 'body', 'createdAt']);
+    assert.deepEqual(Object.keys(messages[0]), ['id', 'clusterId', 'from', 'body', 'createdAt', 'messageKind']);
     assert.equal(store.db.prepare('SELECT count(*) AS n FROM reads').get()?.n, 0);
     for (const params of [{ clusterId: 'two' }, { clusterId: 'one', limit: 101 }, { clusterId: 'one', before: 'message-two' }]) {
       assert.ok((await host('host.messages.list', params)).error);
@@ -561,7 +648,7 @@ test('standalone review reminder writes once for a pending review in its authori
   for (const id of ['one', 'read-only']) {
     seed.insertCluster({ id, name: id, category: '', createdAt: '2026-01-01' }, [{
       id: id + '-executor', clusterId: id, name: 'Executor', avatar: null, harness: 'mock', model: null, effort: null,
-      mode: 'native', workerSessionId: id + '-executor', cwd: dir, origin: 'attached', removedAt: null,
+      workerSessionId: id + '-executor', cwd: dir, origin: 'attached', removedAt: null,
     }]);
   }
   seed.close();
@@ -617,7 +704,7 @@ test('external plugin stuck in initialize: an exit request waits for startup, th
   writeFileSync(join(directory, 'main.mjs'), 'setInterval(() => {}, 1000);');
   // The real entry point: the crash was in its top-level code, which startTestHub does not run.
   const child = spawn(process.execPath, ['src/main.ts'], { cwd: REPO_ROOT, stdio: 'ignore',
-    env: { ...process.env, ORRERY_PORT: '0', ORRERY_DB: join(directory, 'h.db'), ORRERY_SANDBOX: join(directory, 'sb'), ORRERY_HOME: home, ORRERY_API_TOKEN: TEST_TOKEN } });
+    env: { ...process.env, ORRERY_PORT: '0', ORRERY_DB: join(directory, 'h.db'), ORRERY_HOME: home, ORRERY_API_TOKEN: TEST_TOKEN } });
   try {
     const exited = once(child, 'exit', { signal: AbortSignal.timeout(20_000) });
     const discovery = join(home, 'hub.json');
@@ -678,7 +765,10 @@ test('external event grants are declared, need events.read, and an omitted grant
   const requested = { ...manifest, ...eventManifest };
   assert.deepEqual(parseExternalManifest(manifest).events, []);
   assert.equal(parseExternalManifest(requested).events.length, 6);
-  assert.throws(() => parseExternalManifest({ ...requested, events: ['delivery.changed'] }), /unsupported/);
+  // Types are open (an owner may add one later), so only the syntax is checked: one segment is not a type.
+  for (const bad of ['delivery', 'Message.created', 'message.*.x', '**', 'message.', '.created', '__proto__.x']) {
+    assert.throws(() => parseExternalManifest({ ...requested, events: [bad] }), /unsupported/, bad);
+  }
   assert.throws(() => parseExternalManifest({ ...manifest, events: ['message.created'] }), /events\.read/);
   const { home, directory } = fixture({ permissions: eventManifest.permissions, events: ['message.created', 'member.status'] });
   const set = (item: object) => writeFileSync(join(home, 'external-plugins.json'), JSON.stringify({ plugins: [{ manifest: join(directory, 'orrery-plugin.json'), ...item }] }));
@@ -720,34 +810,35 @@ test('a plugin with events but no events.read is isolated: the Hub starts, it ne
   } finally { await app.close(); }
 });
 
-test('external events carry exactly the allowlisted fields and never a Hub payload', () => {
-  const task = { id: 't1', title: 'Work', status: 'review', scope: 'private scope', acceptance: 'private', assignedMemberId: 'a', mergedCommitSha: 'private' };
-  const translator = new ExternalEventTranslator({ tasks: { task: () => task } } as unknown as Store);
-  const translate = (event: HubEvent, clusterId: string) => translator.translate(event, clusterId);
-  assert.deepEqual(translate(messageEvent('one'), 'one'), [{ type: 'message.created',
-    data: { clusterId: 'one', messageId: 'm1', from: 'user', mentions: ['a'], createdAt: '2026-01-01T00:00:00.000Z', kind: null } }]);
+/** The core's registry (and any official plugin the store's host enables), as ExternalPlugins builds it. */
+const registryOf = (store: Store) => new EventRegistry([{ owner: 'core', source: coreEventSource(store) }, ...store.plugins.eventSources(store)]);
+
+test('the legacy core types keep their fields first and copy only allowlisted fields', () => {
+  const registry = registryOf(new Store(':memory:'));
+  const translate = (event: HubEvent) => registry.translate(event);
+  const created = translate(messageEvent('one'));
+  assert.deepEqual(created.map((e) => e.type), ['message.created']);
+  const legacy = { clusterId: 'one', messageId: 'm1', from: 'user', mentions: ['a'], createdAt: '2026-01-01T00:00:00.000Z', kind: null };
+  assert.deepEqual(Object.keys(created[0].data).slice(0, 6), Object.keys(legacy), 'the v1 fields come first, in their order');
+  assert.deepEqual(Object.fromEntries(Object.keys(legacy).map((k) => [k, created[0].data[k]])), legacy);
+  assert.equal(created[0].data.body, undefined, 'no body without messages.read');
+  assert.equal(created[0].bodyData!.body, 'private body', 'the body variant, for plugins with messages.read');
+  assert.ok(!JSON.stringify(created).includes('C:/private'), 'no attachment path');
   const system = hubEvent('message', 'one', { message: { id: 'm2', clusterId: 'one', from: 'system', mentions: [], body: 'x', createdAt: '2026-01-03', kind: 'system' } });
-  assert.equal(translate(system, 'one')[0].data.kind, 'system');
-  const taskData = { clusterId: 'one', taskId: 't1', title: 'Work', status: 'review', at: '2026-01-02T00:00:00.000Z' };
-  const collab = (payload: object) => translate(hubEvent('collaboration', 'one', { taskId: 't1', reason: 'private', commitSha: 'private', ...payload }), 'one');
-  assert.deepEqual(collab({ action: 'task.submit' }), [{ type: 'task.submitted', data: taskData }]);
-  assert.deepEqual(collab({ action: 'task.submit', verdict: 'approve' }).map((e) => e.type), ['task.submitted', 'task.approved'], 'a self review is also an approval');
-  assert.deepEqual(collab({ action: 'task.review', verdict: 'approve' }), [{ type: 'task.approved', data: taskData }]);
-  assert.deepEqual(collab({ action: 'task.review', verdict: 'reject' }), [{ type: 'task.rejected', data: taskData }]);
-  for (const action of ['task.merge', 'task.shipped']) assert.deepEqual(collab({ action }), [{ type: 'task.merged', data: taskData }]);
-  for (const payload of [{ action: 'task.submit', suggested: true }, { action: 'task.merge', suggested: true }, { action: 'task.claim' }, { action: 'task.approve', approvalVerdict: 'approve' }]) assert.deepEqual(collab(payload), []);
-  assert.deepEqual(translate(hubEvent('collaboration', 'one', { action: 'task.submit' }), 'one'), [], 'no task id, no event');
-  assert.deepEqual(new ExternalEventTranslator(new Store(':memory:')).translate(hubEvent('collaboration', 'one', { action: 'task.submit', taskId: 't1' }), 'one'), [], 'no tasks plugin, no task events');
-  for (const kind of ['cluster', 'delivery', 'read', 'acknowledgement', 'agent', 'guard', 'pause', 'settings', 'usage', 'unread_hint'] as const) {
-    assert.deepEqual(translate(hubEvent(kind, 'one', { message: { body: 'x' }, member: { status: 'idle' }, members: [] }), 'one'), [], kind);
+  assert.equal(translate(system)[0].data.kind, 'system');
+  assert.deepEqual(translate(hubEvent('collaboration', 'one', { action: 'task.submit', taskId: 't1' })), [], 'no tasks plugin, no task events');
+  for (const kind of ['agent', 'settings', 'usage', 'unread_hint', 'delivery_dismissed'] as const) {
+    assert.deepEqual(translate(hubEvent(kind, 'one', { message: { body: 'x' }, member: { status: 'idle' }, members: [], event: { type: 'text', text: 'x' } })), [], kind);
   }
-  translator.baseline([{ id: 'a', status: 'idle' }]);
-  assert.deepEqual(translate(memberEvent('one', 'busy'), 'one'), [{ type: 'member.status',
+  registry.baseline([{ id: 'a', status: 'idle' }]);
+  assert.deepEqual(translate(memberEvent('one', 'busy')).filter((e) => e.type === 'member.status'), [{ type: 'member.status', clusterId: 'one',
     data: { clusterId: 'one', memberId: 'a', name: 'Alice', status: 'busy', at: '2026-01-02T00:00:00.000Z' } }]);
 });
 
 test('member.status reports only real changes, from a baseline taken at startup or at creation', () => {
-  const translator = new ExternalEventTranslator(new Store(':memory:'));
+  const registry = registryOf(new Store(':memory:'));
+  const translator = { baseline: (m: { id: string; status: 'idle' | 'busy' | 'offline' }[]) => registry.baseline(m),
+    translate: (event: HubEvent, _clusterId: string) => registry.translate(event).filter((e) => e.type === 'member.status') };
   const member = (status: string, id: string, removedAt: string | null = null) => translator.translate(memberEvent('one', status, id, removedAt), 'one').map((e) => e.data.status);
 
   translator.baseline([{ id: 'existing', status: 'idle' }, { id: 'renamed', status: 'idle' }]);
@@ -937,7 +1028,7 @@ test('events reach a plugin from the real Hub after commit: messages without bod
   const seed = new Store(join(directory, 'test.db'));
   for (const id of ['one', 'two']) {
     seed.insertCluster({ id, name: id, category: '', createdAt: '2026-01-01' }, ['a', 'b', 'c'].map((name) => ({ id: `${id}-${name}`, clusterId: id, name, avatar: null, harness: 'mock', model: null, effort: null,
-      mode: 'native' as const, workerSessionId: `session-${id}-${name}`, cwd: repo, origin: 'attached' as const, removedAt: null })));
+      workerSessionId: `session-${id}-${name}`, cwd: repo, origin: 'attached' as const, removedAt: null })));
   }
   seed.close();
   const app = await startTestHub({ dir: directory });
@@ -986,10 +1077,21 @@ test('events reach a plugin from the real Hub after commit: messages without bod
 
     const events = await seen();
     const created = events.find((e) => e.type === 'message.created' && e.data.messageId === sent.id)!;
-    assert.deepEqual(Object.keys(created.data), ['clusterId', 'messageId', 'from', 'mentions', 'createdAt', 'kind']);
+    assert.deepEqual(Object.keys(created.data).slice(0, 6), ['clusterId', 'messageId', 'from', 'mentions', 'createdAt', 'kind'], 'the v1 fields first');
     assert.equal(created.data.from, 'user');
     const text = JSON.stringify(events);
-    for (const secret of ['top secret body', 'other cluster body', 'private scope', 'private acceptance', 'private reason', mergeCommit, reviewed, repo.replaceAll('\\', '\\\\')]) assert.ok(!text.includes(secret), secret);
+    // Without messages.read no body; never another cluster or a local path. Task content is part of task events now.
+    for (const secret of ['top secret body', 'other cluster body', repo.replaceAll('\\', '\\\\')]) assert.ok(!text.includes(secret), secret);
+    const ofType = (type: string) => events.filter((e) => e.type === type);
+    for (const e of events.filter((e) => e.type.startsWith('task.'))) {
+      assert.deepEqual(Object.keys(e.data).slice(0, 5), ['clusterId', 'taskId', 'title', 'status', 'at'], 'the v1 task fields first');
+    }
+    assert.equal(ofType('task.submitted')[0].data.scope, 'private scope');
+    assert.equal(ofType('task.submitted')[0].data.acceptance, 'private acceptance');
+    assert.equal(ofType('task.submitted')[0].data.commitSha, reviewed);
+    assert.deepEqual([ofType('task.rejected')[0].data.verdict, ofType('task.rejected')[0].data.reason], ['reject', 'private reason']);
+    assert.equal(ofType('task.merged')[0].data.mergedCommitSha, mergeCommit);
+    assert.equal(ofType('task.approved')[0].data.reviewer.name, 'b');
     assert.ok(events.every((e) => e.data.clusterId === 'one'), 'the second cluster stays out');
     const lifecycle = events.filter((e) => e.type.startsWith('task.')).map((e) => [e.type, e.data.title, e.data.status]);
     assert.deepEqual(lifecycle, [
@@ -1015,7 +1117,7 @@ function writeFixture() {
   for (const clusterId of clusterIds) {
     seed.insertCluster({ id: clusterId, name: clusterId, category: '', createdAt: '2026-01-01' },
       ['Alice', 'Bob'].map((name) => ({ id: clusterId + '-' + name, clusterId, name, avatar: null,
-        harness: 'mock', model: null, effort: null, mode: 'native' as const, workerSessionId: clusterId + '-' + name,
+        harness: 'mock', model: null, effort: null, workerSessionId: clusterId + '-' + name,
         cwd: dir, origin: 'attached' as const, removedAt: null })));
   }
   seed.deleteCluster('gone');

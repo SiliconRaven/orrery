@@ -16,7 +16,7 @@ async function fixture(name: string) {
   const native = createMockNativeAdapter({ harness: 'claude', sessions });
   const app = await startTestHub({ dir, nativeAdapters: { claude: native } });
   const { cluster, members } = await app.hub.createCluster(name, ['A', 'B', 'C', 'D', 'E'].map((n, i) =>
-    ({ harness: 'claude', mode: 'native' as const, sessionId: `s${i + 1}`, name: n })));
+    ({ harness: 'claude', sessionId: `s${i + 1}`, name: n })));
   const [a, b, c, d, e] = members;
   let serial = 0;
   const op = () => `self-${name}-${++serial}`;
@@ -202,12 +202,13 @@ test('a second takeover withdraws the first takeover\'s queued wake-up to the me
 test('boundary: reviewer self is only written through the takeover rule on taken-over tasks, and submit checks the binding', () => {
   const dir = join(REPO_ROOT, 'src/plugins/tasks');
   const source = readFileSync(join(dir, 'actions.ts'), 'utf8');
-  // Every assignment to a reviewer field anywhere in the tasks plugin, other than resolveTaskRefs' copy of the command:
-  // only the setter. A new writer must come through setReviewer, or be added here on purpose.
+  // Command reference copies do not change a task. Batch joins copy a user/member reviewer only;
+  // task-batches.test.ts verifies that batches reject self review. Other changes use setReviewer.
   const writers = readdirSync(dir).filter((name) => name.endsWith('.ts'))
     .flatMap((name) => [...readFileSync(join(dir, name), 'utf8').matchAll(/(\w+)!?\.reviewer\s*=[^=]/g)].map((m) => `${name}:${m[1]}`))
-    .filter((writer) => writer !== 'actions.ts:out');
-  assert.deepEqual(writers, ['actions.ts:task'], 'one setter (setReviewer) writes a task\'s reviewer after creation');
+    .filter((writer) => !['actions.ts:out', 'batches.ts:out'].includes(writer)).sort();
+  assert.deepEqual(writers, ['actions.ts:task', 'actions.ts:task', 'batches.ts:task'],
+    'only setReviewer and the two restricted batch joins write task reviewers');
   assert.match(source, /const setReviewer = /);
   assert.match(source, /\/\/ SELF-BINDING CHECK[\s\S]{0,400}selfReviewBound\(/, 'submit checks the binding before writing a self review');
   // Executor changes of a taken-over self-reviewed task go through the rule.

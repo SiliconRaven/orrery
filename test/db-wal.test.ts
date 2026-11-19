@@ -23,7 +23,7 @@ const productEnv = () => { const env = { ...process.env }; delete env.ORRERY_TES
 function addCluster(store: Store, dir: string, id = 'c'): void {
   store.insertCluster({ id, name: id, createdAt: 'now', category: '' }, [{
     id: `${id}-m`, clusterId: id, name: 'A', avatar: null, harness: 'mock', model: null, effort: null,
-    workerSessionId: `${id}-s`, cwd: dir, origin: 'created', mode: 'native', removedAt: null,
+    workerSessionId: `${id}-s`, cwd: dir, origin: 'created', removedAt: null,
   }]);
 }
 
@@ -102,7 +102,7 @@ test('db: ORRERY_DB_JOURNAL=delete switches a WAL database back; unknown values 
 
   const r = spawnSync(process.execPath, ['src/main.ts'], {
     cwd: REPO_ROOT, encoding: 'utf8', timeout: 20_000,
-    env: { ...productEnv(), ORRERY_DB_JOURNAL: 'bogus', ORRERY_PORT: '0', ORRERY_HOME: join(dir, 'home'), ORRERY_DB: join(dir, 'h.db'), ORRERY_SANDBOX: join(dir, 'sb') },
+    env: { ...productEnv(), ORRERY_DB_JOURNAL: 'bogus', ORRERY_PORT: '0', ORRERY_HOME: join(dir, 'home'), ORRERY_DB: join(dir, 'h.db') },
   });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /ORRERY_DB_JOURNAL must be wal or delete, not "bogus"/);
@@ -228,7 +228,7 @@ test('db: a process killed mid-write loses no acknowledged commit, and its runni
     const store = new Store(process.env.DB);
     store.insertCluster({ id: 'c', name: 'c', createdAt: 'now', category: '' }, [{
       id: 'm', clusterId: 'c', name: 'A', avatar: null, harness: 'mock', model: null, effort: null,
-      workerSessionId: 's1', cwd: process.env.DIR, origin: 'created', mode: 'native', removedAt: null }]);
+      workerSessionId: 's1', cwd: process.env.DIR, origin: 'created', removedAt: null }]);
     const [d] = store.insertMessage({ id: 'msg', clusterId: 'c', from: 'user', mentions: ['m'], body: 'work', replyTo: null, chainId: 'msg', hop: 0, createdAt: 'now' }, ['m']);
     store.startDelivery(d.id, d.id);
     store.db.exec('CREATE TABLE crash_rows (n INTEGER PRIMARY KEY)');
@@ -255,7 +255,7 @@ test('db: a process killed mid-write loses no acknowledged commit, and its runni
     assert.equal(store.getDelivery(deliveryId)!.state, 'running');
 
     const mock = fixtureNativeMock(dir);
-    const hub = new Hub({ store, nativeAdapters: { mock }, });
+    const hub = new Hub({ store, nativeAdapters: { mock } });
     try {
       hub.start();
       assert.deepEqual([store.getDelivery(deliveryId)!.state, store.getDelivery(deliveryId)!.outcome], ['failed', 'unknown']);

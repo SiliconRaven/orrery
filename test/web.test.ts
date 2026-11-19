@@ -53,7 +53,7 @@ test('11: node src/main.ts serves state, streams events, and PATCH rename makes 
   // emptied: this round trip runs on the product's database settings, not the test fast mode.
   const child = spawn(process.execPath, ['src/main.ts'], {
     cwd: REPO_ROOT,
-    env: { ...process.env, ORRERY_TEST_DB_SYNC: '', ORRERY_PORT: '0', ORRERY_DB: join(dir, 'h.db'), ORRERY_SANDBOX: join(dir, 'sb'), ORRERY_HOME: join(dir, 'home'), ORRERY_MAX_HOPS: '', ORRERY_MAX_TURNS_PER_CHAIN: '', ORRERY_MOCK: '1', ORRERY_API_TOKEN: TEST_TOKEN, KIMI_CODE_HOME: join(dir, 'kimi') },
+    env: { ...process.env, ORRERY_TEST_DB_SYNC: '', ORRERY_PORT: '0', ORRERY_DB: join(dir, 'h.db'), ORRERY_HOME: join(dir, 'home'), ORRERY_MAX_HOPS: '', ORRERY_MAX_TURNS_PER_CHAIN: '', ORRERY_MOCK: '1', ORRERY_API_TOKEN: TEST_TOKEN, KIMI_CODE_HOME: join(dir, 'kimi') },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   const streams = trackStreams();
@@ -78,7 +78,7 @@ test('11: node src/main.ts serves state, streams events, and PATCH rename makes 
     const streamed = () => first.text;
 
     const { cluster, members: [a, b] } = await send('POST', '/api/clusters', {
-      name: 'demo', members: [{ projectPath: tempDir(), harness: 'mock' }, { projectPath: tempDir(), harness: 'mock' }],
+      name: 'demo', members: [{ harness: 'mock', mode: 'native', projectPath: '/work' }, { harness: 'mock', mode: 'native', projectPath: '/work' }],
     });
     assert.deepEqual([a.name, b.name], ['mock-1', 'mock-1-2']);
     await send('POST', `/api/clusters/${cluster.id}/messages`, { body: '@all hello' });

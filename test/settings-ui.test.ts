@@ -94,10 +94,38 @@ test('plugin card: a third-party plugin shows its mark, process, grants, command
   assert.equal(all(failed).find((e) => e.attrs['data-plugin'] === 'notes')!.attrs.disabled, '');
 });
 
+test('plugin card: granted event patterns with their types, the wildcard note, and published types', () => {
+  const plugin = entry({ id: 'ci', name: 'CI', origin: 'external', permissions: ['events.read', 'events.publish'], clusterIds: ['a'],
+    events: ['task.*', 'member.status', 'bookmark.saved'], runtime: { state: 'ready', error: null, errorCode: null },
+    eventGrants: [
+      { pattern: 'task.*', wildcard: true, types: [{ type: 'task.approved', owner: 'tasks', description: '验收通过。', fields: 'scope, acceptance, reason' }, { type: 'task.merged', owner: 'tasks', description: '已合并。' }] },
+      { pattern: 'member.status', wildcard: false, types: [{ type: 'member.status', owner: 'core', description: '成员状态变化。' }] },
+      { pattern: 'bookmark.saved', wildcard: false, types: [] },
+    ],
+    publishes: [{ type: 'plugin.ci.build.done', description: '构建结束。', fields: 'ok' }],
+    eventPublishLimit: { at: '2026-11-17T12:00:00.000Z', perMinute: 60 } });
+  const row = plugins.pluginRow(plugin, [plugin], false, () => {});
+  const card = text(row);
+  for (const expected of [/订阅的事件：task\.\*、member\.status、bookmark\.saved/, /task\.\*（通配符：以后新增的同类事件也会推给它。现在有 2 种）/,
+    /task\.approved：验收通过。/, /task\.merged：已合并。/, /member\.status：成员状态变化。/, /bookmark\.saved：现在没有这种事件/,
+    /发布的事件（给其他插件订阅）：/, /plugin\.ci\.build\.done：构建结束。（字段：ok）/,
+    /task\.approved：验收通过。（字段：scope, acceptance, reason）/]) assert.match(card, expected);
+  const limit = row.kids.find((el: El | string) => typeof el !== 'string' && el.attrs.class === 'plugin-error');
+  assert.ok(limit, 'the latest rate notice is outside the collapsed details');
+  assert.equal(text(limit), '最近事件发布限流：2026-11-17T12:00:00.000Z（每分钟 60 条）');
+  const ungranted = text(plugins.pluginRow({ ...plugin, permissions: ['events.read'], events: [], eventGrants: [] }, [plugin], false, () => {}));
+  assert.match(ungranted, /没有授予 events\.publish，不能发布/);
+  assert.doesNotMatch(ungranted, /订阅的事件/);
+  // An older Hub's listing without eventGrants still shows the patterns.
+  assert.match(text(plugins.pluginRow({ ...plugin, eventGrants: undefined, publishes: undefined }, [plugin], false, () => {})), /订阅的事件：task\.\*/);
+});
+
 test('plugin card: hostile manifest text stays text, and only Hub icon addresses ever load', () => {
   const evil = '<img src=x onerror=alert(1)><script>alert(1)</script>';
   const plugin = entry({ id: 'evil', name: evil, description: evil, origin: 'external', permissions: [], clusterIds: [],
     commands: [{ id: 'c', title: evil }], runtime: { state: 'ready' }, iconError: evil,
+    events: ['*'], eventGrants: [{ pattern: '*', wildcard: true, types: [{ type: 'plugin.other.x', owner: 'other', description: evil, fields: evil }] }],
+    publishes: [{ type: 'plugin.evil.x', description: evil, fields: evil }],
     details: `${evil}\n\n[click](javascript:alert(1)) [site](https://example.invalid/x) <a href="https://example.invalid">a</a>\n\n![img](https://example.invalid/i.png)\n\n| <b>h</b> |\n|---|\n| ${evil} |` });
   for (const iconUrl of [null, 'javascript:alert(1)', 'https://example.invalid/x.png', '//example.invalid/x.png', 'data:image/svg+xml,<svg onload=alert(1)>',
     '/api/plugins/evil/icon?x=1', '/official-plugins/../app.js', '/api/plugins/evil/icon']) {
@@ -113,6 +141,7 @@ test('plugin card: hostile manifest text stays text, and only Hub icon addresses
     }
     // The hostile strings are all there, as plain text.
     assert.ok(strings(card).some((s) => s.includes('<script>alert(1)</script>')));
+    assert.ok(strings(card).includes(`（字段：${evil}）`), 'subscribed field descriptions are literal text nodes');
     assert.match(text(card), /click（javascript:alert\(1\)）|\[click\]\(javascript:alert\(1\)\)/);
     assert.match(text(card), /site（https:\/\/example\.invalid\/x）/, 'a link is shown as text with its address');
   }
@@ -191,7 +220,7 @@ test('theme: when storage refuses the write, the dialog still shows the theme th
   const tab = { id: 'settings-tab-appearance', tabIndex: 0, getAttribute: () => 'panel', setAttribute() {}, addEventListener() {}, focus() {} };
   const dialog = {
     querySelectorAll: (selector: string) => (selector === '[role="tab"]' ? [tab] : radios),
-    querySelector: (selector: string) => (selector === '#panel' ? { hidden: true } : { scrollTop: 0, setAttribute() {} }),
+    querySelector: (selector: string) => ['#ui-language', '#language-note'].includes(selector) ? null : (selector === '#panel' ? { hidden: true } : { scrollTop: 0, setAttribute() {} }),
   };
   const frame = settings.initSettings(dialog, page.api);
   assert.equal(radios.find((r) => r.checked)?.value, 'system');
@@ -257,5 +286,5 @@ test('settings dialog: every element app.js looks up by id still exists, the set
   const tabs = [...dialog.matchAll(/role="tab" aria-controls="([\w-]+)"/g)].map((m) => m[1]);
   assert.deepEqual(tabs, ['settings-panel-appearance', 'settings-panel-limits', 'settings-panel-alerts', 'settings-panel-plugins', 'settings-panel-delivery']);
   for (const panel of tabs) assert.match(dialog, new RegExp(`<section id="${panel}" [^>]*role="tabpanel"`));
-  assert.match(app, /const settingsFrame = initSettings\(settingsDialog\);/);
+  assert.match(app, /const settingsFrame = initSettings\(settingsDialog, undefined, \{ beforeLanguageChange: confirmLanguageReload \}\);/);
 });

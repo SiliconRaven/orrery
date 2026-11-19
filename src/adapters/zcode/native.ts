@@ -3,13 +3,15 @@
 // which the Hub registers as this session's bridge stream. A delivery is printed by that command, which then exits;
 // ZCode runs a turn on it (after the current one, if busy), and at its end the member runs the same command again.
 // Being online and delivering are the shared wait route (../shared/wait-native.ts) with ZCode's settings.
-// Conversations and tokens are read from copies of ZCode's databases (./store.ts). No createSession: the user creates
+// Conversations and tokens are read from copies of ZCode's databases (./store.ts); the bound conversation's body is
+// read in place, read-only (./transcript.ts). No createSession: the user creates
 // conversations in the app. No quota: ZCode reads it with the user's API key. docs/adapters/zcode.md.
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { ZCODE_WAIT, type NativeAdapter } from '../../core/types.ts';
 import { createWaitDelivery } from '../shared/wait-native.ts';
 import { createZcodeStore } from './store.ts';
+import { zcodeTranscript } from './transcript.ts';
 
 export const NOT_REARMED = 'ZCode 没有重新挂上等待：在 ZCode 里对这个对话说一句「重新挂上 orrery」（或用 orrery skill）。在那之前它离线，发给它的消息不会投递。';
 
@@ -35,6 +37,7 @@ export function createZcodeNativeAdapter(opts: {
     },
     isOnline: delivery.isOnline,
     conversationTokens: (sessionId) => store.tokens(sessionId),
+    transcript: (sessionId, request) => zcodeTranscript(zcodeHome, sessionId, request),
     deliver: delivery.deliver,
   };
 }

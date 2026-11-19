@@ -1,3 +1,4 @@
+import { language, forcedLanguage, setLanguage, t } from './i18n.js';
 // The settings dialog's frame: its section tabs and the theme choice (外观). The settings themselves are wired in
 // app.js and plugins.js by element id; nothing here reads or writes the Hub.
 
@@ -18,7 +19,7 @@ export function nextTab(tabs, current, key) {
  * land on (focus stays on the tab, Tab then goes into the section). The section last shown is remembered per browser.
  * `theme` is theme.js's globalThis.orreryTheme.
  */
-export function initSettings(dialog, theme = globalThis.orreryTheme) {
+export function initSettings(dialog, theme = globalThis.orreryTheme, { beforeLanguageChange = () => true } = {}) {
   const tabs = [...dialog.querySelectorAll('[role="tab"]')];
   const show = (tab, focus = false) => {
     for (const t of tabs) {
@@ -56,5 +57,31 @@ export function initSettings(dialog, theme = globalThis.orreryTheme) {
   for (const radio of radios) radio.addEventListener('change', () => { if (radio.checked) theme?.set(radio.value); });
   mark();
   globalThis.addEventListener?.('storage', mark);   // another tab changed it (theme.js applies it, this shows it)
-  return { opened: mark };
+  const choice = dialog.querySelector('#ui-language');
+  const languageNote = dialog.querySelector('#language-note');
+  const markLanguage = () => {
+    if (!choice) return;
+    choice.value = language();
+    choice.disabled = Boolean(forcedLanguage());
+    if (languageNote) languageNote.textContent = t(forcedLanguage()
+      ? '语言由桌面版控制，请在桌面设置中修改。'
+      : '语言保存在这个浏览器里，切换后会重新加载页面。');
+  };
+  let changingLanguage = false;
+  choice?.addEventListener('change', async () => {
+    const next = choice.value;
+    if (changingLanguage || forcedLanguage() || next === language()) { markLanguage(); return; }
+    changingLanguage = true;
+    choice.disabled = true;
+    try {
+      if (!await beforeLanguageChange()) return;
+      setLanguage(next);
+      globalThis.location?.reload();
+    } finally {
+      changingLanguage = false;
+      markLanguage();
+    }
+  });
+  markLanguage();
+  return { opened: () => { mark(); markLanguage(); } };
 }

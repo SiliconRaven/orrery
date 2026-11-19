@@ -1,8 +1,10 @@
-// App-server protocol helpers used by the native Codex adapter.
+// The few `codex app-server` protocol pieces the native Codex adapter uses (stdio JSON-RPC). Protocol facts come from
+// `codex app-server generate-ts` (codex-cli 0.164.0); see docs/adapters/codex.md.
 import type { Readable, Writable } from 'node:stream';
 import type { ModelInfo, SessionInfo } from '../../core/types.ts';
 import type { RpcPeer } from './rpc.ts';
 
+/** v2/Thread.ts (subset). Timestamps are unix seconds. */
 export interface CodexThread {
   id: string;
   preview: string;
@@ -12,6 +14,7 @@ export interface CodexThread {
   updatedAt: number;
 }
 
+/** A running app-server, or a test double speaking the same protocol. */
 export interface CodexProcess {
   stdin: Writable;
   stdout: Readable;
@@ -20,10 +23,15 @@ export interface CodexProcess {
   onExit(cb: (reason: string) => void): void;
 }
 
+/** v2/Model.ts (subset). `model` is what thread/start and turn/start take; `id` names the catalog entry. */
 interface CodexModel { model: string; displayName: string; isDefault: boolean; supportedReasoningEfforts: { reasoningEffort: string }[] }
-
 const MODEL_PAGES = 10;
 
+/**
+ * The models this app-server offers in its picker (model/list, hidden ones left out), one entry per model name.
+ * Entries without a usable model name are skipped (the web would otherwise submit something else as the model);
+ * efforts that are not strings are dropped.
+ */
 export async function fetchModels(rpc: RpcPeer): Promise<ModelInfo[]> {
   const out: ModelInfo[] = [];
   let cursor: string | null = null;
@@ -52,15 +60,18 @@ export function toSessionInfo(t: CodexThread): SessionInfo {
 
 export interface ApprovalDecision {
   result: unknown;
-  /** What to show the user when the request was declined. */
+  /** What to show the user about what was declined. */
   declined: string;
 }
 
+/**
+ * Server→client requests during an orrery-run operation (the native init turn needs no tools): every one is declined
+ * in the shape its generated *Response type expects. Throws for requests we do not know (sent back as an error).
+ */
 export function decideServerRequest(method: string, params: Record<string, unknown>): ApprovalDecision {
   const p = params ?? {};
   switch (method) {
     case 'mcpServer/elicitation/request':
-      // Native initialization does not need to elicit input or approve tools.
       return { result: { action: 'decline', content: null, _meta: null }, declined: `MCP prompt from ${String(p.serverName)}: ${String(p.message ?? '')}` };
     case 'item/commandExecution/requestApproval':
       return { result: { decision: 'decline' }, declined: `command: ${String(p.command ?? '(unknown)')}${p.reason ? ` (${String(p.reason)})` : ''}` };

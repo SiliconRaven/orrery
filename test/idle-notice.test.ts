@@ -30,7 +30,7 @@ async function fixture(name: string, limits: Partial<Limits>) {
   native.isOnline = (sessionId, bridge) => !offline.has(sessionId) && online(sessionId, bridge);
   const app = await startTestHub({ dir, nativeAdapters: { claude: native }, limits: { idleCheckMs: 30, idleSweepMs: OFF, idleTaskGraceMs: 0, idleMemberGraceMs: 0, ...limits } });
   const { cluster, members } = await app.hub.createCluster(name, ['A', 'B', 'C', 'D'].map((n, i) =>
-    ({ harness: 'claude', mode: 'native' as const, sessionId: sessions[i].id, name: n })));
+    ({ harness: 'claude', sessionId: sessions[i].id, name: n })));
   const [a, b, c, d] = members;
   let serial = 0;
   const send = (actor: { kind: 'user' } | { kind: 'member'; memberId: string }, command: Record<string, unknown>) =>

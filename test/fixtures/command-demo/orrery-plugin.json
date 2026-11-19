@@ -1,0 +1,37 @@
+{
+  "id": "command-demo",
+  "version": "1.0.0",
+  "name": "命令示例（测试用）",
+  "description": "带参数的快命令和长时间运行的命令。只用于测试，不随产品发布。",
+  "apiVersion": 1,
+  "entry": "main.mjs",
+  "permissions": ["clusters.read"],
+  "commands": [
+    {
+      "id": "greet",
+      "title": "打招呼",
+      "description": "立即回答一句话。",
+      "params": [
+        {"name": "name", "type": "text", "label": "称呼", "required": true},
+        {"name": "times", "type": "number", "label": "次数", "min": 1, "max": 5, "default": 1},
+        {"name": "loud", "type": "boolean", "label": "大声"},
+        {"name": "who", "type": "member", "label": "成员"},
+        {"name": "mood", "type": "enum", "label": "语气", "options": ["calm", "happy"], "default": "calm"},
+        {"name": "wait", "type": "duration", "label": "等待", "min": 60, "max": 7200, "description": "例如 15m"}
+      ]
+    },
+    {
+      "id": "session",
+      "title": "计时环节",
+      "description": "开始一个计时环节，结束时报告结果。",
+      "longRunning": true,
+      "params": [
+        {"name": "mode", "type": "enum", "label": "行为", "options": ["finish", "fail", "silent", "exit", "after-done", "ignore-cancel", "same-chunk"], "default": "finish"},
+        {"name": "ticks", "type": "number", "label": "进度次数", "min": 0, "max": 50, "default": 2},
+        {"name": "tickMs", "type": "number", "label": "进度间隔毫秒", "min": 0, "max": 5000, "default": 30}
+      ]
+    },
+    {"id": "count", "title": "旧式命令"},
+    {"id": "debug", "title": "测试探针", "clusterScoped": false}
+  ]
+}

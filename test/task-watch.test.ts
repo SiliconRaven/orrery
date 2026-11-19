@@ -18,7 +18,7 @@ async function fixture(name: string, options: { dir?: string; limits?: Record<st
   const native = createMockNativeAdapter({ harness: 'claude', sessions });
   const app = await startTestHub({ dir, nativeAdapters: { claude: native }, ...(options.limits ? { limits: options.limits as never } : {}) });
   const created = options.existing ? null : await app.hub.createCluster(name, ['A', 'B', 'C', 'D'].map((n, i) =>
-    ({ harness: 'claude', mode: 'native' as const, sessionId: `s${i + 1}`, name: n })));
+    ({ harness: 'claude', sessionId: `s${i + 1}`, name: n })));
   const cluster = created?.cluster ?? app.store.getCluster(options.existing!)!;
   const [a, b, c, d] = created?.members ?? app.hub.listMembers(cluster.id);
   let serial = 0;

@@ -1,15 +1,16 @@
-// Native MCP identity comes from an authenticated bridge and its bound conversation.
+// Identity comes from the conversation a bridge names with the bridge secret; a missing or wrong secret and any
+// bearer token are rejected, clusters are kept apart, and the secret never leaks.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { request } from 'node:http';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { nativeHeaders, holdScript, mcpStatus, startTestHub, waitFor } from './helpers.ts';
+import { bearer, holdScript, hubSecret, mcpStatus, memberHeaders, startTestHub, turnsOf, waitFor } from './helpers.ts';
 
 async function connect(url: string, headers: Record<string, string>): Promise<Client> {
   const client = new Client({ name: 'test', version: '0' });
-  await client.connect(new StreamableHTTPClientTransport(new URL(url + '/mcp'), {
-    requestInit: { headers },
-  }));
+  await client.connect(new StreamableHTTPClientTransport(new URL(url + '/mcp'), { requestInit: { headers } }));
   return client;
 }
 
@@ -19,7 +20,7 @@ const call = async (client: Client, name: string, args: Record<string, unknown>)
   return { isError: res.isError === true, text, data: res.isError ? null : JSON.parse(text) };
 };
 
-test('7: the bridge conversation is the sender; bad credentials get 401; clusters stay separate', async () => {
+test('7: the sender is the conversation the bridge names; a bad secret or a bearer token gets 401; clusters stay apart; the secret never leaks', async () => {
   const hold = holdScript();
   const app = await startTestHub({ mock: { script: hold.script } });
   try {
@@ -27,17 +28,18 @@ test('7: the bridge conversation is the sender; bad credentials get 401; cluster
     const { cluster: c2, members: [x] } = await app.cluster('c2', ['X']);
     await app.api('POST', `/api/clusters/${c1.id}/messages`, { body: '@all hold' });
     await app.api('POST', `/api/clusters/${c2.id}/messages`, { body: '@all hold' });
-    await waitFor(() => app.native.delivered.length === 3, 'three deliveries started');
-    const headersB = nativeHeaders(app, b.id);
-    const headersX = nativeHeaders(app, x.id);
+    await waitFor(() => [a, b, x].every((m) => turnsOf(app, m.id) === 1), 'three held turns');
+    const secret = hubSecret(app.home);
+    const headersB = memberHeaders(app, b.id);
 
     assert.equal(await mcpStatus(app.url, {}), 401);
-    assert.equal(await mcpStatus(app.url, { 'x-orrery-bridge': 'wrong', 'x-orrery-session': 'unknown' }), 401);
-    assert.equal(await mcpStatus(app.url, { authorization: 'not-supported' }), 401, 'token without Bearer scheme');
-    await assert.rejects(connect(app.url, { 'x-orrery-bridge': 'wrong', 'x-orrery-session': 'unknown' }));
+    assert.equal(await mcpStatus(app.url, bearer('wrong')), 401);
+    assert.equal(await mcpStatus(app.url, bearer(secret)), 401, 'a bearer token names nobody, even the secret');
+    assert.equal(await mcpStatus(app.url, { ...headersB, 'x-orrery-bridge': 'wrong' }), 401, 'a wrong secret');
+    await assert.rejects(connect(app.url, { authorization: 'Bearer not-a-token' }));
 
     const clientB = await connect(app.url, headersB);
-    const clientX = await connect(app.url, headersX);
+    const clientX = await connect(app.url, memberHeaders(app, x.id));
     try {
       const agents = await call(clientB, 'list_agents', {});
       assert.deepEqual(agents.data.map((m: any) => [m.name, m.harness, m.model]), [['A', 'mock', 'mock-1'], ['B', 'mock', 'mock-1']]);
@@ -77,7 +79,6 @@ test('7: the bridge conversation is the sender; bad credentials get 401; cluster
 
     hold.release();
     await waitFor(() => app.settled(c1.id), 'settled');
-    assert.equal(await mcpStatus(app.url, headersB), 200, 'native identity remains valid while the conversation is bound');
     const ac = new AbortController();
     const sse = await fetch(app.url + '/api/stream', { signal: ac.signal });
     const reader = sse.body!.getReader();
@@ -91,7 +92,36 @@ test('7: the bridge conversation is the sender; bad credentials get 401; cluster
       JSON.stringify(app.store.listEvents(0)),
       streamed,
     ];
-    for (const out of outputs) assert.ok(!out.includes(headersB['x-orrery-bridge']), 'bridge secret leaked');
+    for (const out of outputs) assert.ok(!out.includes(secret), 'secret leaked');
+  } finally {
+    await app.close();
+  }
+});
+
+test('a tool call whose headers arrive while the conversation is a member but whose body arrives after its removal writes nothing', async () => {
+  const app = await startTestHub();
+  try {
+    const { cluster, members: [a, b] } = await app.cluster('c', ['A', 'B']);
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'send_message', arguments: { body: '@B late' } } });
+    let answer = '';
+    const status = Promise.withResolvers<number>();
+    const req = request(app.url + '/mcp', {
+      method: 'POST',
+      headers: { ...memberHeaders(app, a.id), 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'content-length': Buffer.byteLength(body) },
+    }, (res) => {
+      res.on('data', (c) => { answer += c; });
+      res.on('end', () => status.resolve(res.statusCode!));
+    });
+    req.on('error', status.reject);
+    req.flushHeaders();   // the headers now, while A is a member; the body is held back
+    await sleep(200);     // the Hub has checked the headers by now
+    await app.api('DELETE', `/api/clusters/${cluster.id}/members/${a.id}`, {});
+    req.end(body);        // the tool call arrives after A was moved out
+    assert.equal(await status.promise, 200);
+    const result = JSON.parse(/^data: (.*)$/m.exec(answer)?.[1] ?? answer).result;
+    assert.equal(result.isError, true, result.content[0].text);
+    assert.deepEqual(await app.messages(cluster.id), [], 'nothing written');
+    assert.equal((app.store.db.prepare('SELECT COUNT(*) AS n FROM deliveries WHERE member_id = ?').get(b.id) as any).n, 0, 'B got no delivery');
   } finally {
     await app.close();
   }

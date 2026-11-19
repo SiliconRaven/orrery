@@ -1,5 +1,6 @@
+import { t } from '../../shared/i18n/index.js';
 // What the collaboration page may load, and how the shell reads the launcher's answer (docs/desktop.md "安全边界"
-// 6 and 7). Pure functions over URL parsing, never string prefixes; no imports.
+// 6 and 7). Pure functions over URL parsing, never string prefixes; shared UI text is the only import.
 
 /**
  * The output of `node src/launcher.ts --ensure` → the Hub's origin and the page address to load, or the launcher's
@@ -13,13 +14,13 @@ export function parseEnsure(stdout, code) {
   try { data = JSON.parse(line); } catch { data = null; }
   if (data && typeof data.error === 'string') return { error: data.error };
   if (!data || typeof data.url !== 'string') {
-    return { error: `orrery 启动器没有给出 Hub 的地址（退出码 ${code}）。可以在仓库目录里运行 npm run open 看看具体的错误。` };
+    return { error: t('orrery 启动器没有给出 Hub 的地址（退出码 {code}）。可以在仓库目录里运行 npm run open 看看具体的错误。', { code }) };
   }
   let u;
-  try { u = new URL(data.url); } catch { return { error: `启动器给出的地址不能用：${data.url}` }; }
+  try { u = new URL(data.url); } catch { return { error: t('启动器给出的地址不能用：{url}', { url: data.url }) }; }
   const plain = !u.username && !u.password && u.pathname === '/' && !u.search && (!u.hash || /^#token=[A-Za-z0-9._~-]+$/.test(u.hash));
   if (u.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(u.hostname) || !u.port || !plain) {
-    return { error: `启动器给出的地址不是本机的 orrery Hub：${data.url}` };
+    return { error: t('启动器给出的地址不是本机的 orrery Hub：{url}', { url: data.url }) };
   }
   return { origin: u.origin, page: `${u.origin}/${u.hash}` };
 }

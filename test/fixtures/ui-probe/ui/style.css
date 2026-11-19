@@ -1,0 +1,2 @@
+/* A sentinel colour: the probe reports it, proving this file loaded from the frame's own prefix. */
+body { color: rgb(1, 2, 3); }

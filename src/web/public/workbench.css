@@ -13,6 +13,13 @@
 /* No top padding: Chromium offsets a sticky child from inside the scroller's padding, which would leave a strip above the tabs. */
 .workbench-content { flex: 1; min-height: 0; overflow: auto; padding: 0 var(--s-4) var(--s-4); background: var(--bg); scroll-padding-top: 60px; }
 .wb-overview { padding-top: var(--s-4); }
+/* A third-party plugin's tab: the content keeps only the tab bar, the pane below it holds the frame (workbench.js). */
+.workbench-content.wb-plugin-tab { flex: none; overflow: visible; padding-bottom: 0; }
+.workbench-content.wb-plugin-tab > .workbench-tabs { margin-bottom: 0; }
+.wb-plugin-tab-button { display: inline-flex; align-items: center; gap: var(--s-1); }   /* the host's mark before a plugin's tab name */
+.wb-plugin-pane { display: flex; flex: 1; min-height: 0; padding: var(--s-4); background: var(--bg); }
+.wb-plugin-pane[hidden] { display: none; }
+.wb-plugin-pane > .pui-shell { flex: 1; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
 
 /* ---- tabs and section headings ---- */
 /* Stays under the title bar while the content scrolls. Full-bleed and opaque so nothing shows through or beside it: the
@@ -43,6 +50,13 @@
 .wb-group-approval .workbench-group-head { border-left-color: var(--accent); }
 .wb-group-active .workbench-group-head { border-left-color: var(--accent); }
 .wb-group-review .workbench-group-head { border-left-color: var(--running); }
+/* A review batch: its progress line above its cards; a batch ready to review or ship gets the accent edge. */
+.wb-group-batch .workbench-group-head { border-left-color: var(--line); }
+.wb-batch-ready .workbench-group-head, .wb-batch-merged .workbench-group-head { border-left-color: var(--accent); }
+.wb-batch-failed .workbench-group-head { border-left-color: var(--warn-text); }
+.wb-batch-progress { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); padding: var(--s-1) 0; font-size: var(--f-sm); }
+.wb-batch-progress > button { margin-left: auto; }
+.wb-batch-dialog { width: min(640px, calc(100vw - var(--s-6))); }
 .wb-group-pending .workbench-group-head { border-left-color: var(--muted); }
 .wb-group-completed .workbench-group-head { border-left-color: var(--done); }
 .wb-group-merged .workbench-group-head { border-left-color: var(--done); }
@@ -57,6 +71,8 @@
 .wb-task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: var(--f-sm); }
 /* Task labels: coloured by name, clickable to filter the task list. */
 .wb-task-labels { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+/* A row holding only plugin marks while there are none (plugin-ui.js keeps the slot, hidden) takes no room. */
+.wb-task-labels:not(:has(> :not([hidden]))) { display: none; }
 .wb-task-label { cursor: pointer; }
 .wb-task-label:hover, .wb-task-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .wb-task-label-detail { font-size: var(--f-sm); }

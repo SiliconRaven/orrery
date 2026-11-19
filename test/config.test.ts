@@ -20,7 +20,7 @@ test('launcher 6: resolveConfig defaults and overrides match the old main.ts rul
   const dir = tempDir();
   assert.deepEqual(resolveConfig({
     ORRERY_HOME: join(dir, 'h'), ORRERY_PORT: '0', ORRERY_DB: join(dir, 'x.db'),
-  }), { home: join(dir, 'h'), port: 0, dbPath: join(dir, 'x.db'), });
+  }), { home: join(dir, 'h'), port: 0, dbPath: join(dir, 'x.db') });
   // The shared skills folder (docs/files.md): ORRERY_SKILLS_DIR, else ~/.agents/skills; empty counts as unset.
   assert.equal(skillsDirOf({}), join(homedir(), '.agents', 'skills'));
   assert.equal(skillsDirOf({ ORRERY_SKILLS_DIR: '' }), join(homedir(), '.agents', 'skills'));

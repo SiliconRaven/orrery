@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Store } from '../src/core/store.ts';
 import type { Cluster, Member, Message } from '../src/core/types.ts';
-import { nativeHeaders, holdScript, insertMessageWithEvent, startTestHub, tempDir, waitFor, type TestHub } from './helpers.ts';
+import { bearer, holdScript, insertMessageWithEvent, startTestHub, tempDir, waitFor, type TestHub, turnsOf, memberHeaders } from './helpers.ts';
 
 test('every tool result carries a changed unread hint, except read_messages and ack_messages', async () => {
   const hold = holdScript();
@@ -17,8 +17,10 @@ test('every tool result carries a changed unread hint, except read_messages and 
   try {
     const { cluster, members: [member] } = await app.cluster('hint', ['A']);
     app.hub.sendFromUser(cluster.id, '@A hold');
+    await waitFor(() => turnsOf(app, member.id) > 0, 'member turn');
+    const token = memberHeaders(app, member.id);
     client = new Client({ name: 'unread-hint-test', version: '1' });
-    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: nativeHeaders(app, member.id) } }));
+    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: token } }));
     const call = async (name: string, args: Record<string, unknown>) => {
       const result = await client!.callTool({ name, arguments: args });
       return (result.content as { type: string; text: string }[]).map((block) => block.text);
@@ -178,7 +180,6 @@ test('unread hint: it creates no deliveries or turns and writes only its own eve
     assert.ok((await hint()).body.hint);
     await sleep(50);
     assert.equal(app.native.delivered.length, delivered);
-    assert.equal(app.native.delivered.length, 0);
     assert.equal(deliveries(), before);
     assert.deepEqual(await app.api('GET', `/api/clusters/${cluster.id}/messages`).then((all: any[]) => all.flatMap((m) => m.deliveries)), []);
     assert.deepEqual(app.events.slice(eventsBefore).map((e) => e.kind), ['unread_hint']);

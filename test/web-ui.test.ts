@@ -4,8 +4,13 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { runInNewContext } from 'node:vm';
+import { runInNewContext as runVm } from 'node:vm';
 import { REPO_ROOT } from '../src/main.ts';
+import { t, language } from '../shared/i18n/index.js';
+
+// Extracted browser functions close over the same real translations as their module imports.
+const runInNewContext = (code: string, context: Record<string, any>) =>
+  runVm('(function(t, language) {\n' + code + '\n})(uiTranslation.t, uiTranslation.language);', Object.assign(context, { uiTranslation: { t, language } }));
 
 // A browser module without types: a computed specifier keeps tsc from looking for declarations.
 const ui = await import(pathToFileURL(join(REPO_ROOT, 'src', 'web', 'public', 'ui.js')).href);
@@ -641,13 +646,160 @@ test('web ui: only enabled first-party module names are imported and register sl
     return { register(given: unknown) { assert.equal(given, host); return hooks; } };
   };
   const disabled = await loadPluginSlots({ frontend: [], plugins: [{ id: 'external' }] }, host, load);
-  assert.deepEqual(disabled, { message: [], composer: [], workbench: [], settings: [] });
+  assert.deepEqual(disabled, { message: [], composer: [], workbench: [], settings: [], trusted: [], tried: [], onRelease: null });
   const enabled = await loadPluginSlots({
     frontend: ['bookmarks', 'bookmarks', 'disabled', '../app', '/app.js', 'https://external.invalid/a.js'],
     plugins: [{ id: 'bookmarks' }, { id: 'external' }, { id: '../app' }, { id: '/app.js' }, { id: 'https://external.invalid/a.js' }],
   }, host, load);
   assert.deepEqual(imports, ['bookmarks']);
-  assert.deepEqual(Object.values(enabled).map((slot: any) => slot.length), [1, 1, 1, 1]);
+  assert.deepEqual(['message', 'composer', 'workbench', 'settings', 'trusted', 'tried'].map((name) => enabled[name].length), [1, 1, 1, 1, 0, 0]);
+});
+
+test('web ui: full-trust page modules load only when listed and running, get their own host, and detach for good', async (t) => {
+  const { detachPluginSlots, loadPluginSlots } = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/plugin-slots.js')).href);
+  const warnings = t.mock.method(console, 'warn', () => {});
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const calls: string[] = [];
+  const apiCalls: string[] = [];
+  const formDialog = (_title: string, _fields: unknown, submit: () => void, setBusy: (busy: boolean) => void) => ({ submit, setBusy });
+  const host = { api: async (method: string) => { apiCalls.push(method); return {}; }, nameOf: (id: string) => id, command: async () => 'done',
+    ui: { h() {}, noticeDialog: async () => {}, confirmDialog: async () => true, formDialog } };
+  const hosts = new Map<string, any>();
+  let disposed = 0;
+  const module = (id: string) => ({ register(given: any) {
+    hosts.set(id, given);
+    if (id === 'throws') throw new Error('fixture register failed');
+    if (id === 'async') return Promise.reject(new Error('fixture register is async'));
+    given.onDispose(() => { disposed++; calls.push(`${id}.dispose`); });
+    given.onDispose(() => { throw new Error('fixture dispose failed'); });
+    given.onDispose(() => new Promise(() => {}));   // never settles
+    return {
+      message: { render: () => { calls.push(`${id}.render`); return 'm'; }, key: () => { calls.push(`${id}.key`); return 'k'; },
+        capture: () => calls.push(`${id}.capture`), restore: () => calls.push(`${id}.restore`), update: () => calls.push(`${id}.update`) },
+      composer: () => { calls.push(`${id}.composer`); return 'c'; },
+      // The settings slot of `two` hands back a promise: nothing for the page to insert (no stray "[object Promise]").
+      settings: () => { calls.push(`${id}.settings`); return id === 'two' ? Promise.reject(new Error('fixture settings rejects')) : 's'; },
+      workbench: () => ({ id: `${id}-tab`, label: id, render: () => { calls.push(`${id}.tab`); return 't'; }, load() {}, itemRow: () => { calls.push(`${id}.row`); } }),
+    };
+  } });
+  const imported: string[] = [];
+  const slots = await loadPluginSlots({ frontend: [], trustedFrontend: ['one', 'two', 'two', 'off', '../x', 'throws', 'missing', 'async'],
+    plugins: [{ id: 'one' }, { id: 'two' }, { id: 'throws' }, { id: 'missing' }, { id: '../x' }, { id: 'async' }] }, host, async () => assert.fail('no official module'),
+  (id: string) => { imported.push(id); if (id === 'missing') throw new Error('fixture 404'); return module(id); });
+  assert.deepEqual(imported.sort(), ['async', 'missing', 'one', 'throws', 'two'], 'listed and running only; a module that fails to load or register is skipped');
+  assert.deepEqual(slots.tried, ['one', 'two', 'throws', 'missing', 'async'], 'every module the page tried');
+  assert.deepEqual(slots.trusted, ['one', 'two'], 'only those that registered their slots: an async register registers nothing');
+  assert.deepEqual(['message', 'composer', 'workbench', 'settings'].map((name) => slots[name].map((s: any) => s.pluginId)), [['one', 'two'], ['one', 'two'], ['one', 'two'], ['one', 'two']]);
+  const one = hosts.get('one');
+  assert.notEqual(one, host, 'its own host');
+  assert.equal(one.nameOf, host.nameOf);
+  assert.equal(typeof one.onDispose, 'function');
+  assert.equal(Object.isFrozen(one) && Object.isFrozen(one.ui), true);
+  await one.api('GET');
+  assert.deepEqual(apiCalls, ['GET']);
+  const tabs = slots.workbench.map((create: any) => create({}));
+  const dialog = one.ui.formDialog('x', [], () => calls.push('submit'), () => calls.push('busy'));
+  dialog.submit();
+  dialog.setBusy(true);
+  assert.deepEqual(calls, ['submit', 'busy']);
+
+  detachPluginSlots(slots, ['one']);
+  detachPluginSlots(slots, ['one']);   // twice: the dispose functions still ran once
+  assert.deepEqual(['message', 'composer', 'workbench', 'settings'].map((name) => slots[name].map((s: any) => s.pluginId)), [['two'], ['two'], ['two'], ['two']]);
+  assert.equal(disposed, 1);
+  calls.length = 0;
+  // Anything of it the page still held is inert: its old slot wrappers and tab methods are never called again.
+  const oneTab = tabs.find((tab: any) => tab.pluginId === 'one');
+  assert.equal(oneTab.render(), undefined);
+  assert.equal(oneTab.itemRow({}), undefined);
+  dialog.submit();
+  dialog.setBusy(false);
+  assert.equal(calls.length, 0, 'no call after the detach');
+  await assert.rejects(one.api('GET'), /detached from this page/);
+  await assert.rejects(one.command({}), /detached from this page/);
+  await assert.rejects(one.ui.noticeDialog('x'), /detached from this page/);
+  assert.throws(() => one.ui.formDialog('x', []), /detached from this page/);
+  assert.deepEqual(apiCalls, ['GET'], 'no request after the detach');
+  one.onDispose(() => calls.push('late dispose'));
+  assert.deepEqual(calls, ['late dispose'], 'registered after the detach: runs at once');
+  // The other plugin is untouched.
+  assert.equal(slots.message[0].render('x'), 'm');
+  assert.equal(slots.composer[0](), 'c');
+  assert.equal(slots.settings[0](), undefined, 'a promise from a page slot is caught and gives the page nothing');
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(unhandled, [], 'no unhandled rejection (async register, rejecting slot)');
+  const asyncWarning = warnings.mock.calls.find((call) => call.arguments[0] === 'plugin UI failed to load: async');
+  assert.match(String(asyncWarning?.arguments[1]), /register\(host\) must return the slots synchronously/);
+  assert.ok(warnings.mock.calls.some((call) => call.arguments[0] === 'plugin UI failed in two.settings'));
+  assert.ok(warnings.mock.calls.some((call) => call.arguments[0] === 'plugin UI failed in one.dispose'), 'a throwing dispose is logged');
+  assert.ok(warnings.mock.calls.some((call) => call.arguments[0] === 'plugin UI failed to load: throws'));
+  assert.ok(warnings.mock.calls.some((call) => call.arguments[0] === 'plugin UI failed to load: missing'));
+  // A promise from a factory slot refuses the whole plugin: two is released after that call, like a detach.
+  assert.deepEqual(['message', 'composer', 'workbench', 'settings'].map((name) => slots[name].length), [0, 0, 0, 0]);
+  assert.deepEqual(slots.trusted, ['one'], 'two is no longer attached (no notice, nothing to offer)');
+  await assert.rejects(hosts.get('two').api('GET'), /detached from this page/);
+});
+
+test('web ui: a full-trust module of the wrong shape, or one that fails in register, is rolled back as a whole', async (t) => {
+  const { loadPluginSlots } = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/plugin-slots.js')).href);
+  const warnings = t.mock.method(console, 'warn', () => {});
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const render = () => 'm';
+  const tab = { id: 'tab', label: 'Tab', render: () => 't', load() {} };
+  const shapes: Record<string, unknown> = {
+    'string-key': { message: { render, key: 'not a function' } },
+    'no-render': { message: { key: () => 'k' } },
+    'junk-field': { message: { render, colour: 'red' } },
+    'junk-slot': { composer: () => 'c', toolbar: () => 'x' },
+    'number-slot': { composer: 42 },
+    'array-hooks': [],
+    'async-tab': { composer: () => 'c', workbench: async () => tab },
+    'tab-no-render': { workbench: () => ({ id: 'x', label: 'X', load() {} }) },
+    good: { message: { render }, composer: () => 'c', workbench: () => tab, settings: () => null },
+  };
+  const disposed: Record<string, number> = {};
+  const hosts: Record<string, any> = {};
+  const host = { api: async () => ({}), nameOf: (id: string) => id, command: async () => 'done', ui: {} };
+  const ids = [...Object.keys(shapes), 'half'];
+  const slots = await loadPluginSlots({ frontend: [], trustedFrontend: ids, plugins: ids.map((id) => ({ id })) }, host, async () => assert.fail('no official module'),
+    async (id: string) => ({ register(given: any) {
+      hosts[id] = given;
+      given.onDispose(() => { disposed[id] = (disposed[id] ?? 0) + 1; });
+      if (id === 'half') throw new Error('fixture register fails after taking a cleanup function');
+      return shapes[id];
+    } }));
+  assert.deepEqual(slots.tried, ids);
+  // async-tab passes registration (its factory is only called later); every other wrong one is refused at once.
+  assert.deepEqual(slots.trusted, ['async-tab', 'tab-no-render', 'good']);
+  for (const id of ['string-key', 'no-render', 'junk-field', 'junk-slot', 'number-slot', 'array-hooks', 'half']) {
+    assert.equal(disposed[id], 1, `${id}: its cleanup ran once`);
+    await assert.rejects(hosts[id].api('GET'), /detached from this page/, `${id}: its host is revoked`);
+  }
+  assert.deepEqual(slots.message.map((s: any) => s.pluginId), ['good'], 'no slot of a refused module');
+  // The workbench calls the factories: an async one and one without render refuse their plugins, the good one works.
+  const tabs = slots.workbench.map((create: any) => create({})).filter(Boolean);
+  assert.deepEqual(tabs.map((t: any) => t.pluginId), ['good']);
+  assert.equal(tabs[0].render(), 't');
+  assert.equal(slots.composer.find((create: any) => create.pluginId === 'async-tab')(), undefined, 'a refused module is already inert before removal');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(slots.trusted, ['good']);
+  assert.deepEqual(['message', 'composer', 'workbench', 'settings'].map((name) => slots[name].map((s: any) => s.pluginId)), [['good'], ['good'], ['good'], ['good']]);
+  assert.equal(disposed['async-tab'], 1);
+  assert.equal(disposed['tab-no-render'], 1);
+  assert.equal(disposed.good, undefined, 'the good one keeps running');
+  assert.deepEqual(unhandled, [], 'no unhandled rejection');
+  const reasons = warnings.mock.calls.map((call) => `${call.arguments[0]} ${String(call.arguments[1])}`).join('\n');
+  for (const text of ['message.key must be a function', 'message.render must be a function', 'message.colour is not part of the slot', 'toolbar is not a page slot',
+    'composer must be a function', 'must return an object of slots', 'the workbench tab must be an object (not a promise)', 'the workbench tab.render must be a function']) {
+    assert.ok(reasons.includes(text), text);
+  }
 });
 
 test('web ui: failed plugin hooks leave the next plugin usable', async (t) => {
@@ -751,36 +903,29 @@ test('web ui: the create form pre-fills the name the Hub would give: picked mode
   }
 });
 
-test('web ui: creating a conversation is explicit and requires a project; filled member settings are retained', () => {
-  assert.match(ui.harnessSpecs(base).error, /请选择已有对话/);
-  for (const project of ['', '   ']) assert.match(ui.harnessSpecs({ ...base, create: true, project }).error, /项目目录/);
-  assert.deepEqual(ui.harnessSpecs({ ...base, create: true, project: 'C:\\p', name: ' rev ', avatar: ' 🦊 ', model: 'gpt-a', effort: 'high' }).specs,
-    [{ harness: 'codex', mode: 'native', projectPath: 'C:\\p', name: 'rev', avatar: '🦊', model: 'gpt-a', effort: 'high' }]);
-  assert.deepEqual(ui.harnessSpecs({ ...base, create: true, project: 'C:\\p', avatar: 'preset:robot' }).specs,
-    [{ harness: 'codex', mode: 'native', projectPath: 'C:\\p', avatar: 'preset:robot' }]);
-});
-
-test('web ui: each picked conversation attaches without a project; a ticked "new" adds one', () => {
+test('web ui: each picked conversation is attached; a ticked "new" adds one in the picked project with mode native; nothing picked is an error', () => {
   const sessions = [{ sessionId: 't1', name: ' a1 ', avatar: 'preset:robot' }, { sessionId: 't2', name: '', avatar: '' }];
-  const picked = { ...base, mode: 'native', project: 'C:\\p', sessions, name: 'x', avatar: '🦊', model: 'gpt-a' };
+  const picked = { ...base, project: 'C:\\p', sessions, name: 'x', avatar: '🦊', model: 'gpt-a' };
   assert.deepEqual(ui.harnessSpecs(picked).specs, [
-    { harness: 'codex', mode: 'native', sessionId: 't1', name: 'a1', avatar: 'preset:robot' }, { harness: 'codex', mode: 'native', sessionId: 't2' },
-  ], 'each picked conversation carries its own name / avatar; fields of an unticked "new" are not sent');
+    { harness: 'codex', sessionId: 't1', name: 'a1', avatar: 'preset:robot' }, { harness: 'codex', sessionId: 't2' },
+  ], 'each picked conversation carries its own name / avatar; fields of an unticked "new" are not sent; attaching needs no mode');
   assert.deepEqual(ui.harnessSpecs({ ...picked, create: true, effort: 'low' }).specs, [
-    { harness: 'codex', mode: 'native', sessionId: 't1', name: 'a1', avatar: 'preset:robot' }, { harness: 'codex', mode: 'native', sessionId: 't2' },
+    { harness: 'codex', sessionId: 't1', name: 'a1', avatar: 'preset:robot' }, { harness: 'codex', sessionId: 't2' },
     { harness: 'codex', mode: 'native', projectPath: 'C:\\p', name: 'x', avatar: '🦊', model: 'gpt-a', effort: 'low' },
-  ]);
-  assert.deepEqual(ui.harnessSpecs({ ...picked, project: '' }).specs, ui.harnessSpecs(picked).specs);
-  assert.match(ui.harnessSpecs({ ...base, name: 'ignored', avatar: 'ignored' }).error, /请选择已有对话/);
-  assert.match(ui.harnessSpecs({ ...picked, project: '', create: true }).error, /项目目录/);
+  ], 'a new conversation says mode native: the Hub refuses a create without it');
+  assert.deepEqual(ui.harnessSpecs({ ...base, name: 'ignored', avatar: 'ignored' }), { error: '请选择已有对话，或勾选新建对话' }, 'no default conversation');
+  assert.deepEqual(ui.harnessSpecs({ ...base, create: true }), { error: '请选择新建对话的项目目录' }, 'a new conversation needs a project');
+  assert.deepEqual(ui.harnessSpecs({ ...base, create: true, project: '  ' }), { error: '请选择新建对话的项目目录' });
+  assert.deepEqual(ui.harnessSpecs({ ...base, create: true, project: 'C:\\p', name: ' rev ', avatar: ' 🦊 ', model: 'gpt-a', effort: 'high' }).specs,
+    [{ harness: 'codex', mode: 'native', projectPath: 'C:\\p', name: 'rev', avatar: '🦊', model: 'gpt-a', effort: 'high' }], 'a new conversation with every field filled');
 });
 
 test('web ui: a harness that cannot create native conversations (Claude) must pick one', () => {
-  const claude = { ...base, harness: 'claude', nativeCreate: false, mode: 'native' };
-  assert.match(ui.harnessSpecs(claude).error, /请选择已有对话/);
+  const claude = { ...base, harness: 'claude', nativeCreate: false };
+  assert.match(ui.harnessSpecs(claude).error, /只能接入已有会话/);
   assert.equal(ui.harnessSpecs(claude).specs, undefined);
-  assert.deepEqual(ui.harnessSpecs({ ...claude, sessions: [{ sessionId: 's1' }] }).specs, [{ harness: 'claude', mode: 'native', sessionId: 's1' }]);
-  assert.match(ui.harnessSpecs({ ...claude, create: true, project: 'C:\\p', sessions: [{ sessionId: 's1' }] }).error, /只能接入已有会话/);
+  assert.match(ui.harnessSpecs({ ...claude, create: true, project: 'C:\\p' }).error, /只能接入已有会话/, 'a stale "new" tick creates nothing');
+  assert.deepEqual(ui.harnessSpecs({ ...claude, sessions: [{ sessionId: 's1' }] }).specs, [{ harness: 'claude', sessionId: 's1' }]);
 });
 
 test('web ui: effort choices follow the model; the default model, else every effort, for "默认"', () => {
@@ -882,14 +1027,14 @@ test('web ui: a native sibling can show a shared busy channel without overriding
 
 test('web ui: conversations combine active memberships by harness and session ID', () => {
   const member = (id: string, clusterId: string, name: string, extra: object = {}) =>
-    ({ id, clusterId, name, harness: 'mock', mode: 'native', workerSessionId: 's1', removedAt: null, ...extra });
+    ({ id, clusterId, name, harness: 'mock', workerSessionId: 's1', removedAt: null, ...extra });
   const rows = ui.conversations([
     member('a', 'one', '甲'), member('b', 'two', '乙'), member('old', 'three', '移出', { removedAt: 'now' }),
-    member('d', 'one', '别家', { harness: 'other' }),
+    member('c', 'one', '无会话', { workerSessionId: '' }), member('d', 'one', '别家', { harness: 'other' }),
     member('e', 'one', '另一个会话', { workerSessionId: 's2' }),
   ], [{ id: 'one', name: '第一群' }, { id: 'two', name: '第二群' }]);
-  assert.equal(rows.length, 3);
-  const shared = rows.find((r: any) => r.harness === 'mock' && r.mode === 'native' && r.sessionId === 's1');
+  assert.equal(rows.length, 4);
+  const shared = rows.find((r: any) => r.harness === 'mock' && r.sessionId === 's1');
   assert.deepEqual(shared.memberships, [
     { clusterId: 'one', clusterName: '第一群', memberId: 'a', memberName: '甲' },
     { clusterId: 'two', clusterName: '第二群', memberId: 'b', memberName: '乙' },
@@ -902,7 +1047,8 @@ test('web ui activity: report only observed facts, expire the channel and retain
   const at = '2026-11-07T11:59:58.000Z';
   const now = Date.parse(seen);
   const base = { state: 'observing', source: 'deepseek', lastSeenAt: seen, lastActivityAt: at, staleAfterMs: 45_000 };
-  assert.deepEqual(ui.activitySummary(null, false, now), { state: '暂无观察', source: null, seen: null, activity: null });
+  assert.deepEqual(ui.activitySummary(null, false, now), { state: '暂无观察', source: null, hasChannel: false, seen: null, activity: null });
+  assert.equal(ui.activitySummary(null, true, now).hasChannel, false, 'a failed query without evidence does not add channel details');
   for (const [kind, phase, label] of [
     ['tool', 'requested', '工具请求'], ['tool', 'started', '工具开始/分派'], ['tool', 'finished', '工具返回'],
     ['tool', 'failed', '工具失败'], ['turn', 'started', '轮次开始'], ['turn', 'finished', '轮次结束'], ['turn', 'failed', '轮次失败'],
@@ -914,11 +1060,13 @@ test('web ui activity: report only observed facts, expire the channel and retain
   }
   const history = ui.activitySummary({ ...base, event: { kind: 'tool', phase: 'finished', toolName: 'read_file' } }, true, now);
   assert.equal(history.state, '观察查询暂不可用');
+  assert.equal(history.hasChannel, true, 'a failed query keeps previously observed channel details');
   assert.ok(history.seen && history.activity.includes('工具返回 read_file'));
   assert.equal(ui.activitySummary({ ...base }, false, now + 45_001).state, '观察已过期');
   assert.equal(ui.activitySummary({ ...base, state: 'disconnected' }, false, now).state, '观察已断开');
   assert.equal(ui.activitySummary({ ...base, state: 'unknown' }, false, now).state, '仅历史');
   assert.equal(ui.activitySummary({ ...base, lastSeenAt: null }, false, now).state, '观察已过期');
+  assert.equal(ui.activitySummary({ state: 'disconnected' }, false, now).hasChannel, true, 'a known disconnected channel still has details');
   for (const bad of ['<script>alert(1)</script>', 'x'.repeat(65), 'has space']) {
     const summary = ui.activitySummary({ ...base, source: bad, event: { kind: 'tool', phase: 'requested', toolName: bad } }, false, now);
     assert.equal(summary.source, null);
@@ -973,7 +1121,7 @@ test('web ui activity: slow requests complete, hung requests time out, and navig
     await flush();
   };
   const context: any = {
-    S: state, activityReady: true, document, location, URLSearchParams, AbortController, Date: ClockDate,
+    S: state, activityReady: true, hubCheckPending: false, document, location, URLSearchParams, AbortController, Date: ClockDate,
     render() { renderedStates.push(ui.activitySummary(state.activity.get(state.sel.cluster), state.activityFailed, now).state); },
     setInterval(fn: () => void, ms: number) { assert.equal(ms, 10_000); intervals.push(fn); return 1; },
     setTimeout(fn: () => void, ms: number) { const id = ++nextTimer; timers.set(id, { at: now + ms, fn }); return id; },
@@ -1167,13 +1315,12 @@ test('web ui: existing sessions remain selectable across groups but not within t
   assert.equal(ui.sessionAvailability(session, null).disabled, false, 'new cluster may attach an existing native session');
   assert.equal(ui.sessionAvailability(session, 'b').disabled, false, 'another cluster may attach it');
   assert.equal(ui.sessionAvailability(session, 'a').reason, '已在当前群');
-  assert.equal(ui.sessionAvailability({ ...session, memberships: [...memberships, { clusterId: 'z' }] }, 'b').disabled, false);
-  assert.equal(ui.sessionAvailability({ memberId: 'old' }, 'b').disabled, false, 'only a confirmed membership in the target disables a session');
+  assert.equal(ui.sessionAvailability({ memberId: 'old' }, 'b').disabled, true, 'older Hub without memberships stays conservative');
   assert.equal(ui.sessionAvailability({ memberId: null }, null).disabled, false);
 });
 
 test('web ui: the same member specs form create or add requests without introducing a second form schema', () => {
-  const specs = ui.harnessSpecs({ ...base, create: true, project: 'C:\\p', name: 'review', model: 'gpt-a', effort: 'high' }).specs;
+  const specs = ui.harnessSpecs({ ...base, create: true, name: 'review', model: 'gpt-a', effort: 'high' }).specs;
   assert.deepEqual(ui.memberSubmission(null, 'team', specs), { path: '/api/clusters', body: { name: 'team', members: specs } });
   assert.deepEqual(ui.memberSubmission('c /1', 'ignored', specs), { path: '/api/clusters/c%20%2F1/members', body: { members: specs } });
 });
@@ -1259,12 +1406,12 @@ test('web ui: the page says the Hub keeps running when closed, and "退出 orrer
   const html = readFileSync(join(pub, 'index.html'), 'utf8');
   const app = readFileSync(join(pub, 'app.js'), 'utf8');
   assert.match(html, /Hub 在后台运行，关掉这个页面不会停止它。/);
-  assert.match(html, /<button id="quit"[^>]*>退出 orrery<\/button>/);
-  assert.match(html, /<div id="quit-screen"[^>]*hidden>\s*<p>orrery 已退出，可以关闭这个页面。<\/p>/);
+  assert.match(html, /<button id="quit"[^>]*><span data-i18n="退出 orrery">退出 orrery<\/span><\/button>/);
+  assert.match(html, /<div id="quit-screen"[^>]*hidden>\s*<p><span data-i18n="orrery 已退出，可以关闭这个页面。">orrery 已退出，可以关闭这个页面。<\/span><\/p>/);
   // Asked in the page (danger style); cancelling returns before the request.
-  assert.match(app, /const ok = await confirmDialog\(\{[^}]*message: '退出后 Hub 停止，群员收不到新消息，直到你再次打开 orrery。'[^}]*danger: true,?\s*\}\);\s*if \(!ok\) return;[\s\S]*api\('POST', '\/api\/shutdown', \{\}\)/);
+  assert.match(app, /const ok = await confirmDialog\(\{[^}]*message: t\('退出后 Hub 停止，群员收不到新消息，直到你再次打开 orrery。'\)[^}]*danger: true,?\s*\}\);\s*if \(!ok\) return;[\s\S]*api\('POST', '\/api\/shutdown', \{\}\)/);
   assert.match(app, /api\('POST', '\/api\/shutdown', \{\}\)/);   // api() sends content-type: application/json
-  assert.match(app, /noticeDialog\(`退出失败：\$\{e\.message\}`\)/);
+  assert.match(app, /noticeDialog\(t\('退出失败：\{message\}', \{ message: e\.message \}\)\)/);
   assert.match(app, /function connect\(since, rebuilt = false\) \{\n  if \(quitting \|\| denied\) return;/);
 });
 
@@ -1275,12 +1422,12 @@ test('web ui: the #token= fragment becomes the session cookie before any other r
   assert.match(start, /^\/\/ ---- start ----\n\n(\/\/[^\n]*\n)*const hashToken = new URLSearchParams\(location\.hash\.slice\(1\)\)\.get\('token'\);\nif \(hashToken !== null\) \{\n  try \{\n    await fetch\('\/api\/session', \{ method: 'POST', headers: \{ 'content-type': 'application\/json' \}, body: JSON\.stringify\(\{ token: hashToken \}\) \}\);\n  \} catch \{[^\n]*\n  history\.replaceState\(null, '', location\.pathname \+ location\.search\);\n\}\nreadHash\(\);/);
   // The start section's first api() call is the initial load, after the exchange.
   assert.equal(start.indexOf('api('), start.indexOf("api('GET', '/api/harnesses')"));
-  // Every way the page talks to /api/* notices a 401: api(), the upload, the health check, and the stream rebuild.
-  assert.equal(app.match(/status === 401\) (return )?unauthorized\(\)/g)?.length, 4);
+  // Every way the page talks to /api/* notices a 401: api(), the upload, the skill ZIP upload, the health check, and the stream rebuild.
+  assert.equal(app.match(/status === 401\) (return )?unauthorized\(\)/g)?.length, 5);
   assert.match(app, /if \(es\.readyState === EventSource\.CLOSED\) setTimeout\(reconnect, 3000\);/);
   assert.match(app, /function unauthorized\(\) \{\n  if \(denied\) return;\n  denied = true;\n  stream\?\.close\(\);\n  setConn\(false\);[^\n]*\n  noticeDialog\(/);
   // The status line says why the page stopped, not "已连接" or "重连中" (review api-token r1, P2).
-  assert.match(app, /denied \? '未通过验证'/);
+  assert.match(app, /denied \? t\('未通过验证'\)/);
 });
 
 test('web ui: each limit setting shows its effective value and source; unlimited reads "…：无限"', () => {
@@ -1375,13 +1522,16 @@ test("web ui: the page never uses the browser's own confirm, alert or prompt dia
   const pub = join(REPO_ROOT, 'src', 'web', 'public');
   // A call of the global function (bare or via window/globalThis/self); confirmDialog(, sub.confirm, x.alert( do not match.
   const NATIVE = /(?<![\w$.])(?:(?:window|globalThis|self)\.)?(?:confirm|alert|prompt)\s*\(/;
+  // A local function declaration is not a call to the browser's dialog API.
+  const calls = (source: string) => source.replace(/\bfunction\s+(?:confirm|alert|prompt)\s*\(/g, 'function localDialog(');
   for (const f of readdirSync(pub, { withFileTypes: true, recursive: true })) {
     if (!f.isFile() || !/\.(?:js|html)$/.test(f.name)) continue;
     const file = join(f.parentPath, f.name);
-    assert.doesNotMatch(readFileSync(file, 'utf8'), NATIVE, file);
+    assert.doesNotMatch(calls(readFileSync(file, 'utf8')), NATIVE, file);
   }
   assert.match('if (!confirm("x")) return;', NATIVE);
   assert.match('window.alert(e.message)', NATIVE);
+  assert.doesNotMatch(calls('async function confirm() {}'), NATIVE);
   assert.match('const v = prompt ("name")', NATIVE);
   assert.doesNotMatch('await confirmDialog({ message }); sub.confirm && noticeDialog(m)', NATIVE);
 });
@@ -1531,7 +1681,7 @@ test('web ui: the member panel replaced the manage dialog: rename/avatar, remove
   assert.match(app, /\$\('panel-add'\)\.addEventListener\('click', \(\) => openCreate\(S\.sel\.cluster\)\);/);
 });
 
-test('web ui member list: removing confirms what is kept in the app and sends the same request', async () => {
+test('web ui member list: removing asks in the confirm dialog, says what is kept, and sends the same request', async () => {
   // The texts.
   const native = ui.removeMemberConfirm({ name: 'Ann' });
   assert.equal(native.title, '将“Ann”移出集群？');
@@ -1571,7 +1721,7 @@ test('web ui member list: removing confirms what is kept in the app and sends th
     await context.go(member);
     return { calls, asked, focused, notice: context.manageNotice, removing: context.removing };
   };
-  const ann = { id: 'm1', name: 'Ann', clusterId: 'c1', mode: 'native', removedAt: null };
+  const ann = { id: 'm1', name: 'Ann', clusterId: 'c1', removedAt: null };
   // Cancel: nothing is sent; focus goes back to the row's remove button.
   const cancelled = await run(false, ann);
   assert.deepEqual(cancelled.calls, []);
@@ -1664,10 +1814,10 @@ test('web ui: sidebar groups follow the Hub list: its order, empty groups kept, 
   const html = readFileSync(join(REPO_ROOT, 'src', 'web', 'public', 'index.html'), 'utf8');
   for (const call of ["api('POST', '/api/cluster-groups', { name })", "api('PATCH', '/api/cluster-groups', { from, to })",
     "api('DELETE', '/api/cluster-groups', { name })", "api('PUT', '/api/cluster-groups', { groups: next })"]) assert.ok(app.includes(call), call);
-  assert.match(app, /\{ key: 'move', label: '移到分组…' \}/, 'the cluster menu moves without dragging');
-  assert.match(app, /item\('new-group', '新建分组…'\)/);
+  assert.match(app, /\{ key: 'move', label: t\('移到分组…'\) \}/, 'the cluster menu moves without dragging');
+  assert.match(app, /item\('new-group', t\('新建分组…'\)\)/);
   assert.match(app, /draggable: 'true'/);
-  assert.match(html, /<button id="new-group" class="icon-button ghost" type="button" aria-label="新建分组" title="新建分组"/);
+  assert.match(html, /<button id="new-group" class="icon-button ghost" type="button" aria-label="新建分组"[^>]*title="新建分组"/);
 });
 
 /**
@@ -1840,12 +1990,12 @@ test('web ui: relative times refresh in place: only words that changed are rewri
 test('web ui: the sidebar head and its entries draw sprite icons; settings is a gear with a name', () => {
   const html = readFileSync(join(REPO_ROOT, 'src', 'web', 'public', 'index.html'), 'utf8');
   const sidebar = html.slice(html.indexOf('<aside id="sidebar">'), html.indexOf('</aside>'));
-  assert.match(sidebar, /<button id="open-settings" class="icon-button ghost" type="button" aria-label="设置" title="[^"]+"[^>]*><svg class="ico" aria-hidden="true"><use href="#i-gear"\/><\/svg><\/button>/);
+  assert.match(sidebar, /<button id="open-settings" class="icon-button ghost" type="button" aria-label="设置"[^>]*title="[^"]+"[^>]*><svg class="ico" aria-hidden="true"><use href="#i-gear"\/><\/svg><\/button>/);
   assert.doesNotMatch(sidebar, /⚙/);
   for (const [id, icon, text, after] of [['open-conversations', 'chats', '全部对话', ''], ['open-trash', 'trash', '回收站', ''],
     // 全部任务 also carries the stalled-member badge (stalled.js), hidden until a hint shows.
     ['open-task-overview', 'tasks', '全部任务', '<span id="task-overview-stalled" class="stalled-badge" hidden></span>']]) {
-    assert.match(sidebar, new RegExp(`<button id="${id}" class="conversation-nav" type="button"><svg class="ico" aria-hidden="true"><use href="#i-${icon}"/></svg><span>${text}</span>${after}</button>`));
+    assert.match(sidebar, new RegExp(`<button id="${id}" class="conversation-nav" type="button"><svg class="ico" aria-hidden="true"><use href="#i-${icon}"/></svg><span><span data-i18n="${text}">${text}</span></span>${after}</button>`));
   }
   for (const icon of ['gear', 'chats', 'trash']) assert.match(html, new RegExp(`<symbol id="i-${icon}" viewBox="0 0 24 24">`));
   assert.doesNotMatch(html.slice(html.indexOf('<svg class="sprite"'), html.indexOf('</svg>', html.indexOf('<svg class="sprite"'))), /fill="#|stroke="#|https?:/, 'currentColor only, nothing external');
@@ -1984,35 +2134,37 @@ test('web ui: the chat header actions and the composer controls are icon buttons
   const scripts = readdirSync(pub, { recursive: true }).map(String).filter((f) => f.endsWith('.js')).map((f) => readFileSync(join(pub, f), 'utf8')).join('\n');
   const used = [...html.matchAll(/<use href="#(i-[a-z-]+)"\/>/g)].map((m) => m[1])
     .concat([...scripts.matchAll(/\bicon\('([a-z-]+)'/g), ...scripts.matchAll(/\bicon: '([a-z-]+)'/g)].map((m) => `i-${m[1]}`))
-    .concat([{}, { hiddenAt: 'x' }].flatMap((m) => ui.memberRowActions({ name: 'n', ...m }).map((a: any) => `i-${a.icon}`)))
-    .concat([...uiSource.matchAll(/\['([a-z-]+)', '(?:模型|项目|对话) '\]/g)].map((m) => `i-${m[1]}`));
+    .concat([{}, { hiddenAt: 'x' }].flatMap((m) => ui.memberRowActions({ name: 'n', ...m }, 'native').map((a: any) => `i-${a.icon}`)))
+    .concat([...uiSource.matchAll(/\['([a-z-]+)', (?:t\()?['"](?:模型|项目|对话) ['"]\)?\]/g)].map((m) => `i-${m[1]}`));
   assert.deepEqual([...new Set(used)].sort(), [...symbols].sort());
   const head = html.slice(html.indexOf('<header class="chat-head">'), html.indexOf('</header>'));
   for (const [id, icon] of [['delivery-problems', 'alert'], ['open-workbench', 'tasks']]) {
     assert.match(head, new RegExp(`<button id="${id}" class="icon-button ghost" type="button" hidden[^>]*><svg class="ico" aria-hidden="true"><use href="#i-${icon}"/></svg></button>`));
   }
   assert.doesNotMatch(html + app, /set-category|category-dialog/, 'groups are managed in the sidebar, not inside a cluster');
-  assert.match(head, /id="open-workbench"[^>]*title="任务工作台" aria-label="任务工作台"/);
+  assert.match(head, /id="open-workbench"[^>]*title="任务工作台"[^>]*aria-label="任务工作台"/);
   // The names that change are set together with the tooltip; the count is the badge.
   assert.match(app, /function iconLabel\(button, text\) \{\n  if \(button\.title === text\) return;\n  button\.title = text;\n  button\.setAttribute\('aria-label', text\);\n\}/);
-  assert.match(app, /iconLabel\(\$\('delivery-problems'\), `有问题的投递 \$\{problemCount\}`\);/);
+  assert.match(app, /iconLabel\(\$\('delivery-problems'\), t\('有问题的投递 \{problemCount\}', \{ problemCount: problemCount \}\)\);/);
   assert.match(app, /\$\('delivery-problems'\)\.hidden = !problemCount;\n  \$\('delivery-problems'\)\.dataset\.count = /);
   // Deleting a cluster is only in the sidebar's cluster menu.
   assert.doesNotMatch(html, /delete-cluster|删除群聊/);
   assert.doesNotMatch(app, /delete-cluster/);
-  assert.match(app, /\{ key: 'delete', label: '删除' \}/);
+  assert.match(app, /\{ key: 'delete', label: t\('删除'\) \}/);
   assert.match(app, /if \(action === 'delete'\) return deleteCluster\(cluster\);/);
   // The header never scrolls sideways: the tools wrap to a second line instead.
   assert.doesNotMatch(css.slice(css.indexOf('/* ---- chat ---- */'), css.indexOf('.messages {')), /overflow-x/);
-  assert.match(css, /\.chat-head \{ display: flex; flex-wrap: wrap;/);
+  const chatHeadRule = /\.chat-head\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(chatHeadRule, /\bdisplay:\s*flex;/);
+  assert.match(chatHeadRule, /\bflex-wrap:\s*wrap;/);
   // Composer: "+" opens a menu with the two actions; the file input and the old ids are still there; send is an icon.
   const composer = html.slice(html.indexOf('<form id="composer"'), html.indexOf('</form>', html.indexOf('<form id="composer"')));
   assert.match(composer, /<button id="composer-add" class="icon-button" type="button"[^>]*aria-haspopup="menu" aria-expanded="false" aria-controls="composer-menu">/);
-  assert.match(composer, /<div id="composer-menu" class="composer-menu" role="menu"[^>]*hidden>\s*<button id="composer-tasks" type="button" role="menuitem"[^>]*>.*关联任务.*<span id="composer-task-count" class="menu-count"><\/span><\/button>\s*<button id="composer-attach" type="button" role="menuitem" title="添加附件（每个文件不超过 20 MB，一条消息最多 10 个）">.*添加附件.*<\/button>\s*<\/div>/);
+  assert.match(composer, /<div id="composer-menu" class="composer-menu" role="menu"[^>]*hidden>\s*<button id="composer-tasks" type="button" role="menuitem"[^>]*>.*关联任务.*<span id="composer-task-count" class="menu-count"><\/span><\/button>\s*<button id="composer-attach" type="button" role="menuitem" title="添加附件（每个文件不超过 20 MB，一条消息最多 10 个）"[^>]*>.*添加附件.*<\/button>\s*<\/div>/);
   assert.ok(composer.indexOf('id="composer-add"') < composer.indexOf('id="composer-input"'), '"+" comes before the input');
   assert.match(composer, /<input id="composer-file" type="file" multiple hidden>/);
   assert.doesNotMatch(composer, /📎|>发送</);
-  assert.equal(html.match(/<button class="primary icon-button" type="submit" title="发送" aria-label="发送"><svg class="ico" aria-hidden="true"><use href="#i-send"\/><\/svg><\/button>/g)?.length, 2, 'group chat and member page');
+  assert.equal(html.match(/<button class="primary icon-button" type="submit" title="发送"[^>]*aria-label="发送"[^>]*><svg class="ico" aria-hidden="true"><use href="#i-send"\/><\/svg><\/button>/g)?.length, 2, 'group chat and member page');
   assert.match(app, /attachMenu\(\$\('composer-add'\), \$\('composer-menu'\)\);\n\$\('composer-attach'\)\.addEventListener\('click', \(\) => \$\('composer-file'\)\.click\(\)\);/);
   assert.match(app, /\$\('composer-add'\)\.dataset\.count = count \|\| '';/);
   assert.match(css, /\.icon-button\[data-count\]:not\(\[data-count=""\]\)::after \{\n  content: attr\(data-count\); position: absolute;/, 'the badge overlaps, so it moves nothing');
@@ -2109,7 +2261,7 @@ test('web ui: the limits live in a settings dialog opened from the sidebar; the 
   const dialog = html.slice(html.indexOf('<dialog id="settings-dialog"'), html.indexOf('</dialog>', html.indexOf('<dialog id="settings-dialog"')));
   for (const id of ['limits', 'hop-form', 'chain-form', 'settings-pause', 'settings-close']) assert.ok(dialog.includes(`id="${id}"`), id);
   const app = readFileSync(join(REPO_ROOT, 'src', 'web', 'public', 'app.js'), 'utf8');
-  assert.match(app, /settingsDialog\.addEventListener\('close', \(\) => \$\('open-settings'\)\.focus\(\)\);/);
+  assert.match(app, /settingsDialog\.addEventListener\('close', \(\) => \{[\s\S]*?disposeInstallPanel\(\);[\s\S]*?\$\('open-settings'\)\.focus\(\);/);
 });
 
 test('web ui: the plugins section lists each plugin with its switch, and a refused switch flips back', async () => {
@@ -2118,7 +2270,7 @@ test('web ui: the plugins section lists each plugin with its switch, and a refus
   const dialog = html.slice(html.indexOf('<dialog id="settings-dialog"'), html.indexOf('</dialog>', html.indexOf('<dialog id="settings-dialog"')));
   assert.ok(dialog.includes('id="plugin-list"'));
   assert.match(html, /重启 Hub 后生效/);
-  assert.match(readFileSync(join(pub, 'app.js'), 'utf8'), /createPluginSettings\(api, \$\('plugin-list'\)\)/);
+  assert.match(readFileSync(join(pub, 'app.js'), 'utf8'), /createPluginSettings\(api, \$\('plugin-list'\), pluginConfig\.openPlugin\)/);
   assert.doesNotMatch(readFileSync(join(pub, 'plugins.js'), 'utf8'), /\balert\(/);
 
   type El = { tag: string; attrs: Record<string, string>; kids: (El | string)[]; on: Record<string, (event?: any) => void>; focused?: boolean;
@@ -2156,7 +2308,9 @@ test('web ui: the plugins section lists each plugin with its switch, and a refus
     assert.match(text(externalRow), /外部进程错误：plugin process exited/);
     assert.match(text(externalRow), /第三方/);
     assert.match(text(externalRow), /已授权：messages.read；限定 1 个群。独立进程不是安全沙箱。/);
-    assert.doesNotMatch(text(externalRow), /发言设置/);
+    assert.doesNotMatch(text(externalRow), /发言设置|发言检查/);
+    const gate = { ...external, permissions: ['messages.read', 'messages.gate'] };
+    assert.match(text(pluginRow(gate, [gate], false, () => {})), /发言检查（messages\.gate）：可以在群员发言前拒绝这条发言（不能修改内容）/);
     const writer = { ...external, permissions: ['messages.send', 'messages.mention'], writeClusterIds: ['one', 'two'],
       writeSettings: { mentionEnabled: true, perMinute: null, perHour: 200 } };
     const writeRow = pluginRow(writer, [writer], false, () => {});
@@ -2172,7 +2326,7 @@ test('web ui: the plugins section lists each plugin with its switch, and a refus
     await settings.load();
     assert.deepEqual(calls[0], ['GET', '/api/plugins']);
     assert.equal(groups.length, 2, 'official and third-party groups');
-    assert.match(text(groups[1]), /还没有第三方插件。登记方法见文档 docs\/external-plugins\.md。/);
+    assert.match(text(groups[1]), /还没有第三方插件。可以在下方安装。/);
     assert.match(text(rows[0]), /任务 ?1\.0\.0一句话/);
     assert.match(text(rows[1]), /依赖：任务/, 'a dependency shows by its name');
     assert.match(text(rows[2]), /由环境变量禁用/);
@@ -2234,15 +2388,17 @@ test('web ui: the two-pane create dialog posts exactly what the one-column dialo
     sessions: [{ sessionId: 'c1', name: ' lead ', avatar: '🦊' }, { sessionId: 'c2', name: '', avatar: '' }] };
   const codex = { ...base, mode: 'native', project: 'D:\\w', sessions: [{ sessionId: 'x1', name: 'gpt', avatar: 'preset:robot' }],
     create: true, name: ' extra ', model: 'gpt-a', effort: 'high' };
+  const kimi = { ...base, harness: 'kimi', project: 'D:\\k', create: true, name: 'rev' };
   const members = [
-    { harness: 'claude', mode: 'native', sessionId: 'c1', name: 'lead', avatar: '🦊' },
-    { harness: 'claude', mode: 'native', sessionId: 'c2' },
-    { harness: 'codex', mode: 'native', sessionId: 'x1', name: 'gpt', avatar: 'preset:robot' },
+    { harness: 'claude', sessionId: 'c1', name: 'lead', avatar: '🦊' },
+    { harness: 'claude', sessionId: 'c2' },
+    { harness: 'codex', sessionId: 'x1', name: 'gpt', avatar: 'preset:robot' },
     { harness: 'codex', mode: 'native', projectPath: 'D:\\w', name: 'extra', model: 'gpt-a', effort: 'high' },
+    { harness: 'kimi', mode: 'native', projectPath: 'D:\\k', name: 'rev' },
   ];
-  assert.deepEqual(ui.createRequest('c 1', 'ignored', [claude, codex]),
+  assert.deepEqual(ui.createRequest('c 1', 'ignored', [claude, codex, kimi]),
     { request: { path: '/api/clusters/c%201/members', body: { members } } });
-  assert.deepEqual(ui.createRequest(null, 'team', [claude, codex]), { request: { path: '/api/clusters', body: { name: 'team', members } } });
+  assert.deepEqual(ui.createRequest(null, 'team', [claude, codex, kimi]), { request: { path: '/api/clusters', body: { name: 'team', members } } });
   // The first incomplete app is named, so the page can show it; nothing ticked is its own error.
   const empty = { ...claude, sessions: [] };
   assert.deepEqual(ui.createRequest('c', '', [codex, empty, { ...empty, harness: 'cursor' }]),
@@ -2255,9 +2411,9 @@ test('web ui: names edited on a conversation that is not in focus are sent as ty
   const claude = { ...base, harness: 'claude', nativeCreate: false, mode: 'native', project: 'D:\\w',
     sessions: [{ sessionId: 'c2', name: ' 审查员 ', avatar: '' }, { sessionId: 'c1', name: 'claude-opus', avatar: '🦊' }, { sessionId: 'c3', name: '', avatar: '' }] };
   assert.deepEqual(ui.createRequest('c', '', [claude]).request.body.members, [
-    { harness: 'claude', mode: 'native', sessionId: 'c2', name: '审查员' },
-    { harness: 'claude', mode: 'native', sessionId: 'c1', name: 'claude-opus', avatar: '🦊' },
-    { harness: 'claude', mode: 'native', sessionId: 'c3' },
+    { harness: 'claude', sessionId: 'c2', name: '审查员' },
+    { harness: 'claude', sessionId: 'c1', name: 'claude-opus', avatar: '🦊' },
+    { harness: 'claude', sessionId: 'c3' },
   ]);
 });
 
@@ -2283,12 +2439,13 @@ test('web ui: an app row says whether it is ticked, what it adds and what is mis
   assert.deepEqual(row({ checked: false, mode: 'native' }), { text: '未勾选', problem: null });
   assert.deepEqual(row({ checked: false, mode: 'native', nativeCreate: false, sessions: two }), { text: '未勾选 · 已选 2 个对话', problem: null },
     'unticking keeps what was picked');
-  assert.deepEqual(row({ sessions: two }), { text: '选了 2 个对话 · 添加 2 个成员', problem: null });
-  assert.deepEqual(row({ sessions: two, create: true, project: 'C:\\p' }), { text: '选了 2 个对话，新建 1 个对话 · 添加 3 个成员', problem: null });
+  assert.deepEqual(row({ mode: 'native', sessions: two }), { text: '选了 2 个对话 · 添加 2 个成员', problem: null });
+  assert.deepEqual(row({ mode: 'native', sessions: two, create: true, project: 'C:\\p' }), { text: '选了 2 个对话，新建 1 个对话 · 添加 3 个成员', problem: null });
   assert.deepEqual(row({ create: true, project: 'C:\\p' }), { text: '新建 1 个对话 · 添加 1 个成员', problem: null });
-  assert.deepEqual(row({ create: true }), { text: '', problem: '请选择新建对话的项目目录' });
-  assert.deepEqual(row({ nativeCreate: false }), { text: '', problem: '还没选对话' });
-  assert.deepEqual(row({ sessions: two, loadFailed: true }), { text: '', problem: '列表加载失败' });
+  assert.deepEqual(row({ create: true }), { text: '已勾选', problem: '请选择新建对话的项目目录' }, 'a new conversation without a project');
+  assert.deepEqual(row({ mode: 'native' }), { text: '已勾选', problem: '还没选对话' }, 'nothing picked: no default conversation');
+  assert.deepEqual(row({ mode: 'native', nativeCreate: false }), { text: '已勾选', problem: '还没选对话' });
+  assert.deepEqual(row({ mode: 'native', sessions: two, loadFailed: true }), { text: '已勾选', problem: '列表加载失败' });
   assert.deepEqual(row({ checked: false, mode: 'native', nativeCreate: false, loadFailed: true }), { text: '未勾选', problem: null },
     'an unticked app is not submitted, so it has nothing to fix');
 });
@@ -2443,15 +2600,15 @@ test('web ui: the member list does not repeat the app icon the avatar already sh
   const pub = join(REPO_ROOT, 'src', 'web', 'public');
   const app = readFileSync(join(pub, 'app.js'), 'utf8');
   const html = readFileSync(join(pub, 'index.html'), 'utf8');
-  // The badge drops its icon (keeping the app name) exactly when the avatar is the app's icon, which then
-  // carries the hover text.
+  // The badge drops its icon (keeping the words) exactly when the avatar is the app's icon, which then carries the
+  // hover text.
   assert.match(app, /avatarKind\(m\) === 'app' \? null : appIcon\(\{ icon: app\.icon, label: app\.name \}\)\);/);
   assert.match(app, /'aria-label': appText\(m\), title: appText\(m\)/);
   assert.match(app, /if \(avatarKind\(m\) === 'app'\) el\.title = `\$\{m\.name\} · \$\{appText\(m\)\} · \$\{presenceOf\(m\)\.label\}`;/);
   // 恢复默认头像 (member page and list) shows the default avatar; the add dialog's 清除头像 the app's icon.
-  assert.match(html, /data-role="reset-avatar"><span data-role="default-avatar"><\/span>恢复默认头像/);
+  assert.match(html, /data-role="reset-avatar"><span data-role="default-avatar"><\/span><span data-i18n="恢复默认头像">恢复默认头像<\/span>/);
   assert.match(app, /part\('default-avatar'\)\.replaceChildren\(avatarEl\(\{ \.\.\.m, avatar: null \}, 'xs'\)\)/);
-  assert.match(app, /harnessApp\(harness\)\.icon \? avatarEl\(\{ name: '', harness, avatar: null \}, 'xs'\) : null, '清除头像'/);
+  assert.match(app, /harnessApp\(harness\)\.icon \? avatarEl\(\{ name: '', harness, avatar: null \}, 'xs'\) : null, t\('清除头像'\)/);
   // The workbench's member chips use the same avatar; the tone initials only when there is no picture or emoji.
   const wb = readFileSync(join(pub, 'workbench.js'), 'utf8');
   assert.match(wb, /member && avatarKind\(member\) !== 'initial' \? avatarEl\(member, 'xs'\)/);
@@ -2639,7 +2796,6 @@ test('web ui usage: usageView shows the member\'s harness quota (or 暂不支持
     assert.match(claude, /额度\|暂不支持/);
     assert.match(claude, /经 orrery\|暂无记录/);
     assert.equal(find(ui.usageView({ id: 'm2', harness: 'claude', mode: 'native', name: 'c' }, usage, { onRefresh: () => {}, now }), (e) => e.tag === 'button'), null, 'no refresh without a source');
-    assert.match(text(ui.usageView({ id: 'm3', harness: 'mock', name: 'i' }, usage, { now })), /经 orrery\|暂无记录/);
     assert.equal(text(ui.usageView({ id: 'm1', harness: 'codex', mode: 'native', name: 'x' }, null)), '', 'nothing before the report arrives');
 
     // The member panel: a short token line per member row (the quota is on each row: memberDetails).
@@ -2655,7 +2811,7 @@ test('web ui member list: model, project, conversation and the app\'s quota on e
   const now = Date.parse('2026-11-15T12:00:00Z');
   const fmt = (iso: string) => iso.slice(11, 16);
   const at = (minAgo: number) => new Date(now - minAgo * 60_000).toISOString();
-  const member = (o: Record<string, unknown> = {}) => ({ id: 'm1', name: 'a', harness: 'claude', mode: 'native', model: null, effort: null,
+  const member = (o: Record<string, unknown> = {}) => ({ id: 'm1', name: 'a', harness: 'claude', model: null, effort: null,
     cwd: 'D:\\work\\shop', workerSessionId: 's1', ...o });
   const snapshot = (pct: number, observed = at(2)) => ({ windows: [{ id: 'h5', label: '5 小时', usedPercent: pct, resetsAt: at(-75) },
     { id: 'wk', label: '每周', usedPercent: 41, resetsAt: at(-3 * 1440) }], observedAt: observed, source: 'x' });
@@ -2711,7 +2867,7 @@ test('web ui member list: a row\'s details in tiers: model; project and conversa
     const fmt = (iso: string) => iso.slice(11, 16);
     const at = (minAgo: number) => new Date(now - minAgo * 60_000).toISOString();
     const quota = (pct: number, observed = at(2)) => ({ harness: 'claude', supported: true, snapshot: { windows: [{ id: 'h5', label: '5 小时', usedPercent: pct, resetsAt: at(-75) }], observedAt: observed, source: 'x' } });
-    const member = { id: 'm1', name: 'a', harness: 'claude', mode: 'native', model: null, effort: null, cwd: 'D:\\work\\shop', workerSessionId: 's1' };
+    const member = { id: 'm1', name: 'a', harness: 'claude', model: null, effort: null, cwd: 'D:\\work\\shop', workerSessionId: 's1' };
     const row = { session: { sessionId: 's1', title: '修复结账页', model: 'claude-opus', observedAt: at(1) } };
     const d = (q: unknown, loaded = true) => ui.memberDetails(member, row, q, { usageLoaded: loaded, now, fmt });
     const view = (q: unknown, extra = {}) => ui.memberDetailsView(d(q), extra);
@@ -2773,16 +2929,15 @@ test('web page: the member list builds each row with its own long-conversation w
 
 test('web ui member list: each row action is an icon with a tooltip and a name saying whose row; the set per member is unchanged', () => {
   const names = (m: Record<string, unknown>) => ui.memberRowActions({ name: 'Ann', ...m }).map((a: any) => `${a.key}:${a.icon}:${a.label}:${a.name}${a.danger ? ':danger' : ''}`);
-  // Native: all four; the conversation can be changed.
+  // All four; the conversation can be changed.
   assert.deepEqual(names({}), ['edit:pencil:改名/头像:改名/头像：Ann', 'rebind:swap:换对话:换对话：Ann',
     'hide:eye-off:设为隐身:设为隐身：Ann', 'remove:user-minus:移出集群:移出集群：Ann:danger']);
   // Hidden: the same actions, the hide button now shows it back with its own icon and words.
   assert.equal(names({ hiddenAt: '2026-11-15T00:00:00Z' })[2], 'hide:eye:取消隐身:取消隐身：Ann');
   // Only removal is marked dangerous (red, its own icon, set apart; it still asks first).
   assert.deepEqual(ui.memberRowActions({ name: 'x' }).filter((a: any) => a.danger).map((a: any) => a.key), ['remove']);
-  // The app icon's words are just the app name.
+  // The app icon's words: the app.
   assert.equal(ui.memberAppText('Claude'), 'Claude');
-  assert.equal(ui.memberAppText('mock'), 'mock');
   // Every icon the list draws is in the page's sprite.
   const html = readFileSync(join(REPO_ROOT, 'src', 'web', 'public', 'index.html'), 'utf8');
   for (const id of ['pencil', 'swap', 'eye', 'eye-off', 'user-minus', 'chip', 'project', 'comment']) assert.match(html, new RegExp(`<symbol id="i-${id}" viewBox="0 0 24 24">`), id);
@@ -2795,7 +2950,7 @@ test('web ui member list: each row action is an icon with a tooltip and a name s
 test('web ui member list: after a member moves to another conversation, info read for the old one is never shown as current', () => {
   const now = Date.parse('2026-11-15T12:00:00Z');
   const opts = { usageLoaded: true, now, fmt: (iso: string) => iso.slice(11, 16) };
-  const onA = { id: 'm1', name: 'a', harness: 'claude', mode: 'native', model: 'model-a', effort: null, cwd: 'D:\\work\\alpha', workerSessionId: 'sA' };
+  const onA = { id: 'm1', name: 'a', harness: 'claude', model: 'model-a', effort: null, cwd: 'D:\\work\\alpha', workerSessionId: 'sA' };
   const onB = { ...onA, model: 'model-b', cwd: 'D:\\work\\beta', workerSessionId: 'sB' };   // the member event after the move
   const reportA = { memberId: 'm1', session: { sessionId: 'sA', title: 'Old conversation', model: 'model-a', observedAt: new Date(now).toISOString() } };
   const reportB = { memberId: 'm1', session: { sessionId: 'sB', title: 'New conversation', model: 'model-b', observedAt: new Date(now).toISOString() } };
@@ -2818,7 +2973,7 @@ test('web page: a rebind refetches the usage report and only the newest report r
   assert.match(app, /if \(p\.rebind\) \{[^}]*S\.rebinds\.set\([^\n]*\n[^\n]*\n\s*if \(p\.member\.clusterId === S\.sel\.cluster\) loadUsageSoon\(0\);/);
   assert.match(app, /const mine = \+\+usageRequest;[\s\S]{0,200}if \(S\.sel\.cluster !== cid \|\| mine !== usageRequest\) return;/);
   // The member list and the member page both go through memberDetails, which applies currentSession.
-  assert.equal((app.match(/memberDetails\(m,/g) ?? []).length, 2);
+  assert.equal((app.match(/memberDetails\(m, /g) ?? []).length, 2);
 });
 
 test('web ui: after a Hub restart the page reloads itself only when nothing would be lost', () => {
@@ -2860,7 +3015,7 @@ test('web reload: a limit edit kept in the closed settings form counts as unsave
 
   // The caller: unsaved() asks this of every limit and notification form, from the inputs themselves.
   const app = readFileSync(join(REPO_ROOT, 'src', 'web', 'public', 'app.js'), 'utf8');
-  const fn = app.slice(app.indexOf('function unsaved()'), app.indexOf('\n}\n', app.indexOf('function unsaved()')));
+  const fn = app.slice(app.indexOf('function unsaved('), app.indexOf('\n}\n', app.indexOf('function unsaved(')));
   assert.match(fn, /LIMIT_FORMS\.some\(\(f\) => limitFormEdited\(f\.setting, S\.settings, \{ unlimited: \$\(`\$\{f\.id\}-unlimited`\)\.checked, value: \$\(`\$\{f\.id\}-value`\)\.value \}\)\)/);
   assert.match(fn, /NOTIFY_FORMS\.some\(\(f\) => notifyFormEdited\(f\.setting, S\.settings, \$\(\`\$\{f\.id\}-value\`\)\.value\)\)/);
 });
@@ -3038,7 +3193,7 @@ test('member health shows the connection basis, observation time and newest deli
 
 test('web ui: the handover package text carries the records and says 未知 for what the Hub does not keep', () => {
   const pkg = {
-    member: { id: 'm1', name: '小A', harness: 'codex', mode: 'native', model: 'gpt-5', cwd: 'C:/work/app', sessionId: 's-1' },
+    member: { id: 'm1', name: '小A', harness: 'codex', model: 'gpt-5', cwd: 'C:/work/app', sessionId: 's-1' },
     cluster: { id: 'c', name: 'demo' },
     generatedAt: '2026-11-09T12:00:00Z',
     requests: [{ at: '2026-11-09T11:00:00Z', body: '月底前完成认证重构' }],
@@ -3087,7 +3242,7 @@ test('web ui: the handover package text carries the records and says 未知 for 
 
   // A member with no records: each section says 未知 with why, never a filled-in value.
   const empty = ui.handoverText({
-    member: { id: 'm2', name: 'B', harness: 'mock', mode: 'native', model: null, cwd: '', sessionId: '' },
+    member: { id: 'm2', name: 'B', harness: 'mock', model: null, cwd: '', sessionId: '' },
     cluster: { id: 'c', name: 'empty' }, generatedAt: '2026-11-09T12:00:00Z', tasksOmitted: 0,
     requests: [], tasks: [], deliveries: [],
   });
@@ -3150,11 +3305,11 @@ test('web ui: hidden members are marked, counted apart from online, listed with 
   const cm = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/conversation-matrix.js')).href);
   const stalled = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/stalled.js')).href);
   assert.equal(ui.HIDDEN_MARK, '隐身中', 'words, not colour alone');
-  assert.match(readFileSync(join(REPO_ROOT, 'src/web/public/ui.js'), 'utf8'), /export const hiddenMark = \(text = HIDDEN_MARK, cls = 'hidden-mark'\) => h\('span', \{ class: cls \}, icon\('eye-off', 'ico-xs'\), text\);/, 'and an icon (the crossed-out eye) wherever it is a chip');
+  assert.match(readFileSync(join(REPO_ROOT, 'src/web/public/ui.js'), 'utf8'), /export const hiddenMark = \(text = t\(HIDDEN_MARK\), cls = 'hidden-mark'\) => h\('span', \{ class: cls \}, icon\('eye-off', 'ico-xs'\), text\);/, 'and an icon (the crossed-out eye) wherever it is a chip');
   const members = [
-    { id: 'a', clusterId: 'c', name: 'Alice', harness: 'mock', mode: 'native', workerSessionId: 'sa', removedAt: null, hiddenAt: null },
-    { id: 'h', clusterId: 'c', name: 'Hidey', harness: 'mock', mode: 'native', workerSessionId: 'sh', removedAt: null, hiddenAt: '2026-11-15T00:00:00.000Z' },
-    { id: 'o', clusterId: 'c', name: 'Off', harness: 'mock', mode: 'native', workerSessionId: 'so', removedAt: null, hiddenAt: null },
+    { id: 'a', clusterId: 'c', name: 'Alice', harness: 'mock', workerSessionId: 'sa', removedAt: null, hiddenAt: null },
+    { id: 'h', clusterId: 'c', name: 'Hidey', harness: 'mock', workerSessionId: 'sh', removedAt: null, hiddenAt: '2026-11-15T00:00:00.000Z' },
+    { id: 'o', clusterId: 'c', name: 'Off', harness: 'mock', workerSessionId: 'so', removedAt: null, hiddenAt: null },
   ];
   const statusOf = (m: { id: string }) => (m.id === 'o' ? 'offline' : 'idle');
   assert.deepEqual(ui.memberCounts(members, statusOf), { total: 3, online: 1, hidden: 1 }, 'a hidden member is not online');
@@ -3225,7 +3380,7 @@ test('web ui: hidden members are marked, counted apart from online, listed with 
   const app = readFileSync(join(REPO_ROOT, 'src', 'web', 'public', 'app.js'), 'utf8');
   assert.ok(app.includes("tasks = await allPages((cursor) => api('GET', heldTasksPath(m.clusterId, memberId, cursor)));"), 'every page of the held tasks');
   assert.ok(app.includes("api('POST', `/api/members/${encodeURIComponent(memberId)}/hidden`, { hidden: hide })"), 'the user route');
-  assert.ok(app.includes("confirmDialog({ title: hide ? '设为隐身' : '取消隐身', message: text"), 'confirmed first');
+  assert.ok(app.includes("confirmDialog({ title: hide ? t('设为隐身') : t('取消隐身'), message: text"), 'confirmed first');
 });
 
 test('web ui: old acknowledgement receipts stay out of the chat; other messages are shown', () => {
@@ -3249,9 +3404,10 @@ test('system kinds: every kind has one category, unknown and missing kinds are �
     delivery_failed: ['warning', 'problem'], hidden_work: ['warning', 'problem'], quota_exhausted: ['warning', 'problem'],
     ship_failed: ['warning', 'problem'], queue_warning: ['warning', 'attention'], stalled: ['warning', 'attention'],
     quota_low: ['warning', 'attention'], task_rejected: ['warning', 'attention'], task_attention: ['warning', 'attention'],
-    review_downgraded: ['warning', 'attention'], plugin_rate_limit: ['warning', 'attention'], task: ['task', null], coordinator: ['coordinator', null], idle: ['coordinator', null],
-    quota_recovered: ['coordinator', null], rebind: ['member', null], member_shown: ['member', null], settings: ['member', null],
-    receipt: ['other', null],
+    review_downgraded: ['warning', 'attention'], plugin_rate_limit: ['warning', 'attention'],
+    plugin_refused: ['warning', 'attention'], plugin_check_failed: ['warning', 'problem'], plugin_restarted: ['warning', 'problem'], task: ['task', null], coordinator: ['coordinator', null], idle: ['coordinator', null],
+    quota_recovered: ['coordinator', null], rebind: ['member', null], member_renamed: ['member', null], member_shown: ['member', null], settings: ['member', null],
+    plugin_tool_call: ['member', null], mode_removed: ['member', null], receipt: ['other', null],
   };
   assert.deepEqual(Object.fromEntries(Object.entries(kinds.SYSTEM_KINDS).map(([kind, e]: [string, any]) => [kind, [e.category, e.level]])), expected);
   for (const missing of [undefined, null, '', 'not_a_kind', 'toString', '__proto__']) {
@@ -3368,7 +3524,7 @@ test('web ui: the chat filter, its stored form and the warning mark', () => {
   assert.equal(ui.systemMark(system()), null);
   assert.equal(ui.systemMark({ ...member, systemKind: 'ship_failed' }), null, 'only system messages are marked');
   const app = readFileSync(join(REPO_ROOT, 'src', 'web', 'public', 'app.js'), 'utf8');
-  assert.match(app, /'aria-label': '警告'/, 'the icon has an accessible name');
+  assert.match(app, /'aria-label': t\('警告'\)/, 'the icon has an accessible name');
   assert.match(app, /notice-\$\{mark\.level\}/, 'the article carries the level class');
   assert.match(app, /localStorage\.setItem\(CHAT_FILTER_KEY/, 'the filter is kept per browser');
 });

@@ -1,6 +1,6 @@
 {
   "name": "orrery",
-  "version": "0.10.0-beta.1",
+  "version": "0.10.0-beta.2",
   "private": true,
   "type": "module",
   "engines": {
@@ -13,6 +13,7 @@
     "open": "node src/launcher.ts",
     "shortcut": "node src/launcher.ts --create-shortcut",
     "backup": "node src/backup.ts",
+    "plugin:inspect": "node scripts/plugin-inspect.ts",
     "ship": "node scripts/ship.ts",
     "check:health": "knip --no-progress --dependencies --files --cycles",
     "bench:collaboration": "node scripts/bench-collaboration.ts",
@@ -20,12 +21,15 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
+    "smol-toml": "1.9.1",
+    "tar": "7.5.23",
+    "yauzl": "3.4.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
+    "@types/yauzl": "3.4.0",
     "knip": "6.45.1",
     "typescript": "7.0.2"
-  },
-  "license": "MIT"
+  }
 }

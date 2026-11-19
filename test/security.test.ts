@@ -1,4 +1,3 @@
-import { tempDir } from './helpers.ts';
 // Review fix: websites in the user's browser must not drive the local API (cross-site requests, DNS rebinding).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,7 +22,7 @@ test('wrong Host, foreign Origin and non-JSON writes are rejected; same-origin J
   try {
     const port = new URL(app.url).port;
     const json = { 'content-type': 'application/json' };
-    const create = JSON.stringify({ name: 'x', members: [{ projectPath: tempDir(), harness: 'mock' }] });
+    const create = JSON.stringify({ name: 'x', members: [{ harness: 'mock', mode: 'native', projectPath: '/work' }] });
 
     // DNS rebinding: the browser sends the attacker's host name.
     assert.equal((await raw(app.url, 'GET', '/api/state', { host: `evil.example:${port}` })).status, 403);

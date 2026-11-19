@@ -73,7 +73,7 @@ app.whenReady().then(async () => {
   const held = new Map();
   const realLoad = BrowserWindow.prototype.loadURL;
   BrowserWindow.prototype.loadURL = function loadURL(url, ...rest) {
-    const page = /\/ui\/(strip|settings)\.html$/.exec(String(url))?.[1];
+    const page = /\/ui\/(strip|settings)\.html$/.exec(new URL(url).pathname)?.[1];
     if (!page || held.has(page)) return realLoad.call(this, url, ...rest);
     held.set(page, () => realLoad.call(this, url, ...rest));
     return Promise.resolve();
@@ -104,7 +104,7 @@ app.whenReady().then(async () => {
       openIt();
       check(isOpen() && wc.getURL() === '', `${page}: opened while its page is not loaded yet (its state went nowhere)`);
       held.get(page)();
-      await until(() => wc.getURL().endsWith(`${page}.html`) && !wc.isLoading(), 5000);
+      await until(() => wc.getURL().endsWith(`${page}.html?uiLang=zh`) && !wc.isLoading(), 5000);
       await sleep(300);
       const n = await wc.executeJavaScript(count);
       check(n === APPS.length, `${page}: once loaded, its state is sent again and drawn`, `${n} of ${APPS.length}`);
@@ -230,8 +230,8 @@ async function settingsView({ h, ffi, center, down, up, settle, open, openPanel,
   const clickGear = async () => { down(h.tabs, gear); moveFocus('shell'); up(h.tabs, gear); await settle(); if (shown()) moveFocus('settings'); };
   await until(() => !h.settingsPage.isLoading());
   const probe = await js('({ require: typeof require, process: typeof process, api: Object.keys(window.orrery ?? {}).join() })');
-  check(probe.require === 'undefined' && probe.process === 'undefined' && probe.api === 'onState,detect,use,pick,clear,close',
-    'its page: sandboxed, no node; its preload exposes onState, detect, use, pick, clear and close only', JSON.stringify(probe));
+  check(probe.require === 'undefined' && probe.process === 'undefined' && probe.api === 'onState,detect,use,pick,clear,language,close',
+    'its page: sandboxed, no node; its preload exposes onState, detect, use, pick, clear, language and close only', JSON.stringify(probe));
   check(await openPanel(), 'the + panel open first');
   await clickGear();
   check(shown() && !open() && await h.tabs.executeJavaScript("document.getElementById('settings').getAttribute('aria-expanded')") === 'true',

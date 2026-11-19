@@ -154,7 +154,7 @@ test('chain 5: a malformed saved value or start-up value stops the Hub, naming t
   await assert.rejects(startTestHub({ dir }), /saved setting max_turns_per_chain is invalid/);
   const mem = new Store(':memory:');
   try {
-    assert.throws(() => new Hub({ store: mem, nativeAdapters: {},  limits: { maxTurnsPerChain: 2 ** 53 } }), /ORRERY_MAX_TURNS_PER_CHAIN/);
+    assert.throws(() => new Hub({ store: mem, nativeAdapters: {}, limits: { maxTurnsPerChain: 2 ** 53 } }), /ORRERY_MAX_TURNS_PER_CHAIN/);
   } finally {
     mem.close();
   }
@@ -165,7 +165,7 @@ test('chain 6: a native Cursor member in a ping-pong chain is stopped by the per
   const app = await startTestHub({ limits: { maxTurnsPerChain: 3 }, mock: { script: pingBack }, nativeAdapters: { cursor: fakeCursorAdapter([S]) } });
   const cursor = fakeCursor(app, S, 'A');
   try {
-    const { cluster } = await app.api('POST', '/api/clusters', { name: 'c', members: [{ harness: 'cursor', mode: 'native', sessionId: S, name: 'C' }, { projectPath: tempDir(), harness: 'mock', name: 'A' }] });
+    const { cluster } = await app.api('POST', '/api/clusters', { name: 'c', members: [{ harness: 'cursor', mode: 'native', sessionId: S, name: 'C' }, { harness: 'mock', mode: 'native', name: 'A', projectPath: '/work' }] });
     await waitFor(() => app.hub.bridge.isOnline('cursor', S), 'the Cursor member parked');
     const start = await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@C ping t1' });
     await waitFor(() => guards(app.events, 'max_turns_per_chain').length > 0, 'chain guard', 10_000);

@@ -70,9 +70,9 @@ export function eligible(store: Store, clusterId: string, memberId: string, role
   return roleIds.every((role) => roles.includes(role));
 }
 
-type DependencyTask = Pick<Task, 'id' | 'clusterId' | 'dependencyIds'>;
+type DependencyTask = Pick<Task, 'id' | 'clusterId' | 'dependencyIds'> & { batchId?: string | null };
 type Versions = Record<string, string>;
-type EvaluationEntry = { task?: Task | null; versions?: Versions | null; completionValid?: boolean };
+type EvaluationEntry = { task?: Task | null; latestSubmission?: Submission | null; versions?: Versions | null; completionValid?: boolean };
 
 /** Share work within one cluster read. Discard the evaluator before any task or submission changes. */
 export function taskDependencyEvaluation(store: Store, clusterId: string) {
@@ -94,6 +94,21 @@ export function taskDependencyEvaluation(store: Store, clusterId: string) {
       const dependency = entryFor(id);
       if (dependency.task === undefined) dependency.task = collaborationTask(store, clusterId, id);
       const upstream = dependency.task;
+      if (upstream && task.batchId && upstream.batchId === task.batchId) {
+        // Inside one review batch an upstream is ready once it has a current submission, not a merge; its version is
+        // that submission, so a resubmission voids what was built on the old one (docs/collaboration.md「验收批次」).
+        if (!upstream.latestSubmissionId || !['review', 'completed', 'merged'].includes(upstream.status)) return null;
+        const current = versions(upstream);
+        if (current === null) return null;
+        if (dependency.latestSubmission === undefined) {
+          dependency.latestSubmission = collaborationRecord<Submission>(store, upstream.id, 'submission', upstream.latestSubmissionId) ?? null;
+        }
+        const submitted = dependency.latestSubmission;
+        if (!submitted || submitted.definitionVersion !== upstream.definitionVersion
+          || canonical(submitted.dependencyVersions) !== canonical(current)) return null;
+        result[id] = upstream.latestSubmissionId;
+        continue;
+      }
       if (!upstream || (upstream.mergeRequired && upstream.status !== 'merged') || !completionValid(upstream)) return null;
       result[id] = upstream.approvedSubmissionId!;
     }
@@ -161,7 +176,13 @@ export function displayTask(store: Store, task: Task, evaluation = taskDependenc
  */
 export function shipState(store: Store, clusterId: string, taskId: string) {
   const task = collaborationTask(store, clusterId, taskId);
-  if (!task || task.status !== 'completed' || !task.mergeRequired || !completionValid(store, task)) return null;
+  // A task in a review batch is merged only with its batch (batches.ts batchShipState).
+  return task && !task.batchId ? approvedResult(store, task) : null;
+}
+
+/** shipState without the batch rule: the approved result of one task, or null unless it still awaits its merge. */
+export function approvedResult(store: Store, task: Task) {
+  if (task.status !== 'completed' || !task.mergeRequired || !completionValid(store, task)) return null;
   const reviews = collaborationRecords<Review>(store, task.id, 'review');
   const index = reviews.findLastIndex((r) => r.submissionId === task.approvedSubmissionId && r.verdict === 'approve');
   const submission = collaborationRecord<Submission>(store, task.id, 'submission', task.approvedSubmissionId);

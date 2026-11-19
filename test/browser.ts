@@ -1,12 +1,13 @@
 // A headless Chromium browser (Chrome or Edge, already installed) driven over the DevTools protocol with Node built-ins
 // only: child_process to start it, the global WebSocket to talk to it. Used by test/browser-smoke.test.ts.
-// Never shows a window, never touches the user's browser profile (a fresh --user-data-dir from tempDir()).
+// Never shows a window, never touches the user's browser profile. The --user-data-dir is one of a few reused profile
+// slots (test/browser-slots.ts says why a fresh profile per launch is not safe on Windows): every browser launch in
+// this repository goes through launchBrowser.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { removeTestDir } from '../scripts/test-temp.ts';
-import { tempDir } from './helpers.ts';
+import { acquireSlot } from './browser-slots.ts';
 
 /** Overrides the search with one browser program (a Chromium-based browser's executable). */
 export const BROWSER_ENV = 'ORRERY_TEST_BROWSER';
@@ -103,13 +104,18 @@ export interface Page {
   type(elementExpression: string, text: string, what: string): Promise<void>;
   /** A raw DevTools command on this page (for emulation the helpers above do not cover, e.g. a touch screen). */
   send(method: string, params?: object): Promise<any>;
+  /**
+   * The value of an expression in the frame whose URL is exactly `url`, when that frame runs in its own process (a
+   * sandboxed iframe does): null while there is no such frame. For tests that must look inside a plugin UI's frame.
+   */
+  frameEvaluate<T = unknown>(url: string, expression: string): Promise<T | null>;
 }
 
 export interface Browser {
   page: Page;
   /** Console errors and uncaught exceptions the page reported so far, `redact` values replaced. */
   problems(): { console: string[]; exceptions: string[] };
-  /** Closes the browser (gracefully, then the whole process tree) and deletes its profile directory. Never throws. */
+  /** Closes the browser (gracefully, then the whole process tree) and frees its profile slot. Never throws. */
   close(): Promise<void>;
 }
 
@@ -144,6 +150,10 @@ const exited = (child: ChildProcess, timeoutMs: number) => child.exitCode !== nu
   ? Promise.resolve(true)
   : Promise.race([new Promise<boolean>((ok) => child.once('exit', () => ok(true))), sleep(timeoutMs, false, { ref: false })]);
 
+/** Browsers still open when the test process exits: best effort, kill their trees and free their slots. */
+const open = new Set<() => void>();
+process.once('exit', () => { for (const stop of open) stop(); });
+
 export interface LaunchOptions {
   /** Values replaced by <redacted> in everything the page reports. */
   redact?: string[];
@@ -155,13 +165,14 @@ export interface LaunchOptions {
 }
 
 /**
- * Starts `executable` headless with a fresh profile and opens one blank page with console and exception capture. If
- * any start-up step fails or times out, the browser tree is killed and the profile removed before the error is thrown:
+ * Starts `executable` headless on a cleaned profile slot and opens one blank page with console and exception capture.
+ * If any start-up step fails or times out, the browser tree is killed and the slot freed before the error is thrown:
  * the caller has no handle to clean up with yet.
  */
 export async function launchBrowser(executable: string, options: LaunchOptions = {}): Promise<Browser> {
   const { redact = [], connectTimeoutMs = 30_000 } = options;
-  const profile = tempDir();
+  const slot = await acquireSlot();
+  const profile = slot.dir;
   const args = [
     '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
     '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-component-extensions-with-background-pages',
@@ -172,9 +183,17 @@ export async function launchBrowser(executable: string, options: LaunchOptions =
   // shortcut: Chrome's sandbox refuses to run as root (some CI containers); add --no-sandbox only then.
   if (process.platform === 'linux' && process.getuid?.() === 0) args.push('--no-sandbox');
   // Its own process group off Windows, so the whole tree can be killed; on Windows taskkill /T walks the tree.
-  const child = spawn(executable, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
+  let child: ChildProcess;
+  try {
+    child = spawn(executable, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
+  } catch (error) {
+    slot.release();
+    throw error;
+  }
   child.stderr!.on('data', () => {});   // keep draining after the address line
   child.on('error', () => {});   // a failed spawn: devtoolsUrl reports it (an unhandled 'error' would end the test process)
+  const onExit = () => { killTree(child); slot.release(); };
+  open.add(onExit);
   const consoleErrors: string[] = [];
   const exceptions: string[] = [];
   const clean = (s: string) => redact.reduce((text, secret) => (secret ? text.split(secret).join('<redacted>') : text), s);
@@ -184,13 +203,13 @@ export async function launchBrowser(executable: string, options: LaunchOptions =
     try {
       // Without a DevTools connection there is no graceful close to wait for: kill the tree at once.
       if (cdp) { await cdp.send('Browser.close', {}, undefined, 5_000).catch(() => {}); cdp.close(); }
-      if (!cdp || !(await exited(child, 5_000))) { killTree(child); await exited(child, 5_000); }
-    } catch { /* fall through to the profile removal */ }
-    // The browser's helper processes can hold profile files for a moment after the main process exits.
-    for (let attempt = 0; attempt < 40; attempt++) {
-      try { removeTestDir(dirname(profile), basename(profile)); return; } catch { await sleep(100); }
-    }
-    // Still held: tempDir()'s exit cleanup tries again, and the next `npm test` sweep after that.
+      if (!cdp || !(await exited(child, 5_000))) { killTree(child); await exited(child, 15_000); }
+    } catch { /* fall through to freeing the slot */ }
+    // Free the slot only once our browser has exited. If it has not, the exit hook kills it and frees the slot when
+    // this test process ends (and a later user skips the slot while Chromium's own lock file is still held).
+    if (child.exitCode === null && child.signalCode === null) return;
+    open.delete(onExit);
+    slot.release();
   };
 
   try {
@@ -243,7 +262,22 @@ export async function launchBrowser(executable: string, options: LaunchOptions =
         await send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
       }
     };
+    const frameSessions = new Map<string, string>();   // out-of-process frame target id → its flat session
+    const frameEvaluate = async <T>(url: string, expression: string): Promise<T | null> => {
+      const { targetInfos } = await cdp!.send('Target.getTargets');
+      const target = targetInfos.find((t: any) => t.type === 'iframe' && t.url === url);
+      if (!target) return null;
+      let session = frameSessions.get(target.targetId);
+      if (!session) {
+        session = (await cdp!.send('Target.attachToTarget', { targetId: target.targetId, flatten: true })).sessionId as string;
+        frameSessions.set(target.targetId, session);
+      }
+      const r = await cdp!.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, session);
+      if (r.exceptionDetails) throw new Error(clean(`frame expression failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`));
+      return r.result.value as T;
+    };
     const page: Page = {
+      frameEvaluate,
       async navigate(url) {
         const r = await send('Page.navigate', { url });
         if (r.errorText) throw new Error(`navigation failed: ${r.errorText}`);

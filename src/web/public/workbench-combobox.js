@@ -1,3 +1,4 @@
+import { t } from "./i18n.js";
 // A text field with the page's own suggestion list (the task form's Git repository and branch). Typing filters, the
 // list scrolls, and free text stays allowed. It replaces <datalist>, whose popup cannot scroll a long list there.
 // The state and every key's effect are in nextCombo (like ui.js nextJump); combobox() only draws it.
@@ -122,7 +123,7 @@ export function nextCombo(state, event) {
 
 /** The status line: empty unless the matches were cut. */
 export const comboStatus = (state, noun) => state.total > state.shown.length
-  ? `${state.total} 个${noun}，显示前 ${state.shown.length} 个，输入可筛选` : '';
+  ? t("{total} 个{noun}，显示前 {count} 个，输入可筛选", { total: state.total, noun, count: state.shown.length }) : '';
 
 let ids = 0;
 
@@ -142,7 +143,7 @@ export function combobox(input, { noun, label }) {
   const list = h('ul', { id: `${id}-list`, class: 'wb-combo-list', role: 'listbox', 'aria-label': label });
   const status = h('p', { class: 'wb-combo-status', role: 'status', hidden: true });
   const popup = h('div', { class: 'wb-combo-popup', hidden: true }, list, status);
-  const toggle = h('button', { type: 'button', class: 'wb-combo-toggle', tabindex: '-1', 'aria-label': `显示${noun}候选`,
+  const toggle = h('button', { type: 'button', class: 'wb-combo-toggle', tabindex: '-1', 'aria-label': t("显示{noun}候选", { noun }),
     onclick: () => { if (input.disabled) return; dispatch({ type: 'toggle', value: input.value }); input.focus(); } },
   h('span', { class: 'wb-combo-chevron', 'aria-hidden': 'true' }));
   for (const [name, value] of Object.entries({ role: 'combobox', 'aria-autocomplete': 'list', 'aria-expanded': 'false',

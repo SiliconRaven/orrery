@@ -16,3 +16,14 @@ Native Claude members bind to active local Claude Code sessions via the user-con
 
 - **Quotas & totals**: Queries `get_usage` on manual refresh or eligible coordinator quota checks (governed by cooldowns and managed policy checks without `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), and sums session totals from transcripts + subagents deduplicated by `message.id`.
 - **Verified use**: Native Claude Desktop has passed real-app checks covering online discovery, incoming delivery, MCP replies, continued conversation context, and direct messages from the member page.
+
+## Reading the Conversation Record (`transcript`)
+
+When a plugin reads a member's bound native conversation through the Hub (see [Architecture](../architecture.en.md#reading-a-members-bound-native-conversation)), the adapter locates the session's `projects/<folder>/<session ID>.jsonl` and reads older and newly appended records with a byte cursor:
+
+- Claude writes one assistant message across several lines; the parser keeps every content block and gives repeated blocks the same ID. Compaction continuations appear as system records; sidechains and duplicate API records are skipped. Thinking only shows an explicit summary or marker, and unrecognised records show their type or a placeholder.
+- When several copies share a name, the session ID at the start of the file is checked and the matching copy wins. Tool results show their native text; non-text content shows a placeholder.
+- Inbox deliveries are recognised from native peer metadata (including attachments queued while busy) and their envelopes are verified by the Hub; member posts are hinted by structured tool calls and the success result with the same call ID, and the Hub verifies which message they belong to.
+- Known limit: several thinking blocks without id or index in one assistant message are merged into one.
+
+`node --test test/claude-transcript.test.ts` checks these rules with synthetic JSONL in a temporary folder.

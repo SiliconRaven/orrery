@@ -176,7 +176,7 @@ function fakeDsh(onPrompt: (p: Prompt) => Promise<unknown> = async () => ({ acce
   };
 }
 
-/** A Hub with the real deepseek adapter over the fixtures; cluster "ds": native D1 (S1), D2 (S2), isolated mock A. */
+/** A Hub with the real deepseek adapter over the fixtures; cluster "ds": D1 (S1), D2 (S2) and mock A. */
 async function deepseekHub(dir = tempDir(), turnWaitMs?: number) {
   const app = await startTestHub({ dir, nativeAdapters: { deepseek: createDeepseekNativeAdapter({ dshHome: DSH_HOME, turnWaitMs }) }, limits: { recheckMs: 60_000 } });
   return app;
@@ -188,7 +188,7 @@ async function dsCluster(app: TestHub) {
     members: [
       { harness: 'deepseek', mode: 'native', sessionId: S1, name: 'D1' },
       { harness: 'deepseek', mode: 'native', sessionId: S2, name: 'D2' },
-      { projectPath: tempDir(), harness: 'mock', name: 'A' },
+      { harness: 'mock', mode: 'native', name: 'A', projectPath: '/work' },
     ],
   });
   return { cluster, d1, d2, a };
@@ -336,6 +336,8 @@ test('dsh plugin: tool names and DSH subset preserve Hub validation; package is 
       hubTools.map((t: any) => ({ ...asHub(t), inputSchema: plugin.projectToolParameters(t.inputSchema) })).sort((a: any, b: any) => a.name.localeCompare(b.name)),
     );
     const params = (name: string) => dsh.tools.get(`mcp__orrery__${name}`).parameters;
+    assert.equal(params('get_batch').properties.batchId.type, 'string');
+    assert.ok(params('manage_batch').properties.action.enum.includes('merge'));
     assert.deepEqual(params('task_action').properties.gitBranch.oneOf, [
       { type: 'object', properties: { branch: { type: 'string' } }, required: ['branch'], additionalProperties: false },
       { type: 'null' },
@@ -428,7 +430,7 @@ test('dsh plugin: the tools speak as the calling session; no session id or no me
     assert.equal(JSON.parse(await dsh.call('read_messages', { history: true, limit: 1 }, S1)).length, 1);
 
     await assert.rejects(dsh.call('send_message', { body: 'x' }, S4), { message: '这个对话还不是任何 orrery 集群的成员' });
-    await assert.rejects(dsh.call('send_message', { body: 'x' }, a.workerSessionId), /不是任何 orrery 集群的成员/, 'an isolated member is no deepseek session');
+    await assert.rejects(dsh.call('send_message', { body: 'x' }, a.workerSessionId), /不是任何 orrery 集群的成员/, 'a mock member is no deepseek session');
     await assert.rejects(dsh.call('send_message', { body: 'x' }), /拿不到调用方会话的 ID/);
     await assert.rejects(dsh.call('send_message', {}, S1), (e: Error) => /body/.test(e.message), 'the Hub validates the arguments');
   } finally {
@@ -470,7 +472,7 @@ test('dsh plugin: disabling it (dispose) closes the stream, unregisters the tool
     const { cluster, d1 } = await dsCluster(app);
     dsh.start(app.home);
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online');
-    assert.equal(dsh.tools.size, 21);
+    assert.equal(dsh.tools.size, 23);
 
     dsh.dispose();
     assert.equal(dsh.tools.size, 0, 'tools unregistered');
@@ -485,7 +487,7 @@ test('dsh plugin: disabling it (dispose) closes the stream, unregisters the tool
     assert.equal(dsh.prompts.length, 0);
 
     dsh.start(app.home);   // enabled again
-    assert.equal(dsh.tools.size, 21, 'tools back');
+    assert.equal(dsh.tools.size, 23, 'tools back');
     await waitFor(async () => (await statusOf(app, d1.id)) === 'idle', 'online again');
     const m = await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: 'welcome back', to: [d1.id] });
     await waitFor(async () => (await deliveryTo(app, cluster.id, m.id, d1.id))?.state === 'done', 'delivered');

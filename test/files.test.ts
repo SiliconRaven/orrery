@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { FileStore, MAX_FILE_BYTES, outboxName, sanitizeName, sniffImage } from '../src/core/files.ts';
 import { listSkills, parseFrontmatter, skillRefs } from '../src/core/skills.ts';
 import { Store } from '../src/core/store.ts';
-import { bearer, holdScript, startTestHub, tempDir, TEST_TOKEN, waitFor, type TestHub } from './helpers.ts';
+import { bearer, holdScript, startTestHub, tempDir, TEST_TOKEN, waitFor, type TestHub, turnsOf, memberHeaders } from './helpers.ts';
 
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(24, 1)]);
 const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
@@ -46,12 +46,12 @@ async function mcpCall(app: TestHub, headers: Record<string, string>, name: stri
   return { isError: result.isError === true, text: result.content[0].text as string };
 }
 
-/** A cluster with native member N (mock session s1). */
+/** A cluster with member N (mock session s1, attached) and member I (a new conversation). */
 async function mixed(app: TestHub) {
-  const { cluster, members: [n] } = await app.api('POST', '/api/clusters', {
-    name: 'files', members: [{ harness: 'mock', mode: 'native', sessionId: 's1', name: 'N' }],
+  const { cluster, members: [n, i] } = await app.api('POST', '/api/clusters', {
+    name: 'files', members: [{ harness: 'mock', mode: 'native', sessionId: 's1', name: 'N' }, { harness: 'mock', mode: 'native', name: 'I', projectPath: '/work' }],
   });
-  return { cluster, n };
+  return { cluster, n, i };
 }
 
 test('files: names are sanitized to one safe segment; images are known by their magic bytes only', () => {
@@ -186,26 +186,32 @@ test('files: messages carry attachments of their own cluster; the event and the 
   }
 });
 
-test('files: members get attachment paths; direct messages append the lines', async () => {
+test('files: members get name, size and path; direct messages append the lines', async () => {
   const app = await startTestHub();
   try {
-    const { cluster, n } = await mixed(app);
+    const { cluster, n, i } = await mixed(app);
+    const toN = () => app.native.delivered.filter((d) => d.sessionId === 's1');
     const f = (await upload(app, cluster.id, 'notes.txt', Buffer.alloc(1536, 'a'))).data;
     const stored = join(app.home, 'files', f.id, 'notes.txt');
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@all see attached', attachments: [f.id] });
     await waitFor(() => app.settled(cluster.id), 'delivered');
 
-    const toNative = app.native.delivered.at(-1)!.text;
-    assert.ok(toNative.includes(`\n@all see attached\n[orrery 附件] notes.txt（1.5 KB）：${stored}`), toNative);
-    assert.match(toNative, /附件是本机文件，用你自己的工具按上面的路径读取。要发文件：/);
-    assert.ok(toNative.includes(`clusterId=${cluster.id} from=`), 'native envelope identifies its cluster');
+    const toI = app.store.getMember(i.id)!.workerSessionId;
+    assert.deepEqual(app.native.delivered.map((d) => d.sessionId).sort(), ['s1', toI].sort(), 'one envelope each');
+    for (const { text } of app.native.delivered) {
+      assert.ok(text.includes(`\n@all see attached\n[orrery 附件] notes.txt（1.5 KB）：${stored}`), text);
+      assert.match(text, /附件是本机文件，用你自己的工具按上面的路径读取。要发文件：/);
+      assert.ok(text.includes(`clusterId=${cluster.id} from=`), 'the envelope identifies its cluster');
+      assert.ok(text.includes(`这个群的 clusterId 是 ${cluster.id}；调用 orrery 工具时可带 clusterId 指定群。`));
+    }
+
     // The member page of a native member: no envelope, body as typed, then the attachment line.
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: 'just you', to: [n.id], attachments: [f.id] });
-    await waitFor(() => app.native.delivered.length === 2, 'direct delivery');
-    assert.equal(app.native.delivered[1].text, `just you\n[orrery 附件] notes.txt（1.5 KB）：${stored}`);
+    await waitFor(() => toN().length === 2, 'direct delivery');
+    assert.equal(toN()[1].text, `just you\n[orrery 附件] notes.txt（1.5 KB）：${stored}`);
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '', to: [n.id], attachments: [f.id] });
-    await waitFor(() => app.native.delivered.length === 3, 'files-only direct delivery');
-    assert.equal(app.native.delivered[2].text, `[orrery 附件] notes.txt（1.5 KB）：${stored}`);
+    await waitFor(() => toN().length === 3, 'files-only direct delivery');
+    assert.equal(toN()[2].text, `[orrery 附件] notes.txt（1.5 KB）：${stored}`);
   } finally {
     await app.close();
   }
@@ -240,21 +246,22 @@ test('files: a remote or extended path is refused by its string, before any file
   store.close();
 });
 
-/** A cluster with native members A (session s1) and B (session s2). */
+/** A cluster with members A (session s1) and B (session s2), and I (a new conversation). */
 async function twoNative(app: TestHub) {
-  const { cluster, members: [a, b] } = await app.api('POST', '/api/clusters', {
+  const { cluster, members: [a, b, i] } = await app.api('POST', '/api/clusters', {
     name: 'outbox', members: [
       { harness: 'mock', mode: 'native', sessionId: 's1', name: 'A' }, { harness: 'mock', mode: 'native', sessionId: 's2', name: 'B' },
+      { harness: 'mock', mode: 'native', name: 'I', projectPath: '/work' },
     ],
   });
-  return { cluster, a, b };
+  return { cluster, a, b, i };
 }
 
-test('files: get_task gives a task\u2019s attachments the message-attachment shape; the local path to members; list_tasks stays without them', async () => {
+test('files: get_task gives a task\u2019s attachments the message-attachment shape with the path; list_tasks stays without them', async () => {
   const hold = holdScript();
   const app = await startTestHub({ mock: { script: hold.script } });
   try {
-    const { cluster } = await mixed(app);
+    const { cluster, i } = await mixed(app);
     const png = (await upload(app, cluster.id, 'shot.png', PNG)).data;
     const txt = (await upload(app, cluster.id, 'notes.txt', Buffer.from('hello'))).data;
     const { task } = await app.api('POST', `/api/clusters/${cluster.id}/collaboration`, {
@@ -265,6 +272,9 @@ test('files: get_task gives a task\u2019s attachments the message-attachment sha
     assert.deepEqual(native.attachments, [{ name: 'notes.txt', size: 5, path: paths[0] }, { name: 'shot.png', size: PNG.length, path: paths[1] }]);
     assert.ok(paths.every((path) => existsSync(path)), 'the agent can read the path');
     assert.deepEqual(native.task.fileIds, [txt.id, png.id]);
+
+    const created = JSON.parse((await mcpCall(app, memberHeaders(app, i.id), 'get_task', { taskId: task.id })).text);
+    assert.deepEqual(created.attachments, native.attachments, 'a created conversation gets the paths too');
 
     const detail = await app.api('GET', `/api/clusters/${cluster.id}/tasks/${task.id}`);
     assert.deepEqual(detail.attachments.map((f: any) => [f.id, f.mime]), [[txt.id, 'application/octet-stream'], [png.id, 'image/png']], 'the page gets ids and types');
@@ -282,7 +292,7 @@ test('files: MCP attachments come only from the caller’s own outbox folder; re
   const hold = holdScript();
   const app = await startTestHub({ mock: { script: hold.script } });
   try {
-    const { cluster, a, b } = await twoNative(app);
+    const { cluster, a, b, i } = await twoNative(app);
     // The envelope tells each native member its own folder (and creates it).
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@A @B hi' });
     await waitFor(() => app.native.delivered.length === 2, 'deliveries');
@@ -348,8 +358,16 @@ test('files: MCP attachments come only from the caller’s own outbox folder; re
     assert.equal(readFileSync(copy, 'utf8'), '# design', 'the first copy is unchanged');
     assert.ok(existsSync(join(outside, 'private.txt')), 'nothing outside the outbox touched');
 
+    // read_messages: every reader gets the path; another member's outbox is never read for the caller.
     const own = JSON.parse((await nativeCall(app, 's1', 'read_messages', { history: true })).text);
     assert.deepEqual(own.find((m: any) => m.body === 'record only').attachments, [{ name: 'design.md', size: 8, path: copy }]);
+    const read = JSON.parse((await mcpCall(app, memberHeaders(app, i.id), 'read_messages', { history: true })).text);
+    assert.deepEqual(read.find((m: any) => m.body === 'record only').attachments, [{ name: 'design.md', size: 8, path: copy }]);
+    const before = app.store.db.prepare('SELECT COUNT(*) AS n FROM files').get()!.n;
+    const other = await mcpCall(app, memberHeaders(app, i.id), 'send_message', { body: 'look', attachments: ['design.md'] });
+    assert.ok(other.isError && /your orrery outbox/.test(other.text), other.text);
+    assert.equal(app.store.db.prepare('SELECT COUNT(*) AS n FROM files').get()!.n, before, 'nothing was copied for the other member');
+    hold.release();
   } finally {
     await app.close();
   }

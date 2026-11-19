@@ -1,7 +1,7 @@
 // Types for system-kinds.js, so the Hub's TypeScript can import the table the page also loads.
 export type SystemKind = 'delivery_failed' | 'hidden_work' | 'quota_exhausted' | 'ship_failed' | 'queue_warning' | 'stalled'
-  | 'quota_low' | 'task_rejected' | 'task_attention' | 'review_downgraded' | 'plugin_rate_limit' | 'task' | 'coordinator' | 'idle'
-  | 'quota_recovered' | 'rebind' | 'member_shown' | 'settings' | 'receipt';
+  | 'quota_low' | 'task_rejected' | 'task_attention' | 'review_downgraded' | 'plugin_rate_limit' | 'plugin_refused' | 'plugin_check_failed' | 'plugin_restarted' | 'task' | 'coordinator' | 'idle'
+  | 'quota_recovered' | 'rebind' | 'member_renamed' | 'member_shown' | 'settings' | 'plugin_tool_call' | 'mode_removed' | 'receipt';
 export type SystemCategory = 'warning' | 'task' | 'coordinator' | 'member' | 'other';
 export type WarningLevel = 'problem' | 'attention';
 export interface SystemClass { category: SystemCategory; level: WarningLevel | null }

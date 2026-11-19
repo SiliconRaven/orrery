@@ -9,6 +9,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { NativeAdapter } from '../../core/types.ts';
 import { createSessionStore } from './store.ts';
+import { deepseekTranscript } from './transcript.ts';
 
 const HARNESS = 'deepseek';
 
@@ -33,6 +34,7 @@ export function createDeepseekNativeAdapter(opts: { dshHome?: string; turnWaitMs
     // No quota: DSH is pay-as-you-go, without time windows; the balance needs the API key (docs/usage.md).
     // A turn's tokens come with the plugin's POST /bridge/done (the Hub records them itself).
     conversationTokens: (sessionId) => store.tokens(sessionId),
+    transcript: (sessionId, request) => deepseekTranscript(join(dshHome, 'sessions'), sessionId, request),
     async deliver(sessionId, text, ctx) {
       if (!ctx.bridge.isOnline(HARNESS, sessionId)) return 'offline';
       let ack;

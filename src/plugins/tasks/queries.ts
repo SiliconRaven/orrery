@@ -3,13 +3,14 @@ import { CollaborationError, type Collaboration } from '../../core/collaboration
 import type { Approval, Assignment, Attention, CollaborationActor, Merge, Review, Submission, Takeover, TaskSummary } from '../../core/collaboration-types.ts';
 import type { PluginQuery } from '../../core/plugin.ts';
 import type { Store } from '../../core/store.ts';
+import { batchBase, batchSummary } from './batches.ts';
 import { libraryView } from './labels.ts';
 import { displayTask, fail, resolveTaskRef, taskDependencyEvaluation, taskOf } from './model.ts';
 import { taskSettings } from './takeover.ts';
 import { taskWatches } from './watches.ts';
 import {
   collaborationEvents, collaborationEventsBefore, collaborationLabels, collaborationLinkCount, collaborationRecords,
-  collaborationTaskCandidates, collaborationTaskRefs, collaborationTasks, linkedClause,
+  collaborationTaskCandidates, collaborationTaskRefs, collaborationTasks, linkedClause, taskBatch, taskBatches,
 } from './store.ts';
 
 export const workspace: PluginQuery = ({ store, clusterId, query, limit, collaboration, actor }) => {
@@ -25,6 +26,8 @@ export const workspace: PluginQuery = ({ store, clusterId, query, limit, collabo
   const seesHidden = actor.kind !== 'member' || (coordinator?.enabled && coordinator.memberId === actor.memberId);
   const memberRoles = store.collaborationMemberRoles(clusterId).filter((item) => seesHidden || !store.getMember(item.memberId)?.hiddenAt);
   return { ...result, roles: store.collaborationRoles(clusterId),
+    // Review batches that are not cancelled, newest first, with their progress (batches.ts).
+    batches: taskBatches(store, clusterId).filter((batch) => !batch.cancelledAt).map((batch) => batchSummary(store, batch)),
     memberRoles, labels: collaborationLabels(store, clusterId),
     labelLibrary: libraryView(store, clusterId), taskSettings: taskSettings(store, clusterId),
     coordinator: coordinator ? { ...coordinator, rules: view!.rules } : null, paused: pause.paused,
@@ -51,7 +54,14 @@ export const taskDetail: PluginQuery = ({ store, clusterId, query, limit, actor 
   const taskId = typeof query.taskId === 'string' ? resolveTaskRef(store, clusterId, query.taskId) : query.taskId;
   const task = taskOf(store, clusterId, taskId);
   const evaluation = taskDependencyEvaluation(store, clusterId);
-  const dependencies = task.dependencyIds.map((id) => displayTask(store, taskOf(store, clusterId, id), evaluation));
+  // A dependency in the same review batch with a current submission says which commit (and linked branch) to build on.
+  const dependencies = task.dependencyIds.map((id) => {
+    const upstream = taskOf(store, clusterId, id);
+    const base = batchBase(store, task, upstream);
+    return { ...displayTask(store, upstream, evaluation), ...(base ? { batchBase: base } : {}) };
+  });
+  const batch = task.batchId ? taskBatch(store, clusterId, task.batchId) : null;
+  const batchField = batch ? { batch: (({ tasks: _tasks, ...summary }) => summary)(batchSummary(store, batch)) } : {};
   const assignments = collaborationRecords<Assignment>(store, task.id, 'assignment');
   const submissions = collaborationRecords<Submission>(store, task.id, 'submission')
     .map((submission) => ({ ...submission, superseded: submission.id !== task.latestSubmissionId }));
@@ -88,7 +98,7 @@ export const taskDetail: PluginQuery = ({ store, clusterId, query, limit, actor 
       takeovers: takeovers.slice(offset, offset + limit),
       dependencies, attentions: attentions.slice(offset, offset + limit), events: eventsPage,
       linkedMessageCount: collaborationLinkCount(store, task.id), nextCursor,
-      eventsNextCursor: eventsNext, ...watch };
+      eventsNextCursor: eventsNext, ...watch, ...batchField };
   }
   const messagesLimit = Number.isSafeInteger(query.messagesLimit) && query.messagesLimit! > 0 ? Math.min(query.messagesLimit!, 100) : limit;
   const messages = store.collaborationCollection(clusterId, { limit: messagesLimit, where: [linkedClause(task.id)], cursor: query.messagesCursor,
@@ -100,7 +110,7 @@ export const taskDetail: PluginQuery = ({ store, clusterId, query, limit, actor 
     assignment: assignments.find((a) => a.id === task.currentAssignmentId) ?? null,
     latestSubmission: submissions.find((s) => s.id === task.latestSubmissionId) ?? null,
     attentions: unresolved.slice(attentionOffset, attentionOffset + limit), messages: messages.items, events: eventsPage,
-    summary: summaries.at(-1) ?? null, nextCursor: eventsNext,
+    summary: summaries.at(-1) ?? null, nextCursor: eventsNext, ...batchField,
     messagesNextCursor: messages.nextCursor,
     attentionsNextCursor: unresolved.length > attentionOffset + limit ? String(attentionOffset + limit) : null };
 };

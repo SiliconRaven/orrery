@@ -4,7 +4,7 @@ Language: [中文](README.md) | **English**
 
 Native Mode integration for Antigravity 2.0 desktop using Node built-in modules only. All setup is manual; orrery never edits Antigravity files.
 
-> **Beta Notice**: Bundled with `orrery v0.10.0-beta.1` (Beta pre-release); interfaces, hooks, and config formats may still change—test in a scratch thread first.
+> **Beta Notice**: Bundled with `orrery v0.10.0-beta.2` (Beta pre-release); interfaces, hooks, and config formats may still change—test in a scratch thread first.
 
 Installed-app users: use the bundled Node path and set `ORRERY_HOME` for the host plugin. See [installer setup](../../docs/desktop.en.md).
 

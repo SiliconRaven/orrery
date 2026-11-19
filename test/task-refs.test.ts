@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { REPO_ROOT } from '../src/main.ts';
+import { t } from '../shared/i18n/index.js';
 import { startTestHub } from './helpers.ts';
 import { collaborationTask, saveCollaborationTask } from '../src/plugins/tasks/store.ts';
 
@@ -351,7 +352,7 @@ assert.ok(start >= 0 && end > start, 'the Markdown → DOM section is still ther
 /** The page's own rendering code, with the task cache and the workbench stubbed. */
 function renderer(known: Record<string, { id: string; title: string } | null>) {
   const opened: [string, string][] = [];
-  const context = { h: ui.h, bodySegments: ui.bodySegments, snippet: ui.snippet, inRanges: refs.inRanges, quotedRanges: refs.quotedRanges, inlineText,
+  const context = { t, h: ui.h, bodySegments: ui.bodySegments, snippet: ui.snippet, inRanges: refs.inRanges, quotedRanges: refs.quotedRanges, inlineText,
     S: { skillNames: new Set(), skills: [], members: new Map(), handoffs: new Set() },
     nameOf: () => 'x', select: () => {},
     taskRefs: { get: (_cluster: string, id: string) => known[id] },

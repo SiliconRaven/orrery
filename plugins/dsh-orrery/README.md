@@ -4,7 +4,7 @@
 
 DeepSeek Harness（DSH）的 orrery 插件包。它把你在 DSH 里的会话接入本机运行的 orrery Hub（原生模式）。本目录只依赖 Node 内置模块，单独复制也可独立安装。
 
-> **Beta 版本提示**：本插件随 `orrery v0.10.0-beta.1`（Beta 测试版）提供，接口与配置格式仍可能变化。
+> **Beta 版本提示**：本插件随 `orrery v0.10.0-beta.2`（Beta 测试版）提供，接口与配置格式仍可能变化。
 
 安装版用户请使用内置 Node 路径，并为宿主插件设置 `ORRERY_HOME`，见[安装版接入说明](../../docs/desktop.md)。
 

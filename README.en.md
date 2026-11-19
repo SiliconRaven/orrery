@@ -1,16 +1,28 @@
-# orrery (`v0.10.0-beta.1` Beta)
+# orrery (`v0.10.0-beta.2` Beta)
 
 Language: [中文](README.md) | **English**
 
-> **Beta Notice**: This release is **v0.10.0-beta.1 (Beta pre-release)**, not a final stable release. Interfaces, protocols, and plugin configurations may change.
+> **Beta Notice**: This release is **v0.10.0-beta.2 (Beta pre-release)**, not a final stable release. Interfaces, protocols, and plugin configurations may change.
 
-orrery is a Windows-first local multi-agent collaboration desktop and Hub (Native Mode only). It connects active conversations already running in your AI coding apps (plus newly created native sessions where supported) inside shared group chats and task boards, with all traffic logged locally.
+orrery is a Windows-first local multi-agent collaboration desktop and Hub (Native Mode only). It connects your existing conversations in AI coding apps (plus newly created native sessions where supported) to shared group chats and task boards. A member receives deliveries only while its app is online. Hub group messages and state stay on your machine.
 
 ## Windows Installer
 
 The Windows x64 installer includes Node and the runtime dependencies. It installs Orrery Beta and its own shortcuts; Node on `PATH` is not required. Data lives under `%APPDATA%/Orrery Beta/hub` and is retained during upgrades and uninstall.
 
 The Beta installer is unsigned. Windows may show an unknown-publisher warning; use the checksum provided with the download.
+
+## Interface, Updates & Plugins
+
+Choose Chinese or English in Settings → Appearance; unsaved work is confirmed before reloading. Desktop settings change the shell immediately. The collaboration page keeps its drafts and uses the new language when next opened or manually refreshed. User messages and names stay in their original language.
+
+Software updates are checked in the background and can also be checked manually in Settings. Detection never silently downloads or runs an installer. A private GitHub release feed may be inaccessible without an account; access failures are shown as errors.
+
+Settings → Plugins accepts GitHub links, ZIP/tgz files and public npm package names. Review the requested permissions and readable/writable groups, confirm installation, then exit Hub and reopen Orrery to load it. Third-party plugins come in two tiers: **restricted plugins** run in a separate process with only the permissions and groups you grant (reads, events, restricted posting, message checks, commands, member tools, sandboxed pages and marks); **full-trust plugins** are registered by hand and confirmed in Settings, then run inside the Hub with the same power as orrery itself; start with `ORRERY_SAFE_MODE=1` to skip them if something goes wrong. See [Third-Party Plugins](docs/external-plugins.en.md).
+
+The "Skills & MCP" page in the sidebar lists each app's skills and MCP servers read-only and can install skills into the shared skills folder ([Files & Skills](docs/files.en.md)).
+
+In-process plugins can page through the Claude or Codex native conversation a member is currently bound to; reads happen on demand and bodies stay in memory, see [Architecture](docs/architecture.en.md#reading-a-members-bound-native-conversation).
 
 ## Run from Source
 
@@ -28,7 +40,7 @@ npm run open
 
 ### Optional: Desktop Shell
 
-`desktop/` provides an optional Electron wrapper (also `v0.10.0-beta.1` Beta) that docks and switches running top-level host windows without embedding third-party UIs:
+`desktop/` provides an optional Electron wrapper (also `v0.10.0-beta.2` Beta) that docks and switches running top-level host windows without embedding third-party UIs:
 
 ```powershell
 npm ci --prefix desktop
@@ -63,9 +75,10 @@ Every member attaches in **Native Mode (`NativeAdapter`)** to a conversation ins
 | `ORRERY_HOME` | Data root (`hub.json`, `secret`, `api-token`, `hub.log`) | `~/.orrery` |
 | `ORRERY_DB` | SQLite database file path | `<repo>/.tmp/orrery.db` |
 | `ORRERY_SKILLS_DIR` | Local skills folder scanned for `$` completion | `~/.agents/skills` |
-| `ORRERY_MOCK` | Set to `1` to enable native in-memory `mock` adapter (tests/benchmarks) | Off |
+| `ORRERY_MOCK` | Set to `1` for a demo project with two mock conversations that reply to incoming chat messages without calling a model | Off |
 | `ORRERY_MAX_HOPS` | Max hops per chain (non-negative integer only, `0` allowed; no `unlimited`) | `6` |
 | `ORRERY_MAX_TURNS_PER_CHAIN` | Max turns per chain (non-negative integer only, `0` allowed; no `unlimited`) | `20` |
+| `ORRERY_SAFE_MODE` | Set to `1` to skip every full-trust plugin | Off |
 
 ## Common Commands
 
@@ -76,15 +89,18 @@ npm run check:exports                    # Check unused export/type candidates o
 npm run --silent bench:collaboration     # Run reproducible mock collaboration benchmark (not live-model scores)
 npm run clean:temp                       # Clean leftover test temporary artifacts
 npm run backup                           # Back up local private Hub SQLite database
+npm run plugin:inspect -- <manifest>     # Preflight a third-party plugin manifest before registering (never runs it)
 ```
 
 ## Documentation Index
 
 - **Architecture & Design**: [Architecture](docs/architecture.en.md) · [Native Mode](docs/native-mode.en.md) · [Loop Limits](docs/hop-limit.en.md) · [Security Model](docs/security.en.md)
 - **Collaboration & Tasks**: [Collaboration & Tasks](docs/collaboration.en.md) · [Collaboration API](docs/collaboration-api.en.md) · [Members & Handover](docs/cluster-members.en.md) · [Built-in Plugins](docs/plugins.en.md)
-- **Operations & Extensions**: [Desktop Shell](docs/desktop.en.md) · [Launcher](docs/launcher.en.md) · [Files & Skills](docs/files.en.md) · [Usage & Quotas](docs/usage.en.md) · [Activity Observation](docs/activity.en.md) · [External Plugins](docs/external-plugins.en.md) · [Unread Hint Hook](docs/adapters/unread-hook.en.md)
+- **Operations & Extensions**: [Desktop Shell](docs/desktop.en.md) · [Launcher](docs/launcher.en.md) · [Files & Skills](docs/files.en.md) · [Usage & Quotas](docs/usage.en.md) · [Activity Observation](docs/activity.en.md) · [Third-Party Plugins](docs/external-plugins.en.md) · [Unread Hint Hook](docs/adapters/unread-hook.en.md)
 - **Maintenance & Notices**: [Code Health](docs/code-health.en.md) · [Collaboration Benchmark](docs/evaluation.en.md) · [Third-Party Notices](docs/third-party.en.md)
 
 ## License
 
 Source code in this repository is licensed under the **MIT License** (`orrery contributors`; see the root `LICENSE` file for the English legal text). Third-party application icons and dependencies retain their own rights and licenses; see [Third-Party Notices](docs/third-party.en.md). The original project SVG icon is included under MIT.
+
+See [Follow-ups](docs/backlog.en.md) for remaining improvements.

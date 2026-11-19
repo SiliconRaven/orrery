@@ -1,0 +1,15 @@
+{
+  "id": "ui-probe",
+  "version": "1.0.0",
+  "name": "界面探针（测试用）",
+  "description": "测试第三方插件网页界面的隔离和通道。只用于测试，不随产品发布。",
+  "apiVersion": 1,
+  "entry": "main.mjs",
+  "permissions": ["ui.show"],
+  "commands": [
+    {"id": "requests", "title": "读取收到的界面请求（测试探针）", "clusterScoped": false},
+    {"id": "raw", "title": "调用一个 Hub 方法（测试探针）", "clusterScoped": false},
+    {"id": "burst", "title": "连续调用一个 Hub 方法（测试探针）", "clusterScoped": false}
+  ],
+  "ui": { "positions": ["titlebar", "workbench"], "panelHeight": 260 }
+}

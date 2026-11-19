@@ -1,0 +1,11 @@
+{
+  "id": "trusted-demo",
+  "version": "1.0.0",
+  "name": "完全信任示例：群便签",
+  "description": "在群里记便签：自己的数据表、输入框旁的按钮、一个群员工具，永久删除群时清理自己的数据。",
+  "details": "这是完全信任插件的示例，和 orrery 本身权限相同。\n\n- 数据表 `x_trusted_demo_notes`\n- 输入框旁的“便签”按钮（网页模块）：查看和添加本群便签，快捷键 Alt+Shift+N\n- 接口 `/api/x/trusted-demo/clusters/<群 ID>/notes`：GET 读本群便签，POST `{\"body\":\"…\"}` 添加\n- 群员工具 `trusted_demo_note`：群员留一条便签\n- 永久删除群聊时删掉这个群的便签",
+  "icon": "icon.svg",
+  "hostApi": 1,
+  "hubEntry": "hub/index.mjs",
+  "webEntry": "web/index.js"
+}

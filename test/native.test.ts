@@ -10,7 +10,7 @@ import { createMockNativeAdapter, type MockNativeAdapter } from '../src/adapters
 import { parseEnvelope } from './mock.ts';
 import type { Limits } from '../src/core/hub.ts';
 import type { Member } from '../src/core/types.ts';
-import { mcpStatus, startTestHub, tempDir, waitFor, type TestHub } from './helpers.ts';
+import { mcpStatus, startTestHub, tempDir, turnsOf, waitFor, type TestHub } from './helpers.ts';
 
 type NativeHub = TestHub & { claude: MockNativeAdapter; codex: MockNativeAdapter; deepseek: MockNativeAdapter; secret: string };
 
@@ -106,12 +106,12 @@ const memberStatus = async (app: TestHub, id: string) =>
 const deliveryOf = async (app: TestHub, clusterId: string, messageId: string, memberId: string) =>
   (await app.messages(clusterId)).find((m) => m.id === messageId)!.deliveries.find((d) => d.memberId === memberId)!;
 
-/** Cluster "mix": native mock A, native claude C (session c1), native codex X (thread t1). */
+/** Cluster "mix": mock A (a new conversation), claude C (session c1), codex X (thread t1). */
 async function mixedCluster(app: NativeHub) {
   const { cluster, members: [a, c, x] } = await app.api('POST', '/api/clusters', {
     name: 'mix',
     members: [
-      { projectPath: tempDir(), harness: 'mock', name: 'A' },
+      { harness: 'mock', mode: 'native', name: 'A', projectPath: '/work' },
       { harness: 'claude', mode: 'native', sessionId: 'c1', name: 'C' },
       { harness: 'codex', mode: 'native', sessionId: 't1', name: 'X' },
     ],
@@ -119,17 +119,17 @@ async function mixedCluster(app: NativeHub) {
   return { cluster, a, c, x };
 }
 
-test('native 1: native adapters mix in one cluster; @ and broadcast reach every adapter', async () => {
+test('native 1: members of three harnesses mix in one cluster; @ and broadcast reach every one', async () => {
   const app = await startNativeHub();
   try {
     const { cluster, a, c, x } = await mixedCluster(app);
-    assert.deepEqual([a.mode, c.mode, x.mode], ['native', 'native', 'native']);
+    assert.ok([a, c, x].every((m) => !('mode' in m)), 'one mode: members carry no mode field');
     assert.deepEqual([c.origin, c.workerSessionId, x.workerSessionId], ['attached', 'c1', 't1']);
     const br = await bridge(app.url, app.secret, 'c1', { autoAck: true });
     assert.equal(br.status, 200);
     const post = (body: string, to?: string[]) => app.api('POST', `/api/clusters/${cluster.id}/messages`, to ? { body, to } : { body });
 
-    // Broadcast: the native mock receives a delivery, C's bridge gets a deliver, X's queue completes.
+    // Broadcast: A's mock runs its script, C's bridge gets a deliver, X's queue completes.
     const all = await post('@all hello everyone');
     await waitFor(() => app.settled(cluster.id), 'broadcast settled');
     const states = (await app.messages(cluster.id))[0].deliveries.map((d) => [d.memberId, d.state]);
@@ -147,22 +147,22 @@ test('native 1: native adapters mix in one cluster; @ and broadcast reach every 
     await waitFor(() => app.settled(cluster.id), '@C settled');
     assert.equal(br.events.length, 2);
     assert.equal(app.codex.delivered.length, 1);
-    assert.equal(app.native.delivered.length, 1);
+    assert.equal(turnsOf(app, a.id), 1);
 
-    // Isolated → native: A's turn relays "@X ping n1".
+    // A → X: A's turn relays "@X ping n1".
     await post('@A relay X n1');
     await waitFor(() => app.codex.delivered.length === 2, 'X got the relay');
     const relay = parseEnvelope(app.codex.delivered[1].text);
     assert.deepEqual([relay.from, relay.hop, relay.body], ['A', 1, '@X ping n1']);
     await waitFor(() => app.settled(cluster.id), 'relay settled');
 
-    // Native → mock and other native adapters: C speaks through the bridge's MCP connection.
+    // C speaks through the bridge's MCP connection, to A and X.
     const cc = await asClaude(app, 'c1');
     try {
       assert.deepEqual((await cc.call('list_agents')).data.map((m: any) => [m.name, m.status]), [['A', 'idle'], ['C', 'idle'], ['X', 'idle']]);
       const sent = await cc.call('send_message', { body: '@A @X chat from C' });
       assert.deepEqual(sent.data.deliveredTo, ['A', 'X']);
-      await waitFor(() => app.native.delivered.length === 3 && app.codex.delivered.length === 3, 'A and X got it');
+      await waitFor(() => turnsOf(app, a.id) === 3 && app.codex.delivered.length === 3, 'A and X got it');
       assert.equal(parseEnvelope(app.codex.delivered[2].text).from, 'C');
     } finally {
       await cc.close();
@@ -274,7 +274,7 @@ test('native discovery: hub.json has url, secret and pid; the secret is reused o
   }
 });
 
-test('native 4: wrong or missing secret is 401; a conversation that is no member writes nothing', async () => {
+test('native 4: wrong or missing secret is 401; a conversation that is no member writes nothing; no bearer tokens', async () => {
   const app = await startNativeHub();
   try {
     const { cluster, a } = await mixedCluster(app);
@@ -285,6 +285,9 @@ test('native 4: wrong or missing secret is 401; a conversation that is no member
     assert.equal(await mcpStatus(app.url, { 'x-orrery-bridge': app.secret.slice(1) }), 401);
     assert.equal(await mcpStatus(app.url, { 'x-orrery-session': 'c1' }), 401, 'session without secret');
     assert.equal(await mcpStatus(app.url, { 'x-orrery-bridge': app.secret, 'x-orrery-session': 'c1' }), 200);
+    // A Bearer header names nobody: alone it is 401, next to a good secret the bridge identity is what counts.
+    assert.equal(await mcpStatus(app.url, { authorization: 'Bearer nope' }), 401);
+    assert.equal(await mcpStatus(app.url, { authorization: 'Bearer nope', 'x-orrery-bridge': app.secret, 'x-orrery-session': 'c1' }), 200);
     // /bridge/*
     assert.equal((await bridge(app.url, wrong, 'c1')).status, 401);
     assert.equal(await memberStatus(app, (await app.api('GET', '/api/state')).members[1].id), 'offline', 'a rejected stream is not online');
@@ -305,7 +308,7 @@ test('native 4: wrong or missing secret is 401; a conversation that is no member
         await client.close();
       }
     }
-    // Harnesses do not mix (c1 is claude, not codex).
+    // Harnesses do not mix: A's session is a mock one (not claude), c1 is claude (not codex).
     for (const client of [await asClaude(app, a.workerSessionId), await asCodex(app, 'c1')]) {
       try {
         assert.equal((await client.call('send_message', { body: '@C hi' })).isError, true);
@@ -313,7 +316,6 @@ test('native 4: wrong or missing secret is 401; a conversation that is no member
         await client.close();
       }
     }
-    assert.deepEqual(app.hub.nativeCallers('mock', a.workerSessionId).map(m => m.id), [a.id]);
     assert.equal(count(), before, 'nothing written');
     assert.deepEqual(await app.messages(cluster.id), []);
 
@@ -449,42 +451,40 @@ test('native 6: a user message sent with `to` = exactly one native member arrive
     await waitFor(() => br.events.length === 1 && app.codex.delivered.length === 1, 'direct deliveries');
     assert.equal(br.events[0].text, typed, 'exactly as typed: no envelope, @A not routed');
     assert.equal(app.codex.delivered[0].text, 'plain for X');
-    assert.equal(app.native.delivered.length, 0, 'A got nothing');
+    assert.equal(turnsOf(app, a.id), 0, 'A got nothing');
 
-    // Everything else keeps the envelope: two recipients, an @-mention without `to`, the mock member's page.
+    // Everything else keeps the envelope: two recipients, an @-mention without `to`.
     await post({ body: 'to both', to: [c.id, x.id] });
     await post({ body: '@C mention' });
     await post({ body: 'chat to A', to: [a.id] });
     await waitFor(() => app.settled(cluster.id), 'settled');
     assert.deepEqual(br.events.slice(1).map((e) => parseEnvelope(e.text).body), ['to both', '@C mention']);
     assert.equal(parseEnvelope(app.codex.delivered[1].text).body, 'to both');
-    assert.equal(app.native.delivered.length, 1, 'the native mock received the direct message');
+    assert.equal(app.native.delivered.at(-1)!.text, 'chat to A', 'A\'s page is a direct message too');
     br.close();
   } finally {
     await app.close();
   }
 });
 
-test('native create: allowed only when the native adapter can create; model and effort recorded; settings are forwarded at creation', async () => {
+test('native create: allowed only when the adapter can create; model and effort recorded', async () => {
   const app = await startNativeHub();
   try {
     const create = (members: unknown[]) =>
       fetch(app.url + '/api/clusters', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'n', members }) });
-    const noCreate = await create([{ projectPath: tempDir(), harness: 'claude', mode: 'native' }]);
+    const noCreate = await create([{ harness: 'claude', mode: 'native' }]);
     assert.equal(noCreate.status, 400);
     assert.match((await noCreate.json()).error, /claude native members can only attach an existing conversation/);
-    assert.equal((await create([{ projectPath: tempDir(), harness: 'codex', mode: 'native', effort: 'bad effort' }])).status, 400);
+    assert.equal((await create([{ harness: 'codex', mode: 'native', projectPath: '/work', effort: 'bad effort' }])).status, 400);
 
-    const { cluster, members: [x, i] } = await (await create([
-      { projectPath: tempDir(), harness: 'codex', mode: 'native', model: 'gpt-x', effort: 'high', name: 'NX' },
-      { projectPath: tempDir(), harness: 'mock', model: 'mock-big', effort: 'low', name: 'I' },
+    const { members: [x, i] } = await (await create([
+      { harness: 'codex', mode: 'native', projectPath: join(app.dir, 'n'), model: 'gpt-x', effort: 'high', name: 'NX' },
+      { harness: 'mock', mode: 'native', model: 'mock-big', effort: 'low', name: 'I', projectPath: '/work' },
     ])).json();
-    assert.deepEqual([x.mode, x.origin, x.model, x.effort, x.name], ['native', 'created', 'gpt-x', 'high', 'NX']);
-    assert.deepEqual(app.codex.created, [{ cwd: x.cwd, title: 'orrery: n', model: 'gpt-x', effort: 'high', memberName: 'NX' }]);
-    assert.deepEqual([i.mode, i.model, i.effort], ['native', 'mock-big', 'low']);
-    assert.deepEqual([app.native.created[0].model, app.native.created[0].effort], ['mock-big', 'low']);
-    await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: 'hi', to: [i.id] });
-    await waitFor(() => app.native.delivered.length === 1, 'turn');
+    assert.deepEqual([x.origin, x.model, x.effort, x.name], ['created', 'gpt-x', 'high', 'NX']);
+    assert.deepEqual(app.codex.created, [{ cwd: join(app.dir, 'n'), title: 'orrery: n', model: 'gpt-x', effort: 'high', memberName: 'NX' }]);
+    assert.deepEqual([i.origin, i.model, i.effort], ['created', 'mock-big', 'low']);
+    assert.deepEqual([app.native.created[0].model, app.native.created[0].effort, app.native.created[0].memberName], ['mock-big', 'low', 'I']);
   } finally {
     await app.close();
   }
@@ -496,10 +496,10 @@ test('native create: with a model or effort the member name is settled first and
     const { members } = await app.api('POST', '/api/clusters', {
       name: 'names',
       members: [
-        { projectPath: tempDir(), harness: 'codex', mode: 'native', model: 'gpt-x' },
-        { projectPath: tempDir(), harness: 'codex', mode: 'native', model: 'gpt-x' },
-        { projectPath: tempDir(), harness: 'codex', mode: 'native', effort: 'high', name: 'E' },
-        { projectPath: tempDir(), harness: 'codex', mode: 'native' },
+        { harness: 'codex', mode: 'native', projectPath: '/work', model: 'gpt-x' },
+        { harness: 'codex', mode: 'native', projectPath: '/work', model: 'gpt-x' },
+        { harness: 'codex', mode: 'native', projectPath: '/work', effort: 'high', name: 'E' },
+        { harness: 'codex', mode: 'native', projectPath: '/work' },
       ],
     });
     assert.deepEqual(members.map((m: any) => m.name), ['gpt-x', 'gpt-x-2', 'E', 'mock-1']);

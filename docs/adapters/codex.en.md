@@ -19,3 +19,14 @@ Native Codex members correspond to active `thread` conversations inside ChatGPT/
 - **Pre-wake live probe**: Before opening `codex://threads/wake/<threadId>`, performs an uncached live probe; if the desktop app closed, attempts queue deletion and resolves `unknown` without launching the app (a brief OS launch race between probe and `start` remains an accepted residual risk).
 - **Polling & usage**: Polls every 3s (backing off to 6s after 3 running ticks); time behind another active turn never counts toward the 30m idle pickup timeout. Missing queued items across >= 3 polls and >= 15s resolve `unknown`. Routine quotas and tokens read local `rollout-*.jsonl` (manual refresh calls `account/rateLimits/read`).
 - **Verified use**: Existing desktop conversations, messages between Codex and Claude, busy-turn batching, offline handling after exit, and no replay on restart have been exercised in real use.
+
+## Paging Through the Conversation Record (`transcript`)
+
+When a plugin reads a member's bound native conversation through the Hub (see [Architecture](../architecture.en.md#reading-a-members-bound-native-conversation)), the adapter finds the rollout for the bound thread UUID in `sessions/` or `archived_sessions/` and checks the thread ID in the first `session_meta`. It only reads local files, so it works while the app is offline.
+
+- `.jsonl.zst` files are decompressed with Node's built-in Zstandard support (at most 16 MiB compressed and 64 MiB decompressed); damaged or oversized files return `archived`, a missing file returns `missing`, and a path or thread ID that does not belong returns `refused`.
+- The event format follows `session_meta.history_mode`: newer records read completed items, older ones read standalone display events and skip duplicate copies. Forks and sub-agents only show records that clearly belong to this thread; copied history in the old format without reliable ownership returns `unsupported`. Thinking only shows a public summary or a marker, and unknown records keep a placeholder note.
+- A user message's `client_id` and the `messageId` returned by the posting tool are only hints for the Hub to verify.
+- Known limit: a first `session_meta` line over 64 KiB makes the read return `unsupported`.
+
+`node --test test/codex-transcript.test.ts` checks paging, appends, archives, ownership and tool results with hand-written mock files; paging has not yet been accepted against a running desktop app. Format reference: [Codex 0.165.0 rollout retention policy](https://github.com/openai/codex/blob/rust-v0.165.0/codex-rs/rollout/src/policy.rs).

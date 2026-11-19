@@ -17,7 +17,7 @@ import { saveCoordinator } from '../src/plugins/coordinator/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
 import { freePort, rawFetch, startTestHub, tempDir, waitFor, type TestHub } from './helpers.ts';
 
-const plugin = (id: string, extra: Partial<OfficialPlugin> = {}): OfficialPlugin => ({ id, version: '0.10.0-beta.1', ...extra });
+const plugin = (id: string, extra: Partial<OfficialPlugin> = {}): OfficialPlugin => ({ id, version: '1.0.0', ...extra });
 const versionOf = (store: Store, id: string) =>
   (store.db.prepare('SELECT version FROM plugin_migrations WHERE plugin_id = ?').get(id) as { version: number } | undefined)?.version;
 
@@ -94,9 +94,9 @@ const journal = plugin('journal', {
 function fixture(host = new PluginHost([...officialPlugins, journal]), dir?: string) {
   const store = new Store(dir ? join(dir, 'test.db') : ':memory:', host);
   const member = (id: string) => ({ id, clusterId: 'c', name: id, avatar: null, harness: 'mock', model: null, effort: null,
-    mode: 'native' as const, workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null });
+    workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null });
   if (!store.getCluster('c')) store.insertCluster({ id: 'c', name: 'c', category: '', createdAt: '2026-01-01' }, [member('a'), member('coord')]);
-  const hub = new Hub({ store, nativeAdapters: {}, });
+  const hub = new Hub({ store, nativeAdapters: {} });
   const user: CollaborationActor = { kind: 'user' };
   const a: CollaborationActor = { kind: 'member', memberId: 'a' };
   const coord: CollaborationActor = { kind: 'member', memberId: 'coord' };
@@ -185,7 +185,7 @@ test('bookmarks: an old database keeps its bookmarks through the upgrade to v24 
   store.close();
   ({ store } = fixture(new PluginHost(officialPlugins), dir));
   try {
-    assert.equal((store.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 29);
+    assert.equal((store.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 30);
     assert.equal(versionOf(store, 'bookmarks'), 1);
     assert.deepEqual(bookmarksOf(store, 'm1'), before);
   } finally { store.close(); }
@@ -218,7 +218,7 @@ test('tools: enabled, the two bookmark tools are exactly the ones from before th
     // shortcut: a golden hash of these two definitions, the rest of the list is free to change; update it only when the tools are meant to change.
     assert.equal(fingerprintTools(two), 'sha256:4db3b48da91eff2f86ac754c9b6d01f1c8bdcca97eaf9932748991420b0fb797');
     const listing = await app.api('GET', '/api/plugins');
-    assert.deepEqual(listing.plugins, [{ id: 'tasks', version: '0.10.0-beta.1' }, { id: 'bookmarks', version: '0.10.0-beta.1' }, { id: 'coordinator', version: '0.10.0-beta.1' }]);
+    assert.deepEqual(listing.plugins, [{ id: 'tasks', version: '0.10.0-beta.2' }, { id: 'bookmarks', version: '0.10.0-beta.2' }, { id: 'coordinator', version: '0.10.0-beta.2' }]);
     assert.deepEqual(listing.frontend, ['bookmarks']);
   } finally { await app.close(); }
 });
@@ -232,7 +232,7 @@ test('disabled: no tools, no route, no field, and a Hub still runs a cluster cha
     assert.deepEqual((await toolsOf(app)).map((tool) => tool.name).sort(),
       enabledNames.filter((name) => name !== 'list_bookmarks' && name !== 'bookmark_message').sort());
     const listing = await app.api('GET', '/api/plugins');
-    assert.deepEqual(listing.plugins, [{ id: 'tasks', version: '0.10.0-beta.1' }, { id: 'coordinator', version: '0.10.0-beta.1' }]);
+    assert.deepEqual(listing.plugins, [{ id: 'tasks', version: '0.10.0-beta.2' }, { id: 'coordinator', version: '0.10.0-beta.2' }]);
     assert.deepEqual(listing.frontend, []);
     const { cluster, members } = await app.cluster('p', ['alice']);
     const path = `/api/clusters/${cluster.id}`;
@@ -332,10 +332,10 @@ test('api: GET lists what is installed; PUT only changes the next start, which t
   const first = await startTestHub({ dir, port: await freePort(), plugins: onlyBookmarks });
   try {
     const before = await first.api('GET', '/api/plugins');
-    assert.deepEqual(before.installed, [{ id: 'bookmarks', version: '0.10.0-beta.1', requires: [], name: '收藏', description: onlyBookmarks[0].description,
+    assert.deepEqual(before.installed, [{ id: 'bookmarks', version: '0.10.0-beta.2', requires: [], name: '收藏', description: onlyBookmarks[0].description,
       details: onlyBookmarks[0].details, iconUrl: '/official-plugins/bookmarks.svg', enabled: true, disabledByEnv: false, pendingEnabled: true }]);
     const after = await first.api('PUT', '/api/plugins/bookmarks', { enabled: false });
-    assert.deepEqual(after.plugins, [{ id: 'bookmarks', version: '0.10.0-beta.1' }], 'still running until the Hub restarts');
+    assert.deepEqual(after.plugins, [{ id: 'bookmarks', version: '0.10.0-beta.2' }], 'still running until the Hub restarts');
     assert.equal(after.installed[0].enabled, true);
     assert.equal(after.installed[0].pendingEnabled, false);
     assert.deepEqual(fileOf(dir), { disabled: ['bookmarks'] });
@@ -399,14 +399,15 @@ test('start-up: a damaged plugins.json stops the Hub with the reason; an id this
   withPluginsFile(dir, '{"disabled":["from-another-version"]}');
   const app = await startTestHub({ dir, port: await freePort(), plugins: onlyBookmarks });
   try {
-    assert.deepEqual((await app.api('GET', '/api/plugins')).plugins, [{ id: 'bookmarks', version: '0.10.0-beta.1' }]);
+    assert.deepEqual((await app.api('GET', '/api/plugins')).plugins, [{ id: 'bookmarks', version: '0.10.0-beta.2' }]);
     await app.api('PUT', '/api/plugins/bookmarks', { enabled: false });
     assert.deepEqual(fileOf(dir), { disabled: ['from-another-version', 'bookmarks'] });
   } finally { await app.close(); }
   await assert.rejects(startTestHub({ port: await freePort(), disabledPlugins: ['typo'] }), /cannot disable unknown plugin typo/);
 });
 
-const TASK_TOOLS = ['list_tasks', 'list_labels', 'manage_labels', 'get_task', 'get_task_context', 'create_task', 'task_action', 'raise_attention', 'resolve_attention', 'set_task_summary', 'link_message_tasks'];
+const TASK_TOOLS = ['list_tasks', 'list_labels', 'manage_labels', 'get_task', 'get_task_context', 'create_task', 'task_action', 'raise_attention', 'resolve_attention', 'set_task_summary', 'link_message_tasks',
+  'get_batch', 'manage_batch'];
 
 /** A tools/call from a native mock conversation. */
 const callTool = async (app: TestHub, name: string, args: Record<string, unknown>, session = 's1') => {
@@ -417,6 +418,14 @@ const callTool = async (app: TestHub, name: string, args: Record<string, unknown
   const { result } = (await response.json()) as { result: { isError?: boolean; content: { text: string }[] } };
   return { isError: result.isError === true, text: result.content[0].text };
 };
+
+test('a prepare step belongs to one of the plugin’s own actions', () => {
+  const action = () => ({});
+  const prepare = async () => undefined;
+  assert.throws(() => new PluginHost([plugin('a', { prepare: { 'x.do': prepare } })]), /prepare for x\.do, which is not its action/);
+  assert.equal(new PluginHost([plugin('a', { actions: { 'x.do': action }, prepare: { 'x.do': prepare } })]).prepare('x.do'), prepare);
+  assert.equal(new PluginHost([plugin('a', { actions: { 'x.do': action }, prepare: { 'x.do': prepare } })], ['a']).prepare('x.do'), undefined, 'a disabled plugin prepares nothing');
+});
 
 test('a slot only one plugin may fill is refused when two do', () => {
   const view = () => ({}) as never;
@@ -429,14 +438,15 @@ test('tools: enabled, the task tools match the versioned definitions', async () 
   try {
     const tools = (await toolsOf(app)).filter((tool) => TASK_TOOLS.includes(tool.name));
     assert.equal(tools.length, TASK_TOOLS.length);
-    // shortcut: a golden hash of these eleven definitions; update it only when the tools are meant to change.
-    assert.equal(fingerprintTools(tools), 'sha256:b698dbf5a9b93fd6f3daebaf15141b59c92e2bde8f6ec01a67b6c99989c8201c');
+    // shortcut: a golden hash of these thirteen definitions; update it only when the tools are meant to change
+    // (these task and batch descriptions document the `members` directory in tool results).
+    assert.equal(fingerprintTools(tools), 'sha256:eda7e4ac514c09df1de3a85d40929c755b9b7d35d1b66599502dba199639ed0e');
   } finally { await app.close(); }
 });
 
 test('tasks disabled: the Hub starts, chat and pause work, the task surfaces are gone, the data stays', async () => {
   const dir = tempDir();
-  const native = [{ harness: 'mock', mode: 'native' as const, sessionId: 's1', name: 'A' }, { harness: 'mock', mode: 'native' as const, sessionId: 's2', name: 'B' }];
+  const native = [{ harness: 'mock', sessionId: 's1', name: 'A' }, { harness: 'mock', sessionId: 's2', name: 'B' }];
   const first = await startTestHub({ dir, port: await freePort() });
   let path: string, clusterId: string, taskId: string, linkedId: string, memberB: string;
   try {
@@ -453,7 +463,7 @@ test('tasks disabled: the Hub starts, chat and pause work, the task surfaces are
     assert.equal(off.store.tasks, null);
     assert.equal(off.store.coordinator, null, 'tasks and the coordinator are off together');
     assert.equal(off.hub.services.size, 0, 'no idle or merge-window timers run');
-    assert.deepEqual((await off.api('GET', '/api/plugins')).plugins, [{ id: 'bookmarks', version: '0.10.0-beta.1' }]);
+    assert.deepEqual((await off.api('GET', '/api/plugins')).plugins, [{ id: 'bookmarks', version: '0.10.0-beta.2' }]);
     const names = (await toolsOf(off)).map((tool) => tool.name);
     for (const name of TASK_TOOLS) assert.equal(names.includes(name), false, `${name} is gone`);
     for (const name of ['send_message', 'manage_roles', 'set_cluster_paused', 'list_bookmarks']) assert.ok(names.includes(name), `${name} stays`);
@@ -510,7 +520,7 @@ test('coordinator: the real registry refuses switching tasks off while the coord
 
 test('coordinator disabled: unaddressed messages stay in the record, tasks and pause keep working, the policy waits', async () => {
   const dir = tempDir();
-  const native = [{ harness: 'mock', mode: 'native' as const, sessionId: 's1', name: 'A' }, { harness: 'mock', mode: 'native' as const, sessionId: 's2', name: 'B' }];
+  const native = [{ harness: 'mock', sessionId: 's1', name: 'A' }, { harness: 'mock', sessionId: 's2', name: 'B' }];
   const first = await startTestHub({ dir, port: await freePort() });
   let path: string, clusterId: string, a: string, b: string, enabledTools: string[];
   try {
@@ -585,7 +595,7 @@ test('coordinator disabled: unaddressed messages stay in the record, tasks and p
 test('coordinator: an old row keeps the policy and the pause; the core and the plugin only write their own columns', () => {
   const path = join(tempDir(), 'p.db');
   const member = (id: string) => ({ id, clusterId: 'c', name: id, avatar: null, harness: 'mock', model: null, effort: null,
-    mode: 'native' as const, workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null });
+    workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null });
   const policy = { memberId: 'a', enabled: true, mode: 'execute', generation: 5, permissions: {}, standingInstructions: [{ id: 'i', text: 'stay', createdBy: 'user', createdAt: 'now' }] };
   const row = () => store.db.prepare('SELECT data_json, paused, generation, paused_by FROM collaboration_policies WHERE cluster_id = ?').get('c');
   let store = new Store(path, new PluginHost(officialPlugins));
@@ -604,7 +614,7 @@ test('coordinator: an old row keeps the policy and the pause; the core and the p
   store.close();
 
   store = new Store(path, new PluginHost(officialPlugins));
-  assert.equal((store.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 29, 'no schema change');
+  assert.equal((store.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 30, 'no schema change');
   assert.deepEqual(store.coordinator!.policy('c'), policy);
   assert.equal(store.coordinator!.generation('c'), 5);
   assert.deepEqual(store.clusterPause('c'), { paused: false, pausedBy: null });

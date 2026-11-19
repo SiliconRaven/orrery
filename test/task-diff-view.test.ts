@@ -161,3 +161,11 @@ test('an attachment change is labelled and names the files; a missing name falls
   assert.ok(!view.textContent.includes('kept.txt'), 'an unchanged file is not listed');
   assert.doesNotMatch(view.textContent, /字段 fileIds/);
 });
+
+test('a branch link made by a submit says so; a manual one does not', async () => {
+  const view = createTaskDiffView({ load: async () => ({ changes: [{ field: 'gitBranch', before: { repositoryPath: 'D:\\r', branch: 'topic', automatic: true },
+    after: { repositoryPath: 'D:\\r', branch: 'topic' } }] }) });
+  open(view);
+  await tick();
+  assert.match(view.textContent, /topic（D:\\r），提交时自动关联 → topic（D:\\r）$/);
+});

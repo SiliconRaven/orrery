@@ -166,7 +166,7 @@ test('the newest failure aggregates the delivery events once, not once per failu
   const store = new Store(':memory:', new PluginHost(officialPlugins));
   try {
     const member = { id: 'm', clusterId: 'c', name: 'm', avatar: null, harness: 'mock', model: null, effort: null,
-      mode: 'native' as const, workerSessionId: 's', cwd: '/tmp', origin: 'attached' as const, removedAt: null };
+      workerSessionId: 's', cwd: '/tmp', origin: 'attached' as const, removedAt: null };
     store.insertCluster({ id: 'c', name: 'c', category: '', createdAt: new Date().toISOString() }, [member]);
     const failures = [];
     for (let i = 0; i < 20; i++) {

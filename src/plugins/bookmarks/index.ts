@@ -4,6 +4,7 @@ import { CollaborationError, strings } from '../../core/collaboration.ts';
 import type { CollectionsResult } from '../../core/collaboration-types.ts';
 import type { OfficialPlugin, PluginActionContext } from '../../core/plugin.ts';
 import type { Store } from '../../core/store.ts';
+import type { HubEvent } from '../../core/types.ts';
 
 export interface Bookmark { memberId: string; labels: string[]; createdAt: string; }
 
@@ -24,7 +25,7 @@ function target({ store, clusterId, command }: PluginActionContext) {
 export const bookmarks: OfficialPlugin = {
   id: 'bookmarks',
   webModule: 'bookmarks',
-  version: '0.10.0-beta.1',
+  version: '0.10.0-beta.2',
   name: '收藏',
   description: 'Beta 测试版。成员可以收藏消息并加标签，收藏显示在消息下和工作台的“成员收藏”页签。',
   icon: 'bookmarks.svg',
@@ -97,6 +98,31 @@ export const bookmarks: OfficialPlugin = {
     }),
   }],
   messageFields: { bookmarks: bookmarksOf },
+  // memberId: the member who bookmarked; null when the user did. Labels are read after the commit (the current ones).
+  eventSource: (store) => {
+    const of = (action: string) => (event: HubEvent) => {
+      const p = (event.payload ?? {}) as Record<string, unknown>;
+      return !p.suggested && p.action === action && typeof p.messageId === 'string' ? p.messageId : null;
+    };
+    const set = of('bookmark.set');
+    const removed = of('bookmark.remove');
+    return { types: [
+      { type: 'bookmark.saved', from: 'collaboration', description: '成员收藏了一条消息，或修改了收藏的标签。',
+        fields: 'clusterId, messageId, memberId（收藏的成员；用户为 null）, labels, at',
+        build: (event) => {
+          const messageId = set(event);
+          if (!messageId) return null;
+          const labels = bookmarksOf(store, messageId).find((b) => b.memberId === (event.memberId ?? 'user'))?.labels ?? [];
+          return { clusterId: event.clusterId, messageId, memberId: event.memberId ?? null, labels: [...labels], at: event.createdAt };
+        } },
+      { type: 'bookmark.removed', from: 'collaboration', description: '成员取消了一条消息的收藏。',
+        fields: 'clusterId, messageId, memberId（用户为 null）, at',
+        build: (event) => {
+          const messageId = removed(event);
+          return messageId ? { clusterId: event.clusterId, messageId, memberId: event.memberId ?? null, at: event.createdAt } : null;
+        } },
+    ] };
+  },
   // The cluster's messages, and anything its members bookmarked.
   clusterPurging: (store, clusterId) => store.db.prepare(`DELETE FROM collaboration_bookmarks
     WHERE message_id IN (SELECT id FROM messages WHERE cluster_id = ?) OR member_id IN (SELECT id FROM members WHERE cluster_id = ?)`)

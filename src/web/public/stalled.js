@@ -1,3 +1,4 @@
+import { t, language } from './i18n.js';
 // The stalled-member hint (docs/collaboration.md「成员长时间没有活动」): members holding tasks with no activity the Hub
 // has seen past the threshold. The Hub computes the hints (GET /api/stalled); the page only shows them, and a dismissal
 // is this viewer's own choice, kept in localStorage. Nothing here sends, delivers or wakes anything.
@@ -33,29 +34,29 @@ export function readDismissed(storage = browserStorage()) {
   } catch { return {}; }
 }
 
-const fmt = (iso) => new Date(iso).toLocaleString('zh-CN', { hour12: false });
-const STATUS = { pending: '已分配', working: '进行中', review: '待验收' };
+const fmt = (iso) => new Date(iso).toLocaleString(language() === 'en' ? 'en-GB' : 'zh-CN', { hour12: false });
+const STATUS = { get pending() { return t("已分配"); }, get working() { return t("进行中"); }, get review() { return t("待验收"); } };
 /** What waits on a hidden member, per task of a hidden_work hint (the Hub's HiddenWorkKind). */
-export const HIDDEN_WAITING = { rejected: '被退回，执行者隐身中，没有人会处理', ready: '前置已就绪，执行者隐身中，没有人会开工',
-  ship: '等运行 ship，该运行的成员隐身中', review: '等验收，验收人隐身中', attention: '有点名的待处理事项，被点名的成员隐身中', other: '有新进展，隐身成员收不到' };
-export const stalledTaskText = (task) => `${task.number != null ? `#${task.number} ` : ''}${task.title}（${task.waiting ? HIDDEN_WAITING[task.waiting] ?? '隐身成员收不到' : STATUS[task.status] ?? task.status}）`;
+export const HIDDEN_WAITING = { get rejected() { return t("被退回，执行者隐身中，没有人会处理"); }, get ready() { return t("前置已就绪，执行者隐身中，没有人会开工"); },
+  get ship() { return t("等运行 ship，该运行的成员隐身中"); }, get review() { return t("等验收，验收人隐身中"); }, get attention() { return t("有点名的待处理事项，被点名的成员隐身中"); }, get other() { return t("有新进展，隐身成员收不到"); } };
+export const stalledTaskText = (task) => t("{value1}{title}（{value3}）", { value1: task.number != null ? `#${task.number} ` : '', title: task.title, value3: task.waiting ? HIDDEN_WAITING[task.waiting] ?? t("隐身成员收不到") : STATUS[task.status] ?? task.status });
 /** The caveat every hint carries: absence of activity is not proof that the work stopped. */
 export const STALLED_CAVEAT = '这只是 Hub 看到的活动，不代表对方已经停工：有些应用在一轮中间不报告活动。请先问对方或查看分支和投递情况。';
 
 /** The hint's sentences, in order: who, the latest activity (or that there is none), offline. */
 export function stalledLines(hint) {
   if (hint.kind === 'hidden_work') {
-    return [`${hint.memberName}（${hint.harness}）隐身中，落到它身上的工作没有人会处理。`,
-      '它收不到通知；请改派、取消任务或取消它的隐身。改派、取消、任务完成或取消隐身后，这条提示自动消失。'];
+    return [t("{memberName}（{harness}）隐身中，落到它身上的工作没有人会处理。", { memberName: hint.memberName, harness: hint.harness }),
+      t("它收不到通知；请改派、取消任务或取消它的隐身。改派、取消、任务完成或取消隐身后，这条提示自动消失。")];
   }
   return [
-    `${hint.memberName}（${hint.harness}）手上有任务，超过 ${hint.thresholdMinutes} 分钟没有活动。`,
+    t("{memberName}（{harness}）手上有任务，超过 {thresholdMinutes} 分钟没有活动。", { memberName: hint.memberName, harness: hint.harness, thresholdMinutes: hint.thresholdMinutes }),
     hint.lastActivityAt
-      ? `Hub 看到的最近活动：${fmt(hint.lastActivityAt)}（来源：${hint.lastActivitySource}）。`
-      : `没有活动证据：Hub 没有记录到该成员的发言、投递开始或结束或活动事件；最后一次任务变化在 ${fmt(hint.lastTaskChangeAt)}。`,
+      ? t("Hub 看到的最近活动：{lastActivityAt}（来源：{lastActivitySource}）。", { lastActivityAt: fmt(hint.lastActivityAt), lastActivitySource: hint.lastActivitySource })
+      : t("没有活动证据：Hub 没有记录到该成员的发言、投递开始或结束或活动事件；最后一次任务变化在 {lastTaskChangeAt}。", { lastTaskChangeAt: fmt(hint.lastTaskChangeAt) }),
     // A hidden holder is silent because it was hidden (docs/cluster-members.md「隐身」), not ordinary silence.
-    ...(hint.hidden ? [`${hint.memberName} 当前隐身中：它收不到任何消息，也不能发言或操作任务；要不要改派它手上的任务由你或协调员决定。`]
-      : hint.offline ? [`${hint.memberName} 当前离线：发给它的消息不会投递，恢复在线后也不补发。`] : []),
+    ...(hint.hidden ? [t("{memberName} 当前隐身中：它收不到任何消息，也不能发言或操作任务；要不要改派它手上的任务由你或协调员决定。", { memberName: hint.memberName })]
+      : hint.offline ? [t("{memberName} 当前离线：发给它的消息不会投递，恢复在线后也不补发。", { memberName: hint.memberName })] : []),
   ];
 }
 
@@ -63,18 +64,18 @@ export function stalledLines(hint) {
 export function stalledBadge(hints, short = false) {
   const hidden = hints.filter((hint) => hint.kind === 'hidden_work');
   const silent = hints.filter((hint) => hint.kind !== 'hidden_work');
-  const text = [hidden.length ? (short ? '隐身有活' : `${hidden.length} 人隐身有活`) : '', silent.length ? (short ? '无活动' : `${silent.length} 人无活动`) : '']
+  const text = [hidden.length ? (short ? t("隐身有活") : t("{length} 人隐身有活", { length: hidden.length })) : '', silent.length ? (short ? t("无活动") : t("{length} 人无活动", { length: silent.length })) : '']
     .filter(Boolean).join(' · ');
   const title = [
-    hidden.length ? `${hidden.length} 位隐身成员手上有工作，没有人会处理：\n${stalledSummary(hidden)}` : '',
-    silent.length ? `${silent.length} 位成员手上有任务却长时间没有活动（不代表已停工）：\n${stalledSummary(silent)}` : '',
+    hidden.length ? t("{length} 位隐身成员手上有工作，没有人会处理：\n{hidden}", { length: hidden.length, hidden: stalledSummary(hidden) }) : '',
+    silent.length ? t("{length} 位成员手上有任务却长时间没有活动（不代表已停工）：\n{silent}", { length: silent.length, silent: stalledSummary(silent) }) : '',
   ].filter(Boolean).join('\n');
   return { text, title };
 }
 
 /** One line for a title attribute: who and which tasks. */
 export const stalledSummary = (hints) => hints.map((hint) =>
-  `${hint.memberName}${hint.hidden ? '（隐身中）' : hint.offline ? '（离线）' : ''}：${hint.tasks.map(stalledTaskText).join('、')}`).join('\n');
+  t("{memberName}{value2}：{value3}", { memberName: hint.memberName, value2: hint.hidden ? t("（隐身中）") : hint.offline ? t("（离线）") : '', value3: hint.tasks.map(stalledTaskText).join(t("、")) })).join('\n');
 
 /**
  * Keeps the hints fresh: a read on start, again a few seconds after any Hub event (coalesced), and every minute, since

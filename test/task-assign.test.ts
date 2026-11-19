@@ -18,7 +18,7 @@ const code = (expected: string) => (error: unknown) => (error as { code?: string
 const MEMBERS = ['a', 'b', 'c'];
 
 function driver(t: TestContext, store: Store) {
-  const hub = new Hub({ store, nativeAdapters: {}, });
+  const hub = new Hub({ store, nativeAdapters: {} });
   t.after(async () => { await hub.close(); });
   let serial = 0;
   const send = (actor: CollaborationActor, command: Omit<CollaborationCommand, 'operationId'>) =>
@@ -41,7 +41,7 @@ function fresh(t: TestContext) {
 }
 
 const memberRow = (id: string) => ({
-  id, clusterId: 'c', name: id, avatar: null, harness: 'mock', model: null, effort: null, mode: 'native' as const,
+  id, clusterId: 'c', name: id, avatar: null, harness: 'mock', model: null, effort: null,
   workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null,
 });
 

@@ -4,7 +4,7 @@
 
 WorkBuddy 桌面应用的原生模式接入件，包含一个 stdio MCP 桥与可选 skill（依赖仓库根目录 `npm ci` 安装好的 MCP SDK）。orrery 不代为安装、信任或修改任何 WorkBuddy 配置：
 
-> **Beta 版本提示**：本接入件随 `orrery v0.10.0-beta.1`（Beta 测试版）提供，接口与配置格式仍可能变化。
+> **Beta 版本提示**：本接入件随 `orrery v0.10.0-beta.2`（Beta 测试版）提供，接口与配置格式仍可能变化。
 
 安装版用户请使用内置 Node 路径，并为宿主插件设置 `ORRERY_HOME`，见[安装版接入说明](../../docs/desktop.md)。
 

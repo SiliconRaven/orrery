@@ -32,6 +32,8 @@ test('trash ui: each purge answer becomes one plain result line', () => {
   const running = trash.purgeOutcome({ ok: false, status: 409, data: { code: 'RUNNING', member: 'A' } });
   assert.deepEqual(running, { tone: 'refused', text: '没有删除：成员 A 还有执行没结束，等它结束后再试' });
   assert.match(trash.purgeOutcome({ ok: false, status: 409, data: { code: 'NOT_IN_TRASH' } }).text, /已被恢复/);
+  assert.deepEqual(trash.purgeOutcome({ ok: false, status: 409, data: { code: 'PLUGIN_DATA', plugins: ['refs', 'other'], error: 'nothing was deleted: …' } }), { tone: 'refused',
+    text: '没有删除：插件 refs、other 这次没有运行，它们的数据表可能还存着这个群的数据，很可能就是删不掉的原因。重新信任或打开它们并重启 Hub 后再删，或先手动清理它们的表' });
   assert.match(trash.purgeOutcome({ ok: false, status: 404, data: { code: 'NOT_FOUND' } }).text, /已经不存在/);
   assert.match(trash.purgeOutcome({ ok: false, status: 409, data: { code: 'NAME_MISMATCH' } }).text, /不一致/);
   assert.equal(trash.purgeOutcome({ ok: false, status: 400, data: { error: 'boom' } }).text, '没有删除：boom');

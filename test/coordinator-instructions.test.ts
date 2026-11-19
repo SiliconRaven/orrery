@@ -15,9 +15,9 @@ type Actor = { kind: 'user' } | { kind: 'member'; memberId: string };
 function fixture() {
   const store = new Store(':memory:', new PluginHost(officialPlugins));
   const member = (id: string) => ({ id, clusterId: 'c', name: id, avatar: null, harness: 'mock', model: null, effort: null,
-    mode: 'native' as const, workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null });
+    workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null });
   store.insertCluster({ id: 'c', name: 'c', category: '', createdAt: '2026-01-01' }, [member('a'), member('b')]);
-  const hub = new Hub({ store, nativeAdapters: {}, });
+  const hub = new Hub({ store, nativeAdapters: {} });
   let serial = 0;
   const send = (actor: Actor, command: Record<string, unknown>) =>
     hub.collaboration.command(actor as never, 'c', { operationId: `instr-${++serial}`, ...command } as never) as any;
@@ -26,8 +26,9 @@ function fixture() {
   return { store, hub, send, user, as };
 }
 
-test('coordinator rules v16 follow the ship flow and builder dispatch, and cover unaddressed messages, stalled members, started tasks, acceptance tiers and batched review', () => {
-  assert.equal(COORDINATOR_RULES.version, 'v16');
+test('coordinator rules v17 follow the ship flow and builder dispatch, and cover unaddressed messages, stalled members, started tasks, acceptance tiers and batched review', () => {
+  assert.equal(COORDINATOR_RULES.version, 'v17');
+  assert.match(COORDINATOR_RULES.text, /验收批次（manage_batch）.*批次齐了才唤醒一次.*各自给结论.*批次 ship 一次合并.*上游提交后就能开工/);
   assert.match(COORDINATOR_RULES.text, /落到隐身成员身上.*第 9 条的例外.*改派给其他有资格的成员.*取消隐身.*告诉用户.*Hub 不会自动改派/);
   assert.match(COORDINATOR_RULES.text, /建任务的人自己派工和选验收者：自己有执行资格就自己优先做/);
   assert.match(COORDINATOR_RULES.text, /协调员只在用户指定、有成员闲着且有工作等分配、成员出错或离线、流程卡住且成员和程序处理不了时才做事/);

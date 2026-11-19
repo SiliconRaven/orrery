@@ -93,7 +93,7 @@ test('api token: made once in <home>/api-token and reused; never in hub.json, an
       const res = await rawFetch(app.url + path, { method, headers: { ...json, ...bearer(token) }, body: body === undefined ? undefined : JSON.stringify(body) });
       return res.text();
     };
-    const created = JSON.parse(await call('POST', '/api/clusters', { name: 'c', members: [{ projectPath: tempDir(), harness: 'mock', name: 'a' }] }));
+    const created = JSON.parse(await call('POST', '/api/clusters', { name: 'c', members: [{ harness: 'mock', mode: 'native', name: 'a', projectPath: '/work' }] }));
     const answers = [
       created, await call('GET', '/api/state'), await call('GET', '/api/health'), await call('GET', '/api/settings'),
       await call('POST', `/api/clusters/${created.cluster.id}/messages`, { body: 'hi' }), await call('GET', '/api/usage'),

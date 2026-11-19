@@ -35,7 +35,7 @@ test('presence dot: inside its orbit, visible and clear of the app badge, in the
   try {
     await hub.api('POST', '/api/clusters', { name: 'orbit', members: [
       ...['opus', 'sonnet'].map((name, i) => ({ harness: 'claude', mode: 'native', sessionId: `s${i + 1}`, name })),
-      ...['bot', 'tester', 'helper'].map((name) => ({ projectPath: tempDir(), harness: 'mock', name }))] });
+      ...['bot', 'tester', 'helper'].map((name) => ({ harness: 'mock', mode: 'native', name, projectPath: '/work' }))] });
     browser = await launchBrowser(found.path, { redact: [TEST_TOKEN] });
     const page = browser.page;
     await page.navigate(`${hub.url}/#token=${TEST_TOKEN}`);

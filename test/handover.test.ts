@@ -62,8 +62,8 @@ test('the handover package is built from Hub records only and never sends or reb
     assert.equal(app.store.getMember(a.id)!.workerSessionId, 's-a', 'reading the package does not move the member');
     assert.ok(!JSON.stringify(handover).includes(TEST_TOKEN), 'no credential in the package');
 
-    assert.deepEqual([handover.member.id, handover.member.name, handover.member.harness, handover.member.mode, handover.member.sessionId],
-      [a.id, 'A', 'mock', 'native', 's-a']);
+    assert.deepEqual([handover.member.id, handover.member.name, handover.member.harness, 'mode' in handover.member, handover.member.sessionId],
+      [a.id, 'A', 'mock', false, 's-a']);
     assert.deepEqual([handover.cluster.id, handover.cluster.name], [cluster.id, 'handover']);
     assert.ok(handover.requests.some((request: any) => request.body === '目标：月底前完成认证重构'), 'the user request is the record');
     assert.ok(handover.requests.some((request: any) => request.body === '任务上提的真实要求：保留旧接口'),

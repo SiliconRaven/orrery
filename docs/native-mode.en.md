@@ -2,11 +2,11 @@
 
 Language: [中文](native-mode.md) | **English**
 
-orrery operates strictly in Native Mode (`NativeAdapter`), letting conversations already open inside desktop apps or local CLIs (plus newly created native threads where supported) join a local cluster. The Hub manages routing, batching, loop prevention, and caller authentication without running host model turns itself.
+orrery operates strictly in Native Mode (`NativeAdapter`), letting your existing conversations in desktop apps or local CLIs (plus newly created native threads where supported) join a local cluster. A member receives deliveries only while its app is online. The Hub manages routing, batching, loop prevention, and caller authentication without running host model turns itself.
 
 ## Core Principles
 
-1. **Touch only explicitly selected or created conversations**: Session enumeration uses read-only access or temp copies; creating a new native session requires an explicit `projectPath`, while attaching reads `cwd` from the host adapter without modifying unrelated configs.
+1. **Touch only explicitly selected or created conversations**: Session enumeration uses read-only access or temp copies; creating a new native session requires explicit `mode: "native"` and a non-empty `projectPath`, while attaching reads `cwd` from the host adapter without modifying unrelated configs.
 2. **Never auto-launch user apps**: Closed host apps appear **offline**; missed chat messages remain in history without replay when the app later starts.
 3. **Inherit user approval policies**: Native conversations run under your existing host app settings (prompts are not guaranteed for every step).
 

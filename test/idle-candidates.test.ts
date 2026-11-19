@@ -130,10 +130,10 @@ test('memberEligible agrees with the Hub role check on claim', () => {
   const store = new Store(':memory:', new PluginHost(officialPlugins));
   const stored = (id: string) => ({
     id, clusterId: 'c', name: id, avatar: null, harness: 'mock', model: null, effort: null,
-    mode: 'native' as const, workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null,
+    workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null,
   });
   store.insertCluster({ id: 'c', name: 'c', category: '', createdAt: '2026-01-01' }, [stored('both'), stored('one'), stored('none')]);
-  const hub = new Hub({ store, nativeAdapters: {}, });
+  const hub = new Hub({ store, nativeAdapters: {} });
   try {
     let serial = 0;
     const user: CollaborationActor = { kind: 'user' };

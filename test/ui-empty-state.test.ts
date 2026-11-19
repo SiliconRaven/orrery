@@ -65,15 +65,15 @@ test('empty state: no page script builds its own empty markup; the roles page us
 
   const wb = readFileSync(join(PUB, 'workbench.js'), 'utf8');
   assert.match(wb, /const rpEmpty = \(text\) => emptyState\(text, \{ compact: true \}\);/);
-  for (const sentence of ['还没有长期要求。', '当前群没有成员。', '标签库里还没有组。']) assert.match(wb, new RegExp(`rpEmpty\\('${sentence}`));
+  for (const sentence of ['还没有长期要求。', '当前群没有成员。', '标签库里还没有组。']) assert.match(wb, new RegExp(`rpEmpty\\(t\\(["']${sentence}`));
   // The places the task names: each goes through the helper.
   const uses = (file: string, re: RegExp) => assert.match(readFileSync(join(PUB, file), 'utf8'), re, file);
   uses('app.js', /emptyState\(placeholder, \{ action: filtered/);                  // a chat with no (shown) messages
-  uses('app.js', /list\.replaceChildren\(emptyState\('还没有集群。'/);               // no clusters
-  uses('app.js', /emptyState\('集群暂无成员，可以添加成员继续协作。'\)/);             // no members
-  uses('workbench.js', /emptyState\(narrowed\(\) \? '没有符合筛选条件的任务。' : '还没有任务/);   // no tasks
-  uses('trash.js', /emptyState\('回收站为空。'\)/);                                   // empty trash
-  uses('official-plugins/bookmarks.js', /emptyState\('没有符合条件的收藏。'\)/);      // empty library
+  uses('app.js', /list\.replaceChildren\(emptyState\(t\('还没有集群。'/);               // no clusters
+  uses('app.js', /emptyState\(t\('集群暂无成员，可以添加成员继续协作。'\)\)/);             // no members
+  uses('workbench.js', /emptyState\(narrowed\(\) \? t\("没有符合筛选条件的任务。"\) : t\("还没有任务/);   // no tasks
+  uses('trash.js', /emptyState\(t\("回收站为空。"\)\)/);                                   // empty trash
+  uses('official-plugins/bookmarks.js', /emptyState\(t\("没有符合条件的收藏。"\)\)/);      // empty library
   uses('plugins.js', /cards\.length \? cards : emptyState\(empty/);                   // no plugins
   uses('chat-search.js', /const empty = emptyState\(''\);/);                          // search without results
 });

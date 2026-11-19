@@ -13,3 +13,5 @@ orrery source code is released under the **MIT License** (the authoritative Engl
 
 1. **9 Third-Party Application Icons**: The 9 application icons displayed in the UI and member list are included solely to identify the corresponding host apps; all trademarks and icon rights remain with their respective owners and are outside the project's MIT license.
 2. **Project icon**: The single-orbit icon is defined by the original SVG sources in `desktop/assets/orrery-icon.svg` and `orrery-mark.svg`. Its PNG and Windows ICO exports are generated from those sources and are included under the project MIT license. No character illustrations are bundled.
+
+Archive installation uses `tar 7.5.23` (BlueOak-1.0.0) and `yauzl 3.4.0` (MIT); their packages retain the upstream license texts.

@@ -1,4 +1,3 @@
-import { tempDir } from './helpers.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { NativeDeliverContext } from '../src/core/types.ts';

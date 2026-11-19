@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { taskSummary } from '../src/plugins/tasks/tools.ts';
-import { nativeHeaders, holdScript, startTestHub, waitFor } from './helpers.ts';
+import { bearer, holdScript, startTestHub, waitFor, turnsOf, memberHeaders } from './helpers.ts';
 
 async function fixture() {
   const app = await startTestHub();
@@ -165,9 +165,10 @@ test('HTTP and the MCP task_action pass closeReason and relatedTaskId through', 
     assert.deepEqual(cancelled.task.closeReason, { kind: 'superseded', taskId: target.id });
 
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@A hold' });
+    await waitFor(() => turnsOf(app, a.id) > 0, 'member turn');
     client = new Client({ name: 'test', version: '0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), {
-      requestInit: { headers: nativeHeaders(app, a.id) },
+      requestInit: { headers: memberHeaders(app, a.id) },
     }));
     const call = async (name: string, args: Record<string, unknown>) => {
       const result = await client!.callTool({ name, arguments: args });

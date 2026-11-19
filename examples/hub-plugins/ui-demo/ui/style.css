@@ -1,0 +1,11 @@
+/* The colours come from the host page (orrery.init / orrery.theme), set on :root by app.js. */
+:root { color-scheme: light dark; --bg: Canvas; --text: CanvasText; --muted: GrayText; --accent: #4f5bd5; --on-accent: #fff; --line: GrayText; }
+html, body { height: 100%; margin: 0; }
+body { display: grid; place-items: center; background: var(--bg); color: var(--text);
+  font: 14px system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+main { display: grid; justify-items: center; gap: 8px; padding: 12px; text-align: center; }
+p { margin: 0; }
+.where, .note { color: var(--muted); font-size: 12px; }
+.count { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; }
+button { padding: 6px 18px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: var(--on-accent); font: inherit; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }

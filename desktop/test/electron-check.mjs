@@ -10,11 +10,15 @@ import { existsSync, readdirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { APPS } from '../lib/apps.mjs';
 import { BAR, runEnsure, startShell, STRIP_PAGE, TABS_PAGE } from '../shell.mjs';
+import { desktopPageUrl } from '../ui/language.mjs';
 import { createFakeFfi, fakeWindow } from './fake-ffi.mjs';
 import { checkTempDir } from './temp-dir.mjs';
 
 const DESKTOP = join(import.meta.dirname, '..');
+const tabsUrl = desktopPageUrl(TABS_PAGE, 'zh');
+const stripUrl = desktopPageUrl(STRIP_PAGE, 'zh');
 const dir = checkTempDir('orrery-desktop-electron-');   // deleted after this process exits (temp-dir.mjs)
 app.setPath('userData', join(dir, 'shell'));
 let failed = 0;
@@ -166,7 +170,7 @@ async function isolation(h, hub, other) {
   check(fake.length === writes && JSON.stringify(h.state.tabs) === tabsBefore, 'forged handles, unknown ids and command names change nothing');
   const rejected = h.ipc.rejected;
   ipcMain.emit('tabs:close', { sender: h.collab, senderFrame: h.collab.mainFrame }, 't1');
-  ipcMain.emit('tabs:close', { sender: h.tabs, senderFrame: { parent: h.tabs.mainFrame, processId: h.tabs.mainFrame.processId, routingId: -1, url: TABS_PAGE } }, 't1');
+  ipcMain.emit('tabs:close', { sender: h.tabs, senderFrame: { parent: h.tabs.mainFrame, processId: h.tabs.mainFrame.processId, routingId: -1, url: tabsUrl } }, 't1');
   ipcMain.emit('tabs:close', { sender: h.tabs, senderFrame: h.tabs.mainFrame }, 't1', 'extra');
   check(h.ipc.rejected === rejected + 3 && h.state.tabs[0].binding, 'refused: the collaboration page as sender, a subframe, extra arguments');
   await h.tabs.loadURL(`${hub.origin}/evil-tabs`);
@@ -174,7 +178,7 @@ async function isolation(h, hub, other) {
   await sleep(400);
   check(h.ipc.rejected === rejected + 8 && h.state.tabs[0].binding && fake.length === writes,
     'a tab bar navigated to another page is refused, even with the preload present', `rejected ${h.ipc.rejected - rejected - 3}`);
-  await h.tabs.loadURL(TABS_PAGE);
+  await h.tabs.loadURL(tabsUrl);
   await js(h.tabs, "window.orrery.select('orrery'); true");
   check(await until(() => h.ipc.accepted > before.accepted + 1), 'back on the fixed page, the tab bar is accepted again');
   const r2 = h.ipc.rejected;
@@ -183,7 +187,7 @@ async function isolation(h, hub, other) {
   await sleep(400);
   check(h.ipc.rejected === r2 + 2 && h.state.tabs[0].binding && fake.length === writes && launched.length === 0,
     'a panel navigated to another page is refused too, even with its preload present', `rejected ${h.ipc.rejected - r2}`);
-  await h.strips.loadURL(STRIP_PAGE);
+  await h.strips.loadURL(stripUrl);
 
   console.log('\n[D] navigation, redirects and new windows never leave the Hub origin and hand nothing to the system');
   const home = `${hub.origin}/second`;
@@ -218,7 +222,7 @@ async function isolation(h, hub, other) {
 async function reloadKeys(h, hub) {
   console.log('\n[D] F5 and Ctrl+R reload the collaboration page (main process), never the tab bar');
   h.dispatch({ type: 'select', id: 'orrery' });
-  const url = h.collab.getURL();
+  const url = desktopPageUrl(h.collab.getURL(), 'zh');
   let tabLoads = 0;
   h.tabs.on('did-finish-load', () => { tabLoads++; });
   const reloaded = async (n) => (await until(() => hub.state.pageLoads === n, 3000))
@@ -230,7 +234,7 @@ async function reloadKeys(h, hub) {
   };
   let n = hub.state.pageLoads;
   key(h.collab, 'F5');
-  check(await reloaded(n + 1) && h.collab.getURL() === url, 'F5 in the collaboration page reloads it, same URL', `${hub.state.pageLoads - n} load(s), ${h.collab.getURL()}`);
+  check(await reloaded(n + 1) && h.collab.getURL() === url, 'F5 in the collaboration page reloads it with the desktop language', `${hub.state.pageLoads - n} load(s), ${h.collab.getURL()}`);
   n = hub.state.pageLoads;
   key(h.collab, 'R', ['control']);
   check(await reloaded(n + 1), 'Ctrl+R in the collaboration page reloads it');
@@ -295,7 +299,7 @@ async function plusStrip(h, ffi) {
   const prefs = h.strips.getLastWebPreferences();
   const probe = await js(h.strips, '({ require: typeof require, process: typeof process, api: Object.keys(window.orrery ?? {}).join() })');
   check(prefs.sandbox === true && prefs.contextIsolation === true && prefs.nodeIntegration === false && prefs.webSecurity !== false
-    && probe.require === 'undefined' && probe.process === 'undefined' && probe.api === 'onState,pick,close' && h.strips.getURL() === STRIP_PAGE,
+    && probe.require === 'undefined' && probe.process === 'undefined' && probe.api === 'onState,pick,close' && h.strips.getURL() === stripUrl,
   'the panel: its fixed local page, sandboxed, context isolation, no node; its preload exposes onState, pick and close only', JSON.stringify(probe));
   check(h.panel.getParentWindow() === null && h.panel.isAlwaysOnTop() && !h.panel.isVisible(), 'not owned by the shell window (see lowerShell), on top, hidden until +');
 
@@ -304,7 +308,7 @@ async function plusStrip(h, ffi) {
   const bar = { sender: h.tabs, senderFrame: h.tabs.mainFrame };
   const panel = { sender: h.strips, senderFrame: h.strips.mainFrame };
   const collabFrame = { sender: h.collab, senderFrame: h.collab.mainFrame };
-  const sub = { sender: h.strips, senderFrame: { parent: h.strips.mainFrame, processId: h.strips.mainFrame.processId, routingId: -1, url: STRIP_PAGE } };
+  const sub = { sender: h.strips, senderFrame: { parent: h.strips.mainFrame, processId: h.strips.mainFrame.processId, routingId: -1, url: stripUrl } };
   const reject = [
     ['strip:pick', collabFrame, 'deepseek'], ['strip:close', collabFrame], ['tabs:add', collabFrame, 10],
     ['strip:pick', bar, 'deepseek'], ['strip:close', bar], ['tabs:add', panel, 10], ['tabs:select', panel, 'orrery'], ['strip:pick', sub, 'deepseek'],
@@ -349,8 +353,9 @@ async function plusStrip(h, ffi) {
   const dom = await js(h.strips, `[...document.querySelectorAll('#apps .app')].map((b) => { const r = b.getBoundingClientRect(); const g = b.querySelector('.glyph').getBoundingClientRect();
     return { text: b.innerText.trim(), status: b.dataset.status, off: b.getAttribute('aria-disabled'), tip: b.title, w: r.width, h: r.height, gw: g.width, inside: r.right <= innerWidth - 1 && r.bottom <= innerHeight - 1, at: [r.right, r.bottom, innerWidth, innerHeight] }; })`);
   const status = dom.map((d) => d.status).join();
-  check(dom.length === 8 && status === 'docked,add,add,launch,launch,missing,missing,missing',
-    'one icon per supported app (8): Claude docked, Codex and DeepSeek to add, Kimi Code and ZCode to start, the rest not found', status);
+  const expectedStatus = { claude: 'docked', codex: 'add', deepseek: 'add', 'kimi-code': 'launch', zcode: 'launch' };
+  check(dom.length === APPS.length && status === APPS.map(({ id }) => expectedStatus[id] ?? 'missing').join(),
+    'one icon per supported app: Claude docked, Codex and DeepSeek to add, Kimi Code and ZCode to start, the rest not found', status);
   check(dom.every((d) => d.w === 44 && d.h === 44 && d.gw === 32 && d.inside), 'each a 44 × 44 target with a 32 px icon, all inside the panel', JSON.stringify(dom.map((d) => [d.w, d.h, d.gw, d.at])));
   // A program file without an icon shows its app name's first character instead; Codex shows the count of its 2 windows.
   check(dom.every((d) => [...d.text.replace(/[\d\s]/g, '')].length <= 1) && dom[1].text.endsWith('2'), 'no visible names: an icon or one letter, and a window count', JSON.stringify(dom.map((d) => d.text)));
@@ -381,7 +386,7 @@ async function plusStrip(h, ffi) {
     const atEnd = await focused();
     await key(h.strips, 'Home');
     await key(h.strips, 'Right');
-    check(atCodex === 1 && atEnd === 7 && await focused() === 1, 'Right, End, Home move the focus between the icons', `${atCodex}, ${atEnd}`);
+    check(atCodex === 1 && atEnd === APPS.length - 1 && await focused() === 1, 'Right, End, Home move the focus between the icons', `${atCodex}, ${atEnd}`);
     await key(h.strips, 'Return');
     check(await until(() => popped.length === 1), 'Enter on Codex (two windows): a list');
     const labels = popped[0]?.items.map((i) => i.label).join(', ');
@@ -526,7 +531,7 @@ async function splitView(h) {
     ['pane:activate', { sender: h.collab, senderFrame: h.collab.mainFrame }, 0],
     ['layout:ratios', { sender: h.collab, senderFrame: h.collab.mainFrame }, { x: 0.3, y: 0.5 }],
     ['layout:menu', { sender: h.collab, senderFrame: h.collab.mainFrame }],
-    ['pane:activate', { sender: h.tabs, senderFrame: { parent: h.tabs.mainFrame, processId: h.tabs.mainFrame.processId, routingId: -1, url: TABS_PAGE } }, 0],
+    ['pane:activate', { sender: h.tabs, senderFrame: { parent: h.tabs.mainFrame, processId: h.tabs.mainFrame.processId, routingId: -1, url: tabsUrl } }, 0],
     ['pane:activate', fake, 5], ['pane:activate', fake, -1], ['pane:activate', fake, 0.5], ['pane:activate', fake, '0'], ['pane:activate', fake],
     ['pane:activate', fake, 0, 1],
     ['layout:ratios', fake, { x: NaN, y: 0.5 }], ['layout:ratios', fake, { x: Infinity, y: 0.5 }], ['layout:ratios', fake, { x: '0.3', y: 0.5 }],
@@ -695,7 +700,7 @@ async function ensureAndSecondShell() {
   console.log('\n[E] --ensure: a real test Hub (temporary home and database, a free port) is started once and reused');
   const port = await freePort();
   const home = join(dir, 'home');
-  const env = { ...process.env, ORRERY_HOME: home, ORRERY_DB: join(dir, 'hub.db'), ORRERY_SANDBOX: join(dir, 'sandbox'), ORRERY_PORT: String(port), ORRERY_API_TOKEN: API_TOKEN };
+  const env = { ...process.env, ORRERY_HOME: home, ORRERY_DB: join(dir, 'hub.db'), ORRERY_PORT: String(port), ORRERY_API_TOKEN: API_TOKEN };
   const a = await runEnsure({ env });
   const first = await health(port);
   const b = await runEnsure({ env });

@@ -4,13 +4,13 @@
 //   sessions/<wd id>/<session id>/state.json     { id, cwd, title, archived, createdAt, updatedAt }  (times: epoch ms)
 // Never starts a Kimi process (`kimi session list` would start the core) and never writes anything.
 // docs/adapters/kimi.md, "列项目和会话".
-import { readdir, readFile } from 'node:fs/promises';
+import { lstat, readdir, readFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import type { ProjectInfo, SessionInfo } from '../../core/types.ts';
 
 /** Kimi session ids: `session_` + a UUID. Checked before an id becomes part of a path or a URL. */
 export const SESSION_ID_RE = /^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const WORKSPACE_ID_RE = /^[A-Za-z0-9_-]{1,200}$/;
+export const WORKSPACE_ID_RE = /^[A-Za-z0-9_-]{1,200}$/;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -106,6 +106,28 @@ export function createSessionStore(kimiHome: string) {
         if (s) return s;
       }
       return null;
+    },
+    async transcriptCandidates(sessionId: string): Promise<{ workspace: string; stateFile: string; wireFile: string }[]> {
+      if (!SESSION_ID_RE.test(sessionId)) return [];
+      let dirs: string[];
+      try {
+        dirs = await readdir(sessionsDir);
+      } catch {
+        return [];
+      }
+      const candidates: { workspace: string; stateFile: string; wireFile: string }[] = [];
+      for (const wd of dirs) {
+        if (!WORKSPACE_ID_RE.test(wd)) continue;
+        const sessionDir = join(sessionsDir, wd, sessionId);
+        const stateFile = join(sessionDir, 'state.json');
+        const wireFile = join(sessionDir, 'agents', 'main', 'wire.jsonl');
+        const [hasState, hasWire] = await Promise.all([
+          lstat(stateFile).then(() => true, (e: NodeJS.ErrnoException) => e.code !== 'ENOENT' && e.code !== 'ENOTDIR'),
+          lstat(wireFile).then(() => true, (e: NodeJS.ErrnoException) => e.code !== 'ENOENT' && e.code !== 'ENOTDIR'),
+        ]);
+        if (hasState || hasWire) candidates.push({ workspace: wd, stateFile, wireFile });
+      }
+      return candidates;
     },
   };
 }

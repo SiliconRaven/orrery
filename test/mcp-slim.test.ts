@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { nativeHeaders, holdScript, startTestHub, waitFor } from './helpers.ts';
+import { bearer, holdScript, startTestHub, waitFor, turnsOf, memberHeaders } from './helpers.ts';
 
 test('mcp slim: list_tasks, get_task, get_task_context and list_bookmarks default to small results; parameters give the full shape', async (t) => {
   const hold = holdScript();
@@ -29,9 +29,10 @@ test('mcp slim: list_tasks, get_task, get_task_context and list_bookmarks defaul
     const message = await app.api('POST', `${path}/messages`, { body: 'x'.repeat(2500), taskIds: [dep.id] });
 
     await app.api('POST', `${path}/messages`, { body: '@A hold' });
+    await waitFor(() => turnsOf(app, member.id) > 0, 'member turn');
     client = new Client({ name: 'test', version: '0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), {
-      requestInit: { headers: nativeHeaders(app, member.id) },
+      requestInit: { headers: memberHeaders(app, member.id) },
     }));
     const call = async (name: string, args: Record<string, unknown> = {}) => {
       const result = await client!.callTool({ name, arguments: args });
@@ -124,9 +125,10 @@ test('mcp slim: a dependency summary keeps approvedSubmissionId, so a resubmissi
     const { task: down } = await cmd({ action: 'task.create', operationId: 'down', title: 'Downstream', scope: 's', acceptance: 'a', mergeRequired: false, dependencyIds: [up.id] });
     const evidence = await app.api('POST', `${path}/messages`, { body: 'evidence' });
     await app.api('POST', `${path}/messages`, { body: '@A hold' });
+    await waitFor(() => turnsOf(app, member.id) > 0, 'member turn');
     client = new Client({ name: 'test', version: '0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), {
-      requestInit: { headers: nativeHeaders(app, member.id) },
+      requestInit: { headers: memberHeaders(app, member.id) },
     }));
     const call = async (name: string, args: Record<string, unknown>) => {
       const result = await client!.callTool({ name, arguments: args });

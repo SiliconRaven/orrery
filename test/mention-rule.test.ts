@@ -95,7 +95,7 @@ async function fixture(names: string[]) {
   const app = await startTestHub({ dir, nativeAdapters: { claude: createMockNativeAdapter({ sessions }) } });
   await app.api('POST', '/api/pause', { paused: true });   // only who it is addressed to matters
   const { cluster, members } = await app.hub.createCluster(`c-${names.join('-')}`, all.map((name, i) =>
-    ({ harness: 'claude', mode: 'native' as const, sessionId: sessions[i].id, name })));
+    ({ harness: 'claude', sessionId: sessions[i].id, name })));
   const id = (name: string) => members.find((m) => m.name === name)!.id;
   const sender = id('S');
   const user = (body: string) => app.api('POST', `/api/clusters/${cluster.id}/messages`, { body });

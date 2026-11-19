@@ -28,7 +28,8 @@ export interface CoordinatorPolicy {
   /** User's long-term requirements, kept across coordinator changes; missing in old policies means []. */
   standingInstructions?: StandingInstruction[];
 }
-export interface TaskGitBranch { repositoryPath: string; branch: string; }
+/** automatic: linked by a submit, not by set_git_branch; missing means manual (links stored before it existed too). */
+export interface TaskGitBranch { repositoryPath: string; branch: string; automatic?: true; }
 export interface Task {
   id: string;
   /** Shown as #12: 1, 2, 3… per cluster, taken when the task is created and never given again (docs/collaboration.md). */
@@ -55,6 +56,8 @@ export interface Task {
   manualCompletion?: true;
   /** The latest reviewer takeover (task.takeover): who took the task over, on what basis, when. Kept as history. */
   takeover?: TaskTakeoverMark;
+  /** The review batch it belongs to (the tasks plugin's batches.ts); absent outside a batch. */
+  batchId?: string;
 }
 /**
  * Why the review mode after a takeover is what it is: the user did the takeover (user), the cluster setting allowed
@@ -219,6 +222,12 @@ export interface CollaborationCommand {
   note?: string | null;
   /** tasks.settings (user only): allow self review after a reviewer takeover in this cluster. */
   takeoverSelfReview?: boolean;
+  /** task.create and batch.*: the review batch (an ID, a unique prefix or B<number>). */
+  batchId?: string;
+  /** batch.shipped / batch.ship_failed (the Hub only): the approved submissions the ship ticket was signed for. */
+  batchSubmissions?: { taskId: string; submissionId: string }[];
+  /** batch.ship_failed (the Hub only): what failed, and for a conflict the task whose branch conflicted. */
+  failure?: { kind: 'conflict' | 'checks'; taskId?: string };
 }
 export interface CollaborationResult {
   action: CollaborationAction; eventId: number; task?: Task; role?: Role; coordinator?: CoordinatorPolicy | null;
@@ -229,4 +238,19 @@ export interface CollaborationResult {
   takeover?: Takeover;
   /** task.delete only: the removed task and what the confirmation said it was removing. */
   deleted?: { id: string; title: string; linkedMessageCount: number };
+  /** task.submit with a commitSha through the MCP tools only: what happened to the task's branch link (docs/collaboration-api.md). */
+  gitBranch?: BranchLinkOutcome;
+}
+/**
+ * linked: the submit linked (or moved) the automatic link; kept: the link stayed; cleared: an automatic link that no
+ * longer fits was removed; not_linked: there was none and none was made. `reason` says why it was not linked or could
+ * not be checked; `warning: not_on_branch` means a manual link's branch does not contain the commit.
+ */
+export interface BranchLinkOutcome {
+  status: 'linked' | 'kept' | 'cleared' | 'not_linked';
+  branch?: string; automatic?: boolean;
+  reason?: 'no_repository' | 'git_unavailable' | 'git_error' | 'timeout' | 'busy' | 'unknown_commit' | 'no_branch' | 'several_branches' | 'invalid_branch' | 'changed';
+  /** Branches at the commit that were not linked: at most 5 names and 2048 characters; `more` when others were left out. */
+  candidates?: string[]; more?: boolean;
+  warning?: 'not_on_branch';
 }

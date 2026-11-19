@@ -9,59 +9,122 @@ import { startTestHub, tempDir, waitFor } from './helpers.ts';
 
 const path = (clusterId: string) => '/api/clusters/' + clusterId + '/members';
 
+test('members: renaming posts a bilingual unread notice without starting a turn', async () => {
+  const app = await startTestHub();
+  try {
+    const { cluster, members: [renamed, peer, hidden, removed] } = await app.cluster('team', ['Old', 'Peer', 'Hidden', 'Removed']);
+    app.hub.setMemberHidden(hidden.id, true);
+    app.hub.removeMember(cluster.id, removed.id);
+
+    const updated = await app.api('PATCH', `/api/members/${renamed.id}`, { name: 'New' });
+    assert.equal(updated.name, 'New');
+    const messages = await app.messages(cluster.id);
+    assert.equal(messages.length, 1);
+    const [notice] = messages;
+    assert.deepEqual([notice.from, notice.kind, notice.systemKind], ['system', 'system', 'member_renamed']);
+    assert.equal(notice.body, '成员「Old」已改名为「New」。\nMember “Old” was renamed to “New”.');
+    assert.deepEqual(notice.mentions, [renamed.id, peer.id]);
+    assert.deepEqual(notice.deliveries, []);
+    for (const member of [renamed, peer]) {
+      assert.deepEqual(app.hub.readMessages(member.id).map((message) => message.id), [notice.id]);
+    }
+    assert.equal(app.native.delivered.length, 0);
+
+    const followup = app.hub.sendFromUser(cluster.id, '@New hello');
+    await waitFor(() => app.native.delivered.length, 'delivered to renamed member');
+    assert.deepEqual(app.native.delivered.map((delivery) => delivery.sessionId), [renamed.workerSessionId]);
+    assert.match(app.native.delivered[0].text, new RegExp(`messageId=${followup.id} hop=0 to=@New\\n`));
+  } finally { await app.close(); }
+});
+
+test('members: no rename notice for the same name, avatar-only edits, hidden members or a trashed cluster', async () => {
+  const app = await startTestHub();
+  try {
+    const { cluster, members: [member, hidden] } = await app.cluster('team', ['Same', 'Hidden']);
+    const patch = (id: string, fields: object) => app.api('PATCH', `/api/members/${id}`, fields);
+    await patch(member.id, { name: 'Same' });
+    assert.equal((await patch(member.id, { avatar: '🐭' })).avatar, '🐭');
+    app.hub.setMemberHidden(hidden.id, true);
+    assert.equal((await patch(hidden.id, { name: 'StillHidden' })).name, 'StillHidden');
+    app.hub.deleteCluster(cluster.id);
+    await assert.rejects(patch(member.id, { name: 'Trashed' }), /unknown member/);
+    app.hub.restoreCluster(cluster.id);
+    assert.equal(app.store.getMember(member.id)?.name, 'Same');
+    assert.deepEqual(await app.messages(cluster.id), []);
+  } finally { await app.close(); }
+});
+
+test('members: a failed rename notice rolls back the name, chat record and member event', async () => {
+  const app = await startTestHub();
+  try {
+    const { cluster, members: [member] } = await app.cluster('team', ['Old']);
+    const append = app.store.appendEvent;
+    const notified = app.events.length;
+    app.store.appendEvent = (...args) => {
+      if (args[2] === 'message') throw new Error('injected message event failure');
+      return append.apply(app.store, args);
+    };
+    try { assert.throws(() => app.hub.updateMember(member.id, { name: 'New' }), /injected message event failure/); }
+    finally { app.store.appendEvent = append; }
+    assert.equal(app.store.getMember(member.id)?.name, 'Old');
+    assert.deepEqual(app.store.listEvents(app.events.at(-1)!.seq), []);
+    assert.equal(app.events.length, notified);
+    assert.deepEqual(await app.messages(cluster.id), []);
+  } finally { await app.close(); }
+});
+
 test('members: adding reuses creation rules, avoids active names, publishes SSE members, and rejects batches atomically', async () => {
   const app = await startTestHub();
   try {
     const { cluster, members: [first] } = await app.cluster('team', ['mock-1']);
     const added = await app.api('POST', path(cluster.id), { members: [
       { harness: 'mock', mode: 'native', sessionId: 's1' },
-      { harness: 'mock', model: 'chosen', effort: 'high', projectPath: join(app.dir, 'project-2') },
-      { projectPath: tempDir(), harness: 'mock', name: 'mock-1' },
+      { harness: 'mock', mode: 'native', model: 'chosen', effort: 'high', projectPath: join(app.dir, 'project-2') },
+      { harness: 'mock', mode: 'native', name: 'mock-1', projectPath: '/work' },
     ] });
     assert.deepEqual(added.members.map((m: any) => m.name), ['mock-1-2', 'chosen', 'mock-1-3']);
     assert.deepEqual(added.members.map((m: any) => m.removedAt), [null, null, null]);
     assert.equal(added.members[1].effort, 'high');
     assert.equal(added.members[1].cwd, join(app.dir, 'project-2'));
     assert.deepEqual(app.events.filter((e) => e.kind === 'member').map((e: any) => e.payload.member.id), added.members.map((m: any) => m.id));
-    for (const specs of [[], null, [{}], [null], [{ projectPath: tempDir(), harness: 'nope' }], [{ projectPath: tempDir(), harness: 'mock', name: 'bad name' }],
-[{ harness: 'mock', mode: 'native', sessionId: 's2', model: 'bad' }],
-      [{ projectPath: tempDir(), harness: 'mock' }, { harness: 'mock', mode: 'native', sessionId: 'missing' }],
+    for (const specs of [[], null, [{}], [null], [{ harness: 'nope' }], [{ harness: 'mock', mode: 'native', name: 'bad name', projectPath: '/work' }],
+      [{ harness: 'mock', mode: 'isolated' }], [{ harness: 'mock', mode: 'native', sessionId: 's2', model: 'bad' }],
+      [{ harness: 'mock', mode: 'native', projectPath: '/work' }, { harness: 'mock', mode: 'native', sessionId: 'missing' }],
       [{ harness: 'mock', mode: 'native', sessionId: 's1' }],
       [{ harness: 'mock', mode: 'native', sessionId: 's2' }, { harness: 'mock', mode: 'native', sessionId: 's2' }]]) {
       await assert.rejects(app.api('POST', path(cluster.id), { members: specs }));
       assert.equal(app.hub.listMembers(cluster.id).length, 4);
     }
-    await assert.rejects(app.api('POST', path('missing'), { members: [{ projectPath: tempDir(), harness: 'mock' }] }), /unknown cluster/);
+    await assert.rejects(app.api('POST', path('missing'), { members: [{ harness: 'mock', mode: 'native', projectPath: '/work' }] }), /unknown cluster/);
     assert.ok(app.hub.listMembers(cluster.id).some((m) => m.id === first.id));
   } finally { await app.close(); }
 });
 
-test('members: removal cancels busy and queued work, revokes token, rejects late events/completion and direct sends', async () => {
+test('members: removal cancels busy and queued work, drops the identity, rejects late events/completion and direct sends', async () => {
   const gate = Promise.withResolvers<void>();
   const app = await startTestHub();
   let late!: () => void;
-  let deliverySignal!: AbortSignal;
-  app.native.deliver = async (_id, _input, ctx) => {
-    const {onEvent:emit,signal}=ctx;
-    deliverySignal = signal;
-    late = () => emit({ type: 'text', text: 'too late' });
-    signal.addEventListener('abort', late, { once: true });
-    await gate.promise; // Deliberately ignore abort to simulate an already accepted native-like turn.
+  let deliverySignal: AbortSignal | undefined;
+  app.native.deliver = async (_id, _text, ctx) => {
+    deliverySignal = ctx.signal;
+    late = () => ctx.onEvent({ type: 'text', text: 'too late' });
+    ctx.signal.addEventListener('abort', late, { once: true });
+    await gate.promise; // Deliberately ignore abort: the app may already have accepted the turn.
     late();
     return 'completed';
   };
   try {
     const { cluster, members: [member] } = await app.cluster('team', ['A']);
-    const sessionId = member.workerSessionId;
     await app.api('POST', '/api/clusters/' + cluster.id + '/messages', { body: '@all one' });
-    await waitFor(() => app.hub.nativeCallers('mock', sessionId)[0]);
+    await waitFor(() => deliverySignal, 'delivery running');
     await app.api('POST', '/api/clusters/' + cluster.id + '/messages', { body: '@all two' });
-    assert.equal(deliverySignal.aborted, false, 'native delivery is running before removal');
+    assert.equal(deliverySignal!.aborted, false, 'the delivery is running before removal');
+    assert.equal(app.hub.nativeCallers('mock', member.workerSessionId).length, 1);
     const { member: removed } = await app.api('DELETE', path(cluster.id) + '/' + member.id, {});
-    assert.equal(deliverySignal.aborted, true, 'removal aborts the native delivery');
+    assert.equal(deliverySignal!.aborted, true, 'removal aborts the running delivery');
     assert.ok(removed.removedAt);
     assert.equal(removed.status, 'offline');
-    assert.deepEqual(app.hub.nativeCallers('mock',sessionId), []);
+    assert.deepEqual(app.hub.nativeCallers('mock', member.workerSessionId), [], 'the conversation is nobody now');
     assert.deepEqual(app.hub.listMembers(cluster.id), []);
     assert.equal(app.hub.listMembers(cluster.id, { includeRemoved: true })[0].name, 'A');
     assert.throws(() => app.hub.sendFromMember(member.id, 'late'), /unknown member/);
@@ -86,8 +149,8 @@ test('members: removal cancels busy and queued work, revokes token, rejects late
 test('members: removal and all cancellation events commit together or roll back, including after restart', async () => {
   const gate = Promise.withResolvers<void>();
   const app = await startTestHub();
-  let signal!: AbortSignal;
-  app.native.deliver = async (_id, _input, ctx) => { signal = ctx.signal; await gate.promise; return 'completed'; };
+  let signal: AbortSignal | undefined;
+  app.native.deliver = async (_id, _text, ctx) => { signal = ctx.signal; await gate.promise; return 'completed'; };
   let clusterId = '';
   let memberId = '';
   let committed: { id: string; state: string; outcome: string | null; error: string | null }[] = [];
@@ -96,9 +159,8 @@ test('members: removal and all cancellation events commit together or roll back,
     const { cluster, members: [member] } = await app.cluster('atomic-removal', ['A']);
     clusterId = cluster.id;
     memberId = member.id;
-    const sessionId = member.workerSessionId;
     app.hub.sendFromUser(clusterId, '@A first');
-    await waitFor(() => app.hub.nativeCallers('mock', sessionId)[0], 'running member');
+    await waitFor(() => signal, 'running member');
     app.hub.sendFromUser(clusterId, '@A second');
     const before = await app.messages(clusterId);
     assert.deepEqual(before.map((m) => m.deliveries[0].state), ['running', 'queued']);
@@ -116,8 +178,8 @@ test('members: removal and all cancellation events commit together or roll back,
       };
       try { assert.throws(() => app.hub.removeMember(clusterId, memberId), /injected .* event failure/); }
       finally { app.store.appendEvent = append; }
-      assert.equal(signal.aborted, false, 'a rolled-back removal does not stop the running turn');
-      assert.ok(app.hub.nativeCallers('mock', sessionId)[0], 'a rolled-back removal does not revoke identity');
+      assert.equal(signal!.aborted, false, 'a rolled-back removal does not stop the running turn');
+      assert.equal(app.hub.nativeCallers('mock', member.workerSessionId).length, 1, 'a rolled-back removal keeps the identity');
       assert.equal(app.hub.listMembers(clusterId).length, 1);
       assert.deepEqual(await app.messages(clusterId), before);
       assert.deepEqual(app.store.listEvents(0), oldEvents, 'no partial cancellation events remain');
@@ -126,7 +188,7 @@ test('members: removal and all cancellation events commit together or roll back,
 
     const removed = app.hub.removeMember(clusterId, memberId);
     assert.ok(removed.removedAt);
-    assert.equal(signal.aborted, true);
+    assert.equal(signal!.aborted, true);
     const messages = await app.messages(clusterId);
     committed = messages.map((m) => {
       const d = m.deliveries[0];
@@ -163,7 +225,7 @@ test('members: removal and all cancellation events commit together or roll back,
 
 test('members: offline removal stays cancelled after restart; same conversation rejoins with new identity', async () => {
   const dir = tempDir();
-  const native = createMockNativeAdapter({ kind: 'bridge', sessions: [{ id: 's', title: 'old', model: null, cwd: dir, updatedAt: null }, { id: 'other', title: 'other', model: null, cwd: dir, updatedAt: null }] });
+  const native = createMockNativeAdapter({ kind: 'bridge', sessions: ['s', 'other'].map((id) => ({ id, title: id, model: null, cwd: dir, updatedAt: null })) });
   // A start-up grace longer than the test keeps the offline member's delivery queued until its removal cancels it.
   const app = await startTestHub({ dir, nativeAdapters: { mock: native }, limits: { startupGraceMs: 60_000 } });
   let clusterId!: string;
@@ -173,7 +235,7 @@ test('members: offline removal stays cancelled after restart; same conversation 
     clusterId = cluster.id; oldId = m.id;
     await app.api('POST', '/api/clusters/' + clusterId + '/messages', { body: '@A waiting' });
     assert.equal((await app.messages(clusterId))[0].deliveries[0].state, 'queued');
-    const other = await app.api('POST', '/api/clusters', { name: 'other', members: [{ harness: 'mock', sessionId: 'other', name: 'B' }] });
+    const other = await app.api('POST', '/api/clusters', { name: 'other', members: [{ harness: 'mock', mode: 'native', sessionId: 'other', name: 'B' }] });
     await assert.rejects(app.api('DELETE', path(other.cluster.id) + '/' + oldId, {}), /unknown member/);
     assert.equal(app.hub.nativeCallers('mock', 's')[0]?.id, oldId);
     await app.api('DELETE', path(clusterId) + '/' + oldId, {});
@@ -202,7 +264,7 @@ test('members: concurrent attachments are settled by active unique indexes witho
   try {
     const { cluster } = await app.cluster('race', ['A']);
     const results = await Promise.allSettled([1, 2].map(() => app.hub.addMembers(cluster.id, [
-      { projectPath: tempDir(), harness: 'mock' }, { harness: 'mock', mode: 'native', sessionId: 's1' },
+      { harness: 'mock', mode: 'native', projectPath: '/work' }, { harness: 'mock', mode: 'native', sessionId: 's1' },
     ])));
     assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
     assert.equal(app.hub.listMembers(cluster.id).length, 3);

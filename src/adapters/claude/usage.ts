@@ -46,7 +46,7 @@ export function fromGetUsage(r: any, observedAt: string): QuotaSnapshot | null {
   return { ...(typeof plan === 'string' && plan ? { plan: plan.slice(0, 40) } : {}), windows, observedAt, source: 'get_usage' };
 }
 
-/** Same isolation as a worker's turn, and nothing kept: the request sends no prompt, so no model runs. */
+/** No tools, settings, hooks or MCP servers, and nothing kept: the request sends no prompt, so no model runs. */
 const GET_USAGE_ARGS = [
   '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
   '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }),

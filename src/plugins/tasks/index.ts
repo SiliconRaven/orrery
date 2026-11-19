@@ -3,7 +3,10 @@ import type { CollaborationCommand, Task } from '../../core/collaboration-types.
 import type { OfficialPlugin, PluginRefContext } from '../../core/plugin.ts';
 import type { Store } from '../../core/store.ts';
 import { moveAssignments, refuseRebinding, resolveTaskRefs, runTaskAction } from './actions.ts';
+import { BATCH_ACTIONS, batchQuery, resolveBatchRefs, runBatchAction } from './batches.ts';
+import { prepareSubmit } from './branch-link.ts';
 import { taskEnvelope } from './envelope.ts';
+import { taskEventSource } from './events.ts';
 import { memberTasks } from './handover.ts';
 import { heldBrief } from './hidden.ts';
 import { LABEL_ACTIONS, libraryView, runLabelAction, selectDefaultGroups } from './labels.ts';
@@ -25,10 +28,11 @@ const ACTIONS = ['task.create', 'task.edit', 'task.assign', 'task.nominate', 'ta
 
 const entries = <T>(value: T) => Object.fromEntries(ACTIONS.map((action) => [action, value]));
 const labelActions = Object.fromEntries(LABEL_ACTIONS.map((action) => [action, runLabelAction]));
+const batchEntries = <T>(value: T) => Object.fromEntries(BATCH_ACTIONS.map((action) => [action, value]));
 
 export const tasks: OfficialPlugin = {
   id: 'tasks',
-  version: '0.10.0-beta.1',
+  version: '0.10.0-beta.2',
   name: '任务系统',
   description: 'Beta 测试版。任务、依赖、验收和 ship 合并；关闭后群聊和投递照常，任务数据保留。',
   icon: 'tasks.svg',
@@ -44,11 +48,12 @@ export const tasks: OfficialPlugin = {
 
 协调员插件依赖它：要先关闭协调员，才能关闭任务系统。`,
   migrations: MIGRATIONS,
-  actions: { ...entries(runTaskAction), ...labelActions, 'tasks.settings': runSettingsAction },
+  actions: { ...entries(runTaskAction), ...labelActions, 'tasks.settings': runSettingsAction, ...batchEntries(runBatchAction) },
+  prepare: { 'task.submit': prepareSubmit },
   managementActions: ['task.create', 'task.edit', 'task.assign', 'task.nominate', 'task.merge', 'task.cancel', 'task.reopen', 'task.handoff', 'task.takeover',
-    'task.attention', 'task.resolve_attention', 'task.summary', 'message.link'],
-  refs: entries<(ctx: PluginRefContext) => CollaborationCommand>(resolveTaskRefs),
-  queries: { workspace, task: taskDetail, context: taskDetail, task_refs: taskRefs,
+    'task.attention', 'task.resolve_attention', 'task.summary', 'message.link', 'batch.create', 'batch.add', 'batch.remove', 'batch.cancel', 'batch.merge'],
+  refs: { ...entries<(ctx: PluginRefContext) => CollaborationCommand>(resolveTaskRefs), ...batchEntries(resolveBatchRefs) },
+  queries: { workspace, task: taskDetail, context: taskDetail, task_refs: taskRefs, batch: batchQuery,
     labels: ({ store, clusterId }) => libraryView(store, clusterId, true) as never },
   tools: taskTools,
   routes: taskRoutes,
@@ -61,6 +66,7 @@ export const tasks: OfficialPlugin = {
   memberRemoved: forgetMemberWatches,
   clusterCreated: selectDefaultGroups,
   clusterPurging: purgeClusterTasks,
+  eventSource: taskEventSource,
   taskView: (store: Store) => ({
     all: (clusterId): Task[] => [...allTasks(store, clusterId)],
     task: (clusterId, taskId) => collaborationTask(store, clusterId, taskId),

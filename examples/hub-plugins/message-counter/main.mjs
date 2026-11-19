@@ -25,14 +25,20 @@ async function handle(message) {
     if (message.params.apiVersion !== 1) throw new Error('unsupported API');
     send({ id: message.id, result: { apiVersion: 1 } });
   } else if (message.method === 'invoke' && message.params.command === 'count') {
-    const clusterId = message.params.arguments.clusterId;
+    // Run from a cluster's "/" menu, the cluster comes in `context`; over the HTTP API, in the arguments.
+    const context = message.params.context;
+    const clusterId = context ? context.clusterId : message.params.arguments.clusterId;
     const { clusters } = await call('host.clusters.list', {});
     if (!clusters.some((cluster) => cluster.id === clusterId)) throw new Error('cluster not granted');
     const { messages, truncated } = await call('host.messages.list', { clusterId, limit: 100 });
     const counts = new Map();
     for (const message of messages) counts.set(message.from, (counts.get(message.from) ?? 0) + 1);
-    send({ id: message.id, result: { clusterId, recentMessageCount: messages.length, limit: 100,
-      senders: [...counts].map(([senderId, count]) => ({ senderId, count })), ...(truncated ? { truncated: true } : {}) } });
+    const senders = [...counts].map(([senderId, count]) => ({ senderId, count }));
+    // `text` is what the page shows the user; the HTTP answer stays as it was.
+    const text = context ? `最近 ${messages.length} 条消息${truncated ? '（只统计了装得下的部分）' : ''}：`
+      + (senders.map((s) => `${s.senderId} ${s.count} 条`).join('，') || '没有消息') : undefined;
+    send({ id: message.id, result: { clusterId, recentMessageCount: messages.length, limit: 100, senders,
+      ...(truncated ? { truncated: true } : {}), ...(text ? { text } : {}) } });
   } else if (message.method === 'shutdown') {
     send({ id: message.id, result: {} });
     process.stdin.destroy();

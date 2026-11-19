@@ -122,7 +122,7 @@ async function qHub(opts: { running?: () => Promise<boolean | null>; graceMs?: n
     members: [
       { harness: 'qoder', mode: 'native', sessionId: S1, name: 'Q1' },
       { harness: 'qoder', mode: 'native', sessionId: S2, name: 'Q2' },
-      { projectPath: tempDir(), harness: 'mock', name: 'A' },
+      { harness: 'mock', mode: 'native', name: 'A', projectPath: '/work' },
     ],
   });
   const statusOf = async () => ((await app.api('GET', '/api/state')).members as Member[]).find((m) => m.id === q1.id)!.status;
@@ -354,6 +354,6 @@ test('qoder plugin: self-contained, no fetch, identity only in _meta, stops rule
   assert.match(skill, /输出文件/);
 });
 
-test('qoder: registered as a native harness only', () => {
+test('qoder: registered as a native harness', () => {
   assert.equal(typeof nativeFactories.qoder, 'function');
 });

@@ -20,7 +20,7 @@ test('packaged runtime needs no Node on PATH and keeps writable data outside ins
   const dev = runtimeConfig({ packaged: false, node: 'custom-node', env });
   assert.equal(dev.node, 'custom-node');
   assert.equal(dev.env, env);
-  assert.ok(dev.launcher.endsWith(join('src', 'launcher.ts')));
+  assert.equal(dev.launcher, join(import.meta.dirname, '..', '..', 'src', 'launcher.ts'));
 });
 
 test('installer shuts down only the authenticated Hub belonging to this installation', async (t) => {

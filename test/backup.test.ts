@@ -31,7 +31,7 @@ function sourceDatabase(dir: string): string {
   try {
     store.insertCluster({ id: 'c1', name: '备份测试', category: '', createdAt: '2026-11-08T00:00:00.000Z' },
       [{ id: 'm1', clusterId: 'c1', name: 'A', avatar: null, harness: 'mock', model: null, effort: null,
-        mode: 'native', workerSessionId: 's1', cwd: dir, origin: 'attached', removedAt: null }]);
+        workerSessionId: 's1', cwd: dir, origin: 'attached', removedAt: null }]);
   } finally { store.close(); }
   return dbPath;
 }

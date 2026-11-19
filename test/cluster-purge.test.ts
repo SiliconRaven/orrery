@@ -34,7 +34,7 @@ const settled = (app: TestHub, clusterId: string) => waitFor(() => app.store.db.
 const trashVersion = (app: TestHub, id: string) => app.hub.listDeletedClusters().find((row) => row.id === id)?.trashVersion ?? 0;
 
 /**
- * A cluster with a row in every cluster-tied table: native members (A on session s1, C on s2) and an isolated one (B),
+ * A cluster with a row in every cluster-tied table: members attached to sessions (A on s1, C on s2) and a new conversation (B),
  * messages with replies and attachments, an offline delivery handed off, reads and an acknowledgement, files on
  * messages and on a task, tasks with records, links, a dependency, labels and a watch, a chosen label group, a bookmark, a
  * role, the pause row and an idempotent operation, a merge window, usage and activity rows, and their events.
@@ -42,7 +42,7 @@ const trashVersion = (app: TestHub, id: string) => app.hub.listDeletedClusters()
 async function seed(app: TestHub, name: string, marker: string) {
   const { cluster, members } = await app.hub.createCluster(name, [
     { harness: 'mock', mode: 'native', sessionId: 's1', name: 'A' },
-    { projectPath: tempDir(), harness: 'mock', name: 'B' },
+    { harness: 'mock', mode: 'native', name: 'B', projectPath: '/work' },
     { harness: 'mock', mode: 'native', sessionId: 's2', name: 'C' },
   ]);
   const [a, , c] = members;
@@ -141,11 +141,9 @@ test('a purge removes every row of the cluster in core and plugin tables and lea
   try {
     const keep = await seed(app, 'keep', 'KEEP-MARK');
     const gone = await seed(app, 'gone-cluster-name', 'GONE-MARK');
-    // Files and folders a purge must never touch: an outbox, the sandbox, a project folder.
+    // Files and folders a purge must never touch: an outbox, a project folder.
     const outbox = app.hub.files!.memberOutbox(gone.members[0].id);
     writeFileSync(join(outbox, 'mine.txt'), 'member file');
-    mkdirSync(join(app.dir, 'sandbox'), { recursive: true });
-    writeFileSync(join(app.dir, 'sandbox', 'work.txt'), 'sandbox');
     writeFileSync(join(app.dir, 'project-1', 'code.txt'), 'project');
     for (const table of ['members', 'messages', 'deliveries', 'reads', 'message_acknowledgements', 'files', 'message_files', 'turn_usage',
       'activity_snapshots', 'collaboration_roles', 'collaboration_member_roles', 'collaboration_policies', 'collaboration_operations',
@@ -159,7 +157,7 @@ test('a purge removes every row of the cluster in core and plugin tables and lea
     }
     assert.ok(app.store.db.prepare("SELECT 1 FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE m.cluster_id = ? AND d.handoff_message_id IS NOT NULL").get(gone.cluster.id), 'a hand-off');
     assert.ok(app.store.db.prepare('SELECT 1 FROM messages WHERE cluster_id = ? AND reply_to IS NOT NULL').get(gone.cluster.id), 'a reply');
-    assert.ok(app.store.db.prepare("SELECT 1 FROM members WHERE cluster_id = ? AND mode = 'native'").get(gone.cluster.id), 'a native member');
+    assert.ok(app.store.db.prepare("SELECT 1 FROM members WHERE cluster_id = ? AND origin = 'created'").get(gone.cluster.id), 'a created conversation');
 
     app.hub.deleteCluster(gone.cluster.id);
     const owned = ownedIds(app.store, gone.cluster.id);
@@ -177,7 +175,6 @@ test('a purge removes every row of the cluster in core and plugin tables and lea
     for (const f of gone.files) assert.equal(existsSync(join(app.dir, 'home', 'files', f.id)), false, 'the upload folder is gone');
     for (const f of keep.files) assert.equal(existsSync(join(app.dir, 'home', 'files', f.id, f.name)), true, 'the other cluster keeps its files');
     assert.equal(readFileSync(join(outbox, 'mine.txt'), 'utf8'), 'member file');
-    assert.equal(readFileSync(join(app.dir, 'sandbox', 'work.txt'), 'utf8'), 'sandbox');
     assert.equal(readFileSync(join(app.dir, 'project-1', 'code.txt'), 'utf8'), 'project');
 
     // The replay from the start shows nothing of it but the tombstone, and the page's 'cluster' rule drops it.
@@ -449,8 +446,8 @@ test('a group cannot be purged during an in-flight member addition', async () =>
     const { cluster } = await app.cluster('adding a member', ['A']);
     const started = Promise.withResolvers<void>();
     const create = app.native.createSession!;
-    app.native.createSession = async (ctx) => { started.resolve(); await gate.promise; return create(ctx); };
-    adding = app.hub.addMembers(cluster.id, [{ projectPath: tempDir(), harness: 'mock', name: 'B' }]);
+    app.native.createSession = async (spec) => { started.resolve(); await gate.promise; return create(spec); };
+    adding = app.hub.addMembers(cluster.id, [{ harness: 'mock', mode: 'native', name: 'B', projectPath: '/work' }]);
     await started.promise;
     app.hub.deleteCluster(cluster.id);
     await assert.rejects(app.hub.purgeCluster(cluster.id, cluster.name, trashVersion(app, cluster.id)), { code: 'ADDING_MEMBERS' });

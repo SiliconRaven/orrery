@@ -2,6 +2,10 @@
 // process sends (each app's state, lib/strip.mjs, and icons as data URLs) and sends back a supported app's id when one
 // is clicked, or a close on Escape. Names and states are text (tooltips, accessible names), never HTML. Buttons are
 // kept per app id and only updated, so a redraw between mouse-down and mouse-up never swallows a click.
+import { t, translateStatic } from '../../shared/i18n/index.js';
+import { translateDesktopPage } from './language.mjs';
+
+translateStatic(document);
 const api = window.orrery;
 const box = document.getElementById('apps');
 const els = new Map();
@@ -19,11 +23,11 @@ function make(tag, props = {}) {
 
 /** What an icon says when pointed at, by its state. */
 function tip(e) {
-  if (e.status === 'add') return e.windows === 1 ? `${e.name}：加成标签` : `${e.name}：${e.windows} 个窗口，选一个加成标签`;
-  if (e.status === 'docked') return `${e.name}：窗口都已经在标签里了`;
-  if (e.status === 'launch') return `${e.name}：没有在运行，点一下启动它`;
-  if (e.status === 'starting') return `${e.name}：正在启动，等它的窗口出现`;
-  return `${e.name}：没有在运行，也没法启动（${e.reason}）`;
+  if (e.status === 'add') return e.windows === 1 ? t('{name}：加成标签', { name: e.name }) : t('{name}：{count} 个窗口，选一个加成标签', { name: e.name, count: e.windows });
+  if (e.status === 'docked') return t('{name}：窗口都已经在标签里了', { name: e.name });
+  if (e.status === 'launch') return t('{name}：没有在运行，点一下启动它', { name: e.name });
+  if (e.status === 'starting') return t('{name}：正在启动，等它的窗口出现', { name: e.name });
+  return t('{name}：没有在运行，也没法启动（{reason}）', { name: e.name, reason: t(e.reason) });
 }
 
 function element(id) {
@@ -39,12 +43,13 @@ function element(id) {
 }
 
 api.onState((s) => {
+  translateDesktopPage(s.language);
   s.entries.forEach((e, i) => {
     let el = els.get(e.id);
     if (!el) { el = element(e.id); els.set(e.id, el); }
     if (box.children[i] !== el.b) box.insertBefore(el.b, box.children[i] ?? null);
     const src = s.icons?.[e.id] ?? '';
-    const key = JSON.stringify([e, src]);
+    const key = JSON.stringify([e, src, s.language]);
     if (key === el.key) return;
     el.key = key;
     if (src) { if (el.img.getAttribute('src') !== src) el.img.src = src; } else el.img.removeAttribute('src');

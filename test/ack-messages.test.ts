@@ -2,13 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { nativeHeaders, holdScript, startTestHub, waitFor } from './helpers.ts';
+import { holdScript, memberHeaders, startTestHub, turnsOf, waitFor } from './helpers.ts';
 
 async function connect(url: string, headers: Record<string, string>): Promise<Client> {
   const client = new Client({ name: 'ack-test', version: '1' });
-  await client.connect(new StreamableHTTPClientTransport(new URL(url + '/mcp'), {
-    requestInit: { headers },
-  }));
+  await client.connect(new StreamableHTTPClientTransport(new URL(url + '/mcp'), { requestInit: { headers } }));
   return client;
 }
 
@@ -32,10 +30,11 @@ test('explicit acknowledgement: MCP identity, atomic batches, receipts, history 
     const running = await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@all hold' });
     await app.api('POST', `/api/clusters/${other.id}/messages`, { body: '@X hold' });
     const cross = await app.api('POST', `/api/clusters/${other.id}/messages`, { body: 'other' });
-    await waitFor(() => app.native.delivered.length === 3, 'three deliveries started');
-    const ca = await connect(app.url, nativeHeaders(app, a.id));
-    const cb = await connect(app.url, nativeHeaders(app, b.id));
-    const cx = await connect(app.url, nativeHeaders(app, x.id));
+    await waitFor(() => [a, b, x].every((m) => turnsOf(app, m.id) === 1), 'held turns');
+    const token = (id: string) => memberHeaders(app, id);
+    const ca = await connect(app.url, token(a.id));
+    const cb = await connect(app.url, token(b.id));
+    const cx = await connect(app.url, token(x.id));
     try {
       const own = (await call(ca, 'send_message', { body: 'a normal 👍 in the body' })).data.messageId;
       const note = await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: 'record only' });
@@ -102,18 +101,17 @@ test('explicit acknowledgement: MCP identity, atomic batches, receipts, history 
       app.hub.removeMember(cluster.id, b.id);
       const afterRemoval = (await call(ca, 'read_messages', { history: true, before: batch[0] })).data;
       assert.deepEqual(afterRemoval.find((m: any) => m.id === own).acknowledgements.map((x: any) => x.member), ['Bee']);
-      assert.equal((await call(cb, 'send_message', { body: 'removed member cannot send' })).error, true, 'a removed member cannot use its former conversation identity');
+      assert.equal((await call(cb, 'read_messages', {})).error, true, 'a removed member loses its identity');
     } finally {
       await ca.close();
       await cb.close();
       await cx.close();
     }
-    const removedIdentity = nativeHeaders(app, b.id);
     release();
     await waitFor(() => app.settled(cluster.id), 'held deliveries settle');
-    const removedClient = await connect(app.url, removedIdentity);
-    try { assert.equal((await call(removedClient, 'send_message', { body: 'removed member cannot send' })).error, true, 'a fresh transport cannot regain a removed membership'); }
-    finally { await removedClient.close(); }
+    const late = await connect(app.url, token(b.id));
+    try { assert.equal((await call(late, 'ack_messages', { messageIds: [running.id] })).error, true, 'a removed identity cannot act'); }
+    finally { await late.close(); }
   } finally {
     release();
     await app.close();

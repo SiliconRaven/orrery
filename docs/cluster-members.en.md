@@ -4,9 +4,10 @@ Language: [中文](cluster-members.md) | **English**
 
 ## Adding, Rebinding & Hiding Members
 
-Every member attaches in **Native Mode (`mode: "native"`)** (omitting `mode` defaults to `"native"`, other values are rejected, and the UI omits mode switching):
+Every member is a native conversation. The old isolated mode is gone: when a database upgrades to schema v30, old isolated members still in a group are removed, each affected group gets a system note, and the records are kept (see [Architecture](architecture.en.md#storage--migrations)).
 
-- **Creating vs attaching**: Supporting adapters (e.g. Codex) can create a new native session given an explicit **`projectPath`**; attaching an existing conversation reads `cwd` from the host adapter store. One native conversation can join multiple clusters, with renames and avatars saved via `PATCH /api/members/:id`.
+- **Creating and attaching**. Adapters that support creation, such as Codex, require explicit `mode: "native"` and a non-empty `projectPath`. Attach existing conversations by `sessionId`; the adapter reads their `cwd` from the host app. Member responses omit `mode`. One native conversation can join multiple clusters, with renames and avatars saved via `PATCH /api/members/:id`.
+- **Rename notices**. Renaming a visible member adds a bilingual system message with the old and new names to the chat and the visible members' unread lists. Future deliveries use the new name in their headers. Keeping the same name, changing only the avatar, and renaming a hidden member produce no chat notice. Member editing is disabled for clusters in the recycle bin.
 - **Avatars**: **No built-in character preset illustrations are bundled**; users may upload custom avatars or fall back to each app's identification icon and member mark.
 - **Session rebind (`POST /api/members/:id/session`)**: Moves a member to another session on the same harness (`confirmStopped` required if a prior delivery may still be active).
 - **Hidden members (`POST /api/members/:id/hidden`)**: Unlike visual hiding, **the Hub enforces hidden boundaries in both scheduling and `/mcp`**: hidden members receive no deliveries, every MCP tool call (reads included) returns the hidden notice without acting, new assignments/mentions are barred, and peers cannot see them (only the user and an active coordinator can). Existing messages and tasks stay preserved.

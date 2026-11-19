@@ -30,3 +30,11 @@ Stock Kimi Code shares workspace MCP connections without session IDs on `tools/c
 - **Read-only store**: Reads `~/.kimi-code/projects.json` first (falling back to `workspaces.json`), validating `session_<UUID>` IDs.
 - **Queue & lock respect**: Prepends `[orrery · 来自 <sender>]` with **only** `content` and `prompt_id` (no model/permission overrides); backs off on `40931` up to 15x2s without calling lock takeover; attempts `:abort` on pre-`running` timeout/cancel and reports `unknown`.
 - **Usage**: Reads `/api/v1/oauth/usage` with a 5-minute automatic / 10-second manual cooldown, deduplicates per-turn `step.usage` by `stepId`, and reads session totals from `wire.jsonl`. Basic delivery and replies have run in the real Kimi Code client.
+
+## Reading the Conversation Record (`transcript`)
+
+When a plugin reads a member's bound native conversation through the Hub (see [Architecture](../architecture.en.md#reading-a-members-bound-native-conversation)), the adapter locates the bound session's `agents/main/wire.jsonl` inside `sessions/` (verifying the session ID in `state.json` first and rejecting symlinks/hardlinks), and pages backward or reads newly appended records by byte cursor without reading `server.token` or contacting the local service:
+
+- Only the main agent's canonical loop stream (`turn.prompt`, user-initiated `turn.steer`, `context.append_loop_event`, and turn interruption/error rows) is read, skipping subagent logs and redundant mirror rows. Thinking parts yield placeholders without raw reasoning text, non-text tool payloads show placeholders, and unrecognised rows degrade to `unknown` and increment `unknownCount`.
+- Deliveries are attributed via `promptId` against Hub delivery batches; in optional direct MCP mode, paired successful `send_message` tool calls and results (including across page boundaries) resolve to `orrery_post`. Replies in the default reply-to-chat mode carry no Hub message ID in `wire.jsonl` and stay as `assistant`.
+- Checked structure baseline: aligned to Kimi Code 1.3.4 (`wire.jsonl` `protocol_version: "1.5"`) with synthetic fixtures (`node --test test/kimi-transcript.test.ts`).

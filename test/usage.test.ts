@@ -6,6 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, truncateSync, utim
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createClaudeNativeAdapter } from '../src/adapters/claude/native.ts';
+import { cliEnv } from '../src/adapters/claude/cli.ts';
 import { askUsage, fromGetUsage } from '../src/adapters/claude/usage.ts';
 import { createCodexUsage, fromAppServer, fromRolloutLimits, normalize as codexNormalize, windowLabel } from '../src/adapters/codex/usage.ts';
 import { createDeepseekNativeAdapter } from '../src/adapters/deepseek/native.ts';
@@ -258,6 +259,7 @@ test('usage claude quota: a refresh asks the CLI over stdin and stdout, in the w
   assert.equal(run.apiKey, null, 'the allowlist keeps the API key out');
   assert.equal(run.configDir, claudeDir);
   assert.equal(run.traffic, null, 'get_usage runs without the nonessential-traffic switch, which keeps the CLI from fetching the limits');
+  assert.equal(cliEnv(process.env, claudeDir).CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1', 'the plain CLI environment keeps it');
   assert.equal(resolve(run.cwd).toLowerCase(), resolve(tmpdir()).toLowerCase());
   const after = (flag: string) => run.argv[run.argv.indexOf(flag) + 1];
   assert.equal(after('--tools'), '');
@@ -388,14 +390,14 @@ async function usageHub(dir = tempDir()) {
   const plain = createMockNativeAdapter({ harness: 'plain', kind: 'queue', sessions: [{ id: 'p1', title: 'p1', model: null, cwd: dir, updatedAt: null }] });
   const app = await startTestHub({ dir, nativeAdapters: { quota: quotaAdapter, plain }, limits: { quotaPollMs: 60_000 } });
   const { cluster, members } = await app.api('POST', '/api/clusters', {
-    name: 'u', members: [{ harness: 'quota', mode: 'native', sessionId: 'q1', name: 'Q' }, { harness: 'plain', mode: 'native', sessionId: 'p1', name: 'P' }, { projectPath: tempDir(), harness: 'mock', name: 'I' }],
+    name: 'u', members: [{ harness: 'quota', mode: 'native', sessionId: 'q1', name: 'Q' }, { harness: 'plain', mode: 'native', sessionId: 'p1', name: 'P' }],
   });
   return { app, cluster, members, calls, setPct: (n: number) => { pct = n; }, setTurnUsage: (t: TokenTotals | null) => { turnUsage = t; } };
 }
 
 test('usage hub: per-member tokens via orrery and whole conversation, cluster totals, quota per harness; refresh asks the source', async () => {
   const h = await usageHub();
-  const [q, p, i] = h.members;
+  const [q, p] = h.members;
   try {
     const sent = await h.app.api('POST', `/api/clusters/${h.cluster.id}/messages`, { body: '@all hello' });
     await waitFor(() => h.app.settled(h.cluster.id), 'delivered');
@@ -404,15 +406,13 @@ test('usage hub: per-member tokens via orrery and whole conversation, cluster to
     // `session` (the conversation's title and model, docs/cluster-members.md) is checked on its own below.
     const row = (id: string) => { const { session: _, ...rest } = r.members.find((m: any) => m.memberId === id); return rest; };
     const sessionOf = (id: string) => r.members.find((m: any) => m.memberId === id).session;
-    assert.deepEqual([sessionOf(q.id).title, sessionOf(p.id).title, sessionOf(i.id).title], ['q1', 'p1', 'orrery: u'], 'native session titles are recorded when added');
+    assert.deepEqual([sessionOf(q.id).title, sessionOf(p.id).title], ['q1', 'p1'], 'read when added');
     assert.deepEqual(row(q.id), { memberId: q.id, harness: 'quota', viaOrrery: { totals: tok(100, 20, 3, 7, 1), turns: 1 }, conversationSupported: true, conversation: tok(1000, 2000, 0, 50), latestTurnTokens: 127, alert: null });
     assert.deepEqual(row(p.id), { memberId: p.id, harness: 'plain', viaOrrery: null, conversationSupported: false, conversation: null, latestTurnTokens: null, alert: null });
-    assert.deepEqual(row(i.id), { memberId: i.id, harness: 'mock', viaOrrery: null, conversationSupported: false, conversation: null, latestTurnTokens: null, alert: null }, 'the mock has no usage source');
     assert.deepEqual(r.cluster, { viaOrrery: tok(100, 20, 3, 7, 1), conversation: tok(1000, 2000, 0, 50) });
     assert.deepEqual(r.quotas, [
       { harness: 'quota', supported: true, snapshot: SNAP(10, '2026-11-03T11:00:00.000Z') },
       { harness: 'plain', supported: false, snapshot: null },
-      { harness: 'mock', supported: false, snapshot: null },
     ]);
     assert.deepEqual(h.calls, [false], 'only cheap reads unless asked');
     assert.ok(h.app.events.some((e) => e.kind === 'usage' && (e.payload as any).turn?.batchId && e.memberId === q.id), 'a usage event per recorded turn');
@@ -436,7 +436,7 @@ test('usage hub: per-member tokens via orrery and whole conversation, cluster to
     await assert.rejects(h.app.api('GET', '/api/usage?cluster=nope'), /unknown cluster/);
     const all = await h.app.api('GET', '/api/usage');
     assert.equal(all.clusterId, null);
-    assert.equal(all.members.length, 3);
+    assert.equal(all.members.length, 2);
   } finally {
     await h.app.close();
   }
@@ -482,8 +482,8 @@ test('usage report: a native conversation\'s title and model, re-read only from 
   const remote = createMockNativeAdapter({ harness: 'remote', sessions: [{ ...info, id: 'r1' }] });
   remote.attachSession = async () => { throw new Error('must not be called by the report'); };
   const tracker = new UsageTracker({ store, pollMs: 0, harnessesInUse: () => [], emit: () => {}, adapters: { local, remote } });
-  const member = (id: string, harness: string, sessionId: string, mode: Member['mode'] = 'native'): Member => ({ id, clusterId: 'c', name: id, avatar: null, harness,
-    model: null, effort: null, mode, workerSessionId: sessionId, cwd: 'D:/work/shop', origin: 'attached', status: 'idle', removedAt: null, hiddenAt: null });
+  const member = (id: string, harness: string, sessionId: string): Member => ({ id, clusterId: 'c', name: id, avatar: null, harness,
+    model: null, effort: null, workerSessionId: sessionId, cwd: 'D:/work/shop', origin: 'attached', status: 'idle', removedAt: null, hiddenAt: null });
   const members = [member('a', 'local', 's1'), member('b', 'local', 's1'), member('r', 'remote', 'r1')];
   try {
     let rows = (await tracker.report('c', members)).members;

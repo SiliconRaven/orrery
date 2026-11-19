@@ -8,7 +8,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { libraryView, runGlobalLabelCommand } from './labels.ts';
 import { taskEvent } from './queries.ts';
 import type { TasksService } from './service.ts';
-import { reportShip, ShipRefused, verifyShip } from './ship.ts';
+import { reportBatchShip, reportShip, ShipRefused, verifyBatchShip, verifyShip } from './ship.ts';
 
 const USER = { kind: 'user' } as const;
 const limitOf = (url: URL) => (url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : undefined);
@@ -114,7 +114,10 @@ export const shipRoute: PluginBridgeRoute = {
     let body: any;
     try { body = await readJson(req); } catch { return json(res, 400, { error: 'invalid ship request' }); }
     try {
-      return json(res, 200, params[0] === 'verify' ? verifyShip(hub, secret, body?.ticket) : await reportShip(hub, secret, body));
+      // A batch ticket (b1.) goes to the batch side; both answer on the same two routes.
+      const batch = typeof body?.ticket === 'string' && body.ticket.startsWith('b1.');
+      return json(res, 200, params[0] === 'verify' ? (batch ? verifyBatchShip : verifyShip)(hub, secret, body?.ticket)
+        : await (batch ? reportBatchShip : reportShip)(hub, secret, body));
     } catch (e) {
       return json(res, e instanceof ShipRefused ? e.status : e instanceof CollaborationError ? 409 : 500, { error: e instanceof Error ? e.message : String(e) });
     }

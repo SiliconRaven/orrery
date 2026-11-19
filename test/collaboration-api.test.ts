@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { saveCollaborationTask } from '../src/plugins/tasks/store.ts';
-import { nativeHeaders, bearer, holdScript, rawFetch, startTestHub, TEST_TOKEN, waitFor } from './helpers.ts';
+import { bearer, holdScript, rawFetch, startTestHub, TEST_TOKEN, waitFor, turnsOf, memberHeaders } from './helpers.ts';
 
 test('the HTTP workbench pages 300 tasks newest first with a stable cursor and optional metadata', async () => {
   const app = await startTestHub();
@@ -58,8 +58,10 @@ test('HTTP and MCP share tasks and bookmarks, preserve caller identity, and dele
     assert.deepEqual((messageEvent.payload as any).message.bookmarks, []);
     await app.api('POST', `${path}/collaboration`, { action: 'bookmark.set', operationId: 'user-star', messageId: message.id, labels: ['user'] });
     await app.api('POST', `${path}/messages`, { body: '@A hold' });
+    await waitFor(() => turnsOf(app, member.id) > 0, 'member turn');
+    const token = memberHeaders(app, member.id);
     client = new Client({ name: 'test', version: '0' });
-    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: nativeHeaders(app, member.id) } }));
+    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: token } }));
     const tools = (await client.listTools()).tools;
     for (const name of ['raise_attention', 'resolve_attention', 'set_task_summary']) {
       assert.ok(tools.find((tool) => tool.name === name)?.inputSchema.required?.includes('expectedRevision'), name);
@@ -152,9 +154,11 @@ test('HTTP user approval and MCP submission, immutable review and merge records 
     const path = `/api/clusters/${cluster.id}`;
     await app.api('POST', `${path}/messages`, { body: '@all hold' });
     for (const member of [executor, reviewer]) {
-          const client = new Client({ name: 'lifecycle-test', version: '0' });
+      await waitFor(() => turnsOf(app, member.id) > 0, 'held member turn');
+      const token = memberHeaders(app, member.id);
+      const client = new Client({ name: 'lifecycle-test', version: '0' });
       clients.push(client);
-      await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: nativeHeaders(app, member.id) } }));
+      await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: token } }));
     }
     const call = async (client: Client, name: string, args: Record<string, unknown>) => {
       const result = await client.callTool({ name, arguments: args });
@@ -162,7 +166,8 @@ test('HTTP user approval and MCP submission, immutable review and merge records 
       return { isError: result.isError === true, text, data: result.isError ? null : JSON.parse(text) };
     };
     const tools = (await clients[0].listTools()).tools;
-    assert.equal(tools.length, 21);
+    assert.equal(tools.length, 23);
+    for (const name of ['get_batch', 'manage_batch']) assert.equal(tools.find((tool) => tool.name === name)?.inputSchema.type, 'object', name);
     const actionSchema = tools.find((tool) => tool.name === 'task_action')!.inputSchema as any;
     assert.ok(actionSchema.properties.action.enum.includes('merge'));
     assert.ok(!actionSchema.properties.action.enum.includes('approve'), 'user approval is not a member tool action');
@@ -293,8 +298,10 @@ test('MCP list_tasks finds a task by a short id prefix and keeps it first', asyn
     assert.equal((await app.api('GET', `${path}/workspace?q=${prefix}`)).tasks[0].id, target.id,
       'the HTTP workspace uses the same id search');
     await app.api('POST', `${path}/messages`, { body: '@A hold' });
+    await waitFor(() => turnsOf(app, member.id) > 0, 'member turn');
+    const token = memberHeaders(app, member.id);
     client = new Client({ name: 'test', version: '0' });
-    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: nativeHeaders(app, member.id) } }));
+    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: token } }));
     const call = async (name: string, args: Record<string, unknown>) => {
       const result = await client!.callTool({ name, arguments: args });
       return JSON.parse((result.content as any)[0].text);
@@ -325,8 +332,10 @@ test('MCP list_tasks filters several labels with AND and pages without repeats',
     await create('high', 'high only', ['high']);
     for (let i = 0; i < 3; i++) await create(`page-${i}`, `page ${i}`, ['ui', 'page']);
     await app.api('POST', `${path}/messages`, { body: '@A hold' });
+    await waitFor(() => turnsOf(app, member.id) > 0, 'member turn');
+    const token = memberHeaders(app, member.id);
     client = new Client({ name: 'test', version: '0' });
-    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: nativeHeaders(app, member.id) } }));
+    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: token } }));
     const call = async (name: string, args: Record<string, unknown>) =>
       JSON.parse(((await client!.callTool({ name, arguments: args })) as any).content[0].text);
     const and = await call('list_tasks', { label: ['ui', 'high'] });

@@ -1,4 +1,4 @@
-// Batched delivery and read state (docs/architecture.md「调度」「read_messages」, docs/native-mode.md).
+// Batched delivery and read state (docs/native-mode.md, docs/collaboration.md).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +11,7 @@ import { Store } from '../src/core/store.ts';
 import { defaultScript, parseEnvelopes, type MockScript } from './mock.ts';
 import { createMockNativeAdapter, type MockNativeOptions } from '../src/adapters/mock/native.ts';
 import type { HubEvent, Message } from '../src/core/types.ts';
-import { fixtureNativeMock, holdScript, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { holdScript, startTestHub, tempDir, turnsOf, waitFor } from './helpers.ts';
 
 /** An in-process Hub (no HTTP) with native mock members A (session s1) and B (s2); paused, so nothing runs yet. */
 async function nativeHub(opts: { store?: Store; dir?: string; native?: MockNativeOptions; limits?: Partial<Limits> } = {}) {
@@ -23,7 +23,7 @@ async function nativeHub(opts: { store?: Store; dir?: string; native?: MockNativ
     limits: { messageWindowMs: 0, ...opts.limits } });   // no member-message window, as in startTestHub
   const events: HubEvent[] = [];
   hub.subscribe((e) => events.push(e));
-  hub.start();   // no isolated turn runs in these tests
+  hub.start();
   return { dir, native, store, hub, events };
 }
 
@@ -34,7 +34,7 @@ const stateOf = (store: Store, messageId: string) => store.withDeliveries([store
 const hang: MockNativeOptions['onDeliver'] = (_s, _t, ctx) =>
   new Promise((_ok, fail) => ctx.signal.addEventListener('abort', () => fail(new Error('aborted')), { once: true }));
 
-/** Three native nativeAdapters: A needs a fresh online check, B is offline, S sends without sharing A's online checks. */
+/** Three native adapters: A needs a fresh online check, B is offline, S sends without sharing A's online checks. */
 async function postFixture() {
   const dir = tempDir();
   const session = (id: string) => ({ id, title: id, model: null, cwd: dir, updatedAt: null });
@@ -150,19 +150,19 @@ test('batch: three messages queued for a busy member go out in one turn when it 
     const { cluster, members: [a] } = await app.cluster('c', ['A']);
     const send = (body: string) => app.api('POST', `/api/clusters/${cluster.id}/messages`, { body });
     await send('@A hold');
-    await waitFor(() => app.native.delivered.length === 1, 'first turn running');
+    await waitFor(() => turnsOf(app, a.id) === 1, 'first turn running');
     const queued = [await send('@A one'), await send('@A two'), await send('@A three')];
     hold.release();
     await waitFor(() => app.settled(cluster.id), 'all handled');
 
-    assert.equal(app.native.delivered.length, 2, 'one adapter call for the three queued messages');
+    assert.equal(turnsOf(app, a.id), 2, 'one adapter call for the three queued messages');
     assert.deepEqual(parseEnvelopes(inputs[1]).map((e) => [e.messageId, e.body]), queued.map((m) => [m.id, m.body]));
     assert.match(inputs[1], /\n\n-{10}\n（你是群员 A。.*上面共 3 条消息，回复哪一条就带 replyTo=那条的 messageId/);
     assert.equal(inputs[1].match(/-{10}/g)!.length, 1, 'one note for the whole batch');
     const ds = (await app.messages(cluster.id)).slice(1).map((m) => m.deliveries[0]);
     assert.deepEqual(ds.map((d) => d.state), ['done', 'done', 'done']);
     assert.deepEqual(ds.map((d) => d.batchId), [ds[0].id, ds[0].id, ds[0].id], 'the batch id is its first delivery id');
-    assert.equal((app.hub as any).turnStarts.get(JSON.stringify(['native', a.harness, a.workerSessionId])).length, 2, 'the batch is one turn for the per-hour limit');
+    assert.equal((app.hub as any).turnStarts.get(JSON.stringify(['native', 'mock', a.workerSessionId])).length, 2, 'the batch is one turn for the per-hour limit');
     const agent = app.events.filter((e) => e.kind === 'agent' && (e.payload as any).deliveryId === ds[0].id);
     assert.ok(agent.length > 0 && agent.every((e) => (e.payload as any).messageId === queued[0].id), 'agent output goes to the first delivery');
   } finally {
@@ -170,14 +170,14 @@ test('batch: three messages queued for a busy member go out in one turn when it 
   }
 });
 
-test('batch: an isolated reply continues the chain of its replyTo within the batch', async () => {
+test('batch: a reply during the batch\'s turn continues the chain of its replyTo within the batch', async () => {
   const hold = holdScript();
   const app = await startTestHub({ mock: { script: hold.script } });
   try {
-    const { cluster } = await app.cluster('c', ['A']);
+    const { cluster, members: [a] } = await app.cluster('c', ['A']);
     const send = (body: string) => app.api('POST', `/api/clusters/${cluster.id}/messages`, { body });
     await send('@A hold');
-    await waitFor(() => app.native.delivered.length === 1, 'first turn running');
+    await waitFor(() => turnsOf(app, a.id) === 1, 'first turn running');
     const [x, y] = [await send('@A ping x'), await send('@A ping y')];
     hold.release();
     await waitFor(async () => (await app.messages(cluster.id)).length === 5 && app.settled(cluster.id), 'pongs');
@@ -382,12 +382,13 @@ test('envelope: a single message keeps the one-message format', async () => {
   const recording: MockScript = (msg, ...rest) => (inputs.push(msg.raw), defaultScript(msg, ...rest));
   const app = await startTestHub({ mock: { script: recording } });
   try {
-    const { cluster, members: [member] } = await app.cluster('c', ['A']);
+    const { cluster, members: [a] } = await app.cluster('c', ['A']);
     const m = await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@A hi' });
     await waitFor(() => app.settled(cluster.id), 'done');
     assert.equal(inputs[0], `[orrery] cluster=c clusterId=${cluster.id} from=user messageId=${m.id} hop=0 to=@A\n@A hi\n\n----------\n`
       + `（你是群员 A。有 ack_messages 工具时，看到消息用 ack_messages 确认（👍 即收到），不要为确认单独发言；只有提问、交结果、报阻塞或请别人做事时才用 send_message；任务结果和证据写进 task_action submit 的 summary，Hub 会通知验收人，不用另外 @；需要改派或流程卡住时才 @ 协调员；回答别人问你的问题不要带 fyi；只是知会、不需要对方行动的发言带 fyi=true（对方只留未读，不被唤醒）；要让某人收到，正文里写 @名字，回复这条请带 replyTo=${m.id}。`
-      + `不 @ 人的发言只留在群聊记录里。要发文件：先用你自己的工具把文件复制进你的 orrery 发件箱 ${join(app.home, 'outbox', member.id)}，再在 send_message 的 attachments 里写文件名（Hub 只复制，不会删掉发件箱里的文件）。这个群的 clusterId 是 ${cluster.id}；调用 orrery 工具时可带 clusterId 指定群。）`);
+      + `不 @ 人的发言只留在群聊记录里。要发文件：先用你自己的工具把文件复制进你的 orrery 发件箱 ${join(app.home, 'outbox', a.id)}，再在 send_message 的 attachments 里写文件名（Hub 只复制，不会删掉发件箱里的文件）。`
+      + `这个群的 clusterId 是 ${cluster.id}；调用 orrery 工具时可带 clusterId 指定群。）`);
   } finally {
     await app.close();
   }

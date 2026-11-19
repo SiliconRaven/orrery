@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 // Task references in chat messages (docs/collaboration.md「消息里引用任务」): `#<number>` or legacy `#<full task id>`.
 // The Hub never parses them; the page turns them into links once it knows the task exists in this cluster.
 
@@ -151,7 +152,7 @@ const TASK_STATUS = { pending: '待开工', accepted: '待开工', working: '进
 export function taskStatusChip(status) {
   if (!status) return null;
   const known = Object.hasOwn(TASK_STATUS, status);
-  return { label: known ? TASK_STATUS[status] : String(status), className: `wb-status wb-status-${status === 'accepted' ? 'pending' : known ? status : 'unknown'}` };
+  return { label: known ? t(TASK_STATUS[status]) : String(status), className: `wb-status wb-status-${status === 'accepted' ? 'pending' : known ? status : 'unknown'}` };
 }
 
 /**

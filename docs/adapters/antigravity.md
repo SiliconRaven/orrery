@@ -20,6 +20,7 @@ Antigravity 适配器经用户手动安装的本地 **sidecar**、全局 **MCP �
 
 - **安装**：见 [plugins/antigravity-orrery/README.md](../../plugins/antigravity-orrery/README.md)（复制至 `~/.gemini/config/sidecars/orrery/`、启用 sidecar、配置 `mcp_config.json` 与 `hooks.json`；日常勿配置诊断用的 `hook-dump.mjs`）。
 - **只读枚举（`store.ts`）**：通过 `withCopy` 复制 `~/.gemini/antigravity/conversation_summaries.db`（及 `-wal`）临时副本读取 `nesting_depth = 0`、`killed = 0`、`app_data_dir = 'antigravity'` 且含 `file://` 工作区的 UUID 对话。不支持新建会话、订阅额度或 token 统计。
+- **只读读取对话正文**：`Hub.memberTranscript` 优先按页只读 `<geminiHome>/antigravity/brain/<uuid>/.system_generated/logs/transcript_full.jsonl`（首行探测与有界正文同支持至 256 KiB 并容忍首行半写；缺失时回退 `transcript.jsonl`，拒绝越界路径、硬链接与连接点且从不回退绕过；不读 `.pb` 与 `conversations/*.db`），占位脱敏 `thinking` 并统一从 `tool_call`、`tool_result` 与错误消息中脱敏 `orreryCaller` 签名及凭据回显；仅将 `SYSTEM_MESSAGE`（`sender=system`、`MESSAGE_PRIORITY_HIGH`）作为投递候选交由 Hub 核实（`USER_INPUT` 永不晋升），并按位置及 `callId` 跨页配对 `call_mcp_tool`（含 JSON 引号编码）的成功结果对回 `orrery_post`。
 
 ## 使用范围
 

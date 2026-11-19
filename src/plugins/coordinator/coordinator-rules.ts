@@ -1,4 +1,5 @@
 /** The single source of the coordinator instructions shown in notifications, workspace and envelopes. */
+// v17 adds review batches to rule 20: one wake when the batch is complete, one verdict per task, one ship for the batch.
 // v16 adds rule 21: work that lands on a hidden member wakes the coordinator, which hands it on, shows the member or asks the user.
 // v15 has reviewers read several pending tasks in one pass, with one verdict and one ship per task (rule 20).
 // v14 is the simplified flow (docs/collaboration.md): tasks are assigned instead of nominated and claimed (rules 6, 8, 9,
@@ -8,7 +9,7 @@
 // The task builder dispatches and picks the reviewer (rules 1, 4, 5, 18), and full tests run only in premerge (rule 14).
 // 合并时按实际合并顺序由协调员最终指派版本号。
 export const COORDINATOR_RULES = Object.freeze({
-  version: 'v16',
+  version: 'v17',
   text: [
     '1. 建任务的人自己派工和选验收者：自己有执行资格就自己优先做。协调员只在用户指定、有成员闲着且有工作等分配、成员出错或离线、流程卡住且成员和程序处理不了时才做事，不主动安排任务。',
     '2. 每轮协调先调用默认 read_messages 补齐本群未读上下文。没有点名任何人的用户消息主动投给协调员，协调员在一轮里时排队，空闲后合成一批唤醒。成员没有 @ 任何人的发言（普通群聊、任务留言）只留在群聊记录里，不投给协调员，默认 read_messages 也不返回，要看时用 history 翻记录；成员需要协调员做事时要明确 @ 协调员。',
@@ -29,7 +30,8 @@ export const COORDINATOR_RULES = Object.freeze({
     '17. 派工时消息只写任务编号和变化点（谁执行、谁验收、合并顺序）；任务内容由执行者用 `get_task` 读取，不在消息里复述。',
     '18. 建单时如果已经知道合适的执行者，直接写上执行者（create_task 的 memberId）和验收人，不需要等协调员同意；省略执行者时，建单人有执行资格就由建单人自己做。开工前用 `task_action assign` 换人，执行者直接 `start`。',
     '19. 验收分三档：独立验收由另一个成员做，适用于 Hub、MCP、适配器、桥和插件的逻辑，安全、数据、投递、权限、数据库结构的改动，以及架构级设计；自查档（reviewer 为 self）用于纯文档、小的设计、只改测试、文字和提示词的小改动，以及协调员判断风险低的小任务，执行者在提交 summary 里写清自查内容、跑过的检查和结果，提交后任务直接完成；用户验收用于界面效果和用户点名要自己看的。建单时由协调员定档，用户随时可以改；拿不准按独立验收，设计任务默认自查，架构级设计才用独立验收。',
-    '20. 验收员空闲时一次看完待验收的几个任务，读一遍上下文用在几个任务上；每个任务各自给结论、各自 ship，不要把多个任务合成一个大 diff 审。互相依赖或改同一块的小任务可以放在一起看。高风险的（投递、权限、数据库结构、第三方插件的写能力）单独审，不和别的放一批。只改文档和小改动继续走自查。',
+    '20. 验收员空闲时一次看完待验收的几个任务，读一遍上下文用在几个任务上；每个任务各自给结论、各自 ship，不要把多个任务合成一个大 diff 审。互相依赖或改同一块的小任务可以放在一起看。高风险的（投递、权限、数据库结构、第三方插件的写能力）单独审，不和别的放一批。只改文档和小改动继续走自查。'
+      + '要一起验收、一起合并的一串依赖任务，建单时放进同一个验收批次（manage_batch）：批次里的提交不唤醒验收者，批次齐了才唤醒一次；每个任务仍各自给结论，全部通过后由拿到命令的成员用批次 ship 一次合并；批次内的下游在上游提交后就能开工。',
     '21. 任务的工作落到隐身成员身上（被退回、前置就绪、等它验收、要它 ship 等）时 Hub 会通知协调员，这是第 9 条的例外。在授权内处理：改派给其他有资格的成员（assignment，已开工的用 recovery 转交），或在它就是合适的人、且隐身不是用户当前明确的要求时取消隐身（deliveryControl）；都做不了就告诉用户。处理结果写进任务。Hub 不会自动改派。',
   ].join('\n'),
 });

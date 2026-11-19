@@ -28,6 +28,8 @@ import { iconFromExe } from './lib/peicon.mjs';
 import { isAppId, panelBounds, panelStep, pickFor, stripEntries } from './lib/strip.mjs';
 import { dockedPosition, listCandidates, topmostOf } from './lib/windows.mjs';
 import { createWriter } from './lib/writer.mjs';
+import { setLanguage, t } from '../shared/i18n/index.js';
+import { desktopLanguage, desktopPageUrl, isDesktopLanguage } from './ui/language.mjs';
 
 const HERE = import.meta.dirname;
 /** The tab bar and the "+" panel: the only pages with a desktop interface, each its own. IPC from anything else is refused. */
@@ -55,7 +57,7 @@ export function runEnsure({ node = 'node', launcher = LAUNCHER, env = process.en
     let stdout = '';
     const child = spawn(node, [launcher, '--ensure'], { cwd: dirname(dirname(launcher)), env, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
     child.stdout.setEncoding('utf8').on('data', (c) => { stdout += c; });
-    child.once('error', (e) => done({ error: `没能运行 Node（${e.message}）。确认装了 Node 24，再在 desktop 目录里重新运行一次 npm run shortcut。` }));
+    child.once('error', (e) => done({ error: t('没能运行 Node（{error}）。确认装了 Node 24，再在 desktop 目录里重新运行一次 npm run shortcut。', { error: e.message }) }));
     child.once('close', (code) => done(parseEnsure(stdout, code)));
   });
 }
@@ -176,10 +178,13 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
   const writer = createWriter(ffi, { apps, ownWindow: () => shellHwnd });
   const statePath = join(app.getPath('userData'), 'desktop-state.json');
   const saved = readJson(statePath);
+  let uiLanguage = desktopLanguage(saved?.language);
+  setLanguage(uiLanguage);
   let state = initialState(loadTabs(saved, apps), loadLayout(saved));
-  let lastSaved = JSON.stringify(savedState(state));
+  let lastSaved = JSON.stringify({ ...savedState(state), language: uiLanguage });
   /** @type {{ status: 'starting' } | { status: 'ready', origin: string } | { status: 'error', message: string }} */
   let hub = { status: 'starting' };
+  let hubPage = null;
   let notice = null;
   let closing = false;
   /** The "+" panel: null while closed, else its entries as read when it opened (lib/strip.mjs); how often it was opened. */
@@ -248,7 +253,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
   // no owner, no taskbar entry, positioned through Electron only), under the gear, hidden until it is clicked.
   const settingsWin = new BrowserWindow({
     show: false, frame: false, alwaysOnTop: true, skipTaskbar: true, resizable: false, movable: false,
-    minimizable: false, maximizable: false, fullscreenable: false, width: 640, height: 400, title: 'orrery 应用位置', backgroundColor: '#232428',
+    minimizable: false, maximizable: false, fullscreenable: false, width: 640, height: 400, title: t('orrery 桌面设置'), backgroundColor: '#232428',
     webPreferences: { preload: SETTINGS_PRELOAD, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false },
   });
   settingsWin.removeMenu();
@@ -290,7 +295,11 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
   // collaboration page is the selected tab; the page gets no interface for it and the navigation rules stay as they are.
   const reloadKey = (input) => input.type === 'keyDown' && !input.alt && !input.meta
     && (input.key === 'F5' || (input.control && input.key.toLowerCase() === 'r'));
-  const reloadCollab = () => { if (hub.status === 'ready' && !wc.isDestroyed()) wc.reload(); };
+  const reloadCollab = () => {
+    if (hub.status !== 'ready' || wc.isDestroyed()) return;
+    const page = wc.getURL();
+    wc.loadURL(desktopPageUrl(allowNavigation(hub.origin, page, true) ? page : hubPage, uiLanguage)).catch(() => {});
+  };
   wc.on('before-input-event', (e, input) => {
     if (!reloadKey(input)) return;
     e.preventDefault();
@@ -331,7 +340,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
   function persist() {
     clearTimeout(persistTimer);
     persistTimer = null;
-    const s = JSON.stringify(savedState(state));
+    const s = JSON.stringify({ ...savedState(state), language: uiLanguage });
     if (s === lastSaved) return;
     try {
       mkdirSync(dirname(statePath), { recursive: true });
@@ -357,6 +366,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     for (const t of state.tabs) if (t.binding) learnIcon(t.app, t.binding.exePath);
     tabs.send('tabs:state', {
       ...view(state, apps),
+      language: uiLanguage,
       hub: hub.status === 'error' ? { status: 'error', message: hub.message } : { status: hub.status },
       notice,
       canPick: hub.status !== 'starting',
@@ -366,11 +376,11 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     });
     const iconsOf = (list) => Object.fromEntries(list.flatMap((e) => (icons[e.id] ? [[e.id, icons[e.id]]] : [])));
     if (strip && !strips.isDestroyed()) {
-      strips.send('strip:state', { entries: strip, icons: iconsOf(strip), opened: stripOpened });
+      strips.send('strip:state', { entries: strip, icons: iconsOf(strip), opened: stripOpened, language: uiLanguage });
     }
     if (settings && !settingsPage.isDestroyed()) {
       settingsPage.send('settings:state', { rows: settings.map((r) => ({ ...r, message: messages[r.id] ?? null })), icons: iconsOf(settings),
-        opened: settingsOpened, busy: dialogOpen });
+        opened: settingsOpened, busy: dialogOpen, language: uiLanguage });
     }
   }
 
@@ -388,7 +398,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     state = after.state;
     const notices = [...r.notices, ...after.notices];
     for (const f of out.failures) {
-      if (f.op === 'putBack') notices.push({ text: `有一个窗口没能还原到原来的位置（${f.reason}${f.error ? `，错误 ${f.error}` : ''}）。` });
+      if (f.op === 'putBack') notices.push({ text: t('有一个窗口没能还原到原来的位置（{reason}{error}）。', { reason: f.reason, error: f.error ? t('，错误 {error}', { error: f.error }) : '' }) });
       else if (f.status === 'refused') console.error('orrery desktop: refused window operation', f);
     }
     if (notices.length) notice = notices.at(-1).text;
@@ -406,11 +416,11 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     const out = dispatch({ type: 'quit', trigger });
     persist();
     const problems = [
-      ...out.failures.filter((f) => f.op === 'putBack').map((f) => `${f.tab}：${f.reason}${f.error ? `（错误 ${f.error}）` : ''}`),
-      ...out.lost.map((l) => `${l.tab}：窗口已经关了或身份变了（${l.reason}），没有去动它`),
+      ...out.failures.filter((f) => f.op === 'putBack').map((f) => t('{tab}：{reason}{error}', { tab: f.tab, reason: f.reason, error: f.error ? t('（错误 {error}）', { error: f.error }) : '' })),
+      ...out.lost.map((l) => t('{tab}：窗口已经关了或身份变了（{reason}），没有去动它', { tab: l.tab, reason: l.reason })),
     ];
     if (problems.length && !win.isDestroyed()) {
-      dialog.showMessageBoxSync(win, { type: 'warning', title: 'orrery', message: '有应用窗口没能还原到原来的位置', detail: problems.join('\n') });
+      dialog.showMessageBoxSync(win, { type: 'warning', title: 'orrery', message: t('有应用窗口没能还原到原来的位置'), detail: problems.join('\n'), buttons: [t('确定')] });
     }
     if (!panel.isDestroyed()) panel.destroy();
     if (!settingsWin.isDestroyed()) settingsWin.destroy();
@@ -539,11 +549,11 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
   function savePath(a, path, source) {
     const io = lookup();
     const check = checkProgram(a, path, io);
-    if (!check.ok) messages[a.id] = `没有保存：${check.reason}。`;
+    if (!check.ok) messages[a.id] = t('没有保存：{reason}。', { reason: check.reason });
     else {
       const saved = io.saved();
       saved[a.id] = { path, source, savedAt: new Date().toISOString() };
-      messages[a.id] = writeAppPaths(saved, apps) ? '已保存。在 + 面板里点它，就从这里启动。' : '没能写入设置文件，没有保存。';
+      messages[a.id] = writeAppPaths(saved, apps) ? t('已保存。在 + 面板里点它，就从这里启动。') : t('没能写入设置文件，没有保存。');
     }
     refreshSettings();
   }
@@ -551,7 +561,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
   function detect(a) {
     settings = readSettings();
     const r = settings.find((x) => x.id === a.id);
-    messages[a.id] = r?.offer ? null : `检测完了，${r?.inUse ? '没有找到别的位置' : '没有找到它'}。`;
+    messages[a.id] = r?.offer ? null : t('检测完了，{result}。', { result: t(r?.inUse ? '没有找到别的位置' : '没有找到它') });
     render();
   }
   /**
@@ -565,7 +575,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     delete offers[a.id];
     settings = readSettings();
     const r = confirmOffer(held, token, settings.find((x) => x.id === a.id)?.offer);
-    if (!r.ok) { messages[a.id] = '检测到的位置变了，没有保存。请看一下现在的结果再确认。'; render(); return; }
+    if (!r.ok) { messages[a.id] = t('检测到的位置变了，没有保存。请看一下现在的结果再确认。'); render(); return; }
     savePath(a, r.path, 'detected');
   }
   /** 选择程序…: the system's file dialog, opened here (main process), for one .exe; the result is checked before it is saved. */
@@ -575,8 +585,8 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     render();
     let r = { canceled: true, filePaths: [] };
     try {
-      r = await dialog.showOpenDialog(settingsWin, { title: `选择 ${a.name} 的程序（${programNames(a).join(' 或 ')}）`,
-        properties: ['openFile', 'dontAddToRecent'], filters: [{ name: `${a.name} 程序`, extensions: ['exe'] }] });
+      r = await dialog.showOpenDialog(settingsWin, { title: t('选择 {name} 的程序（{programs}）', { name: a.name, programs: programNames(a).join(t(' 或 ')) }), buttonLabel: t('打开'),
+        properties: ['openFile', 'dontAddToRecent'], filters: [{ name: t('{name} 程序', { name: a.name }), extensions: ['exe'] }] });
     } catch { /* treated as cancelled */ } finally {
       dialogOpen = false;
     }
@@ -591,7 +601,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     const saved = readAppPaths(apps);
     if (!saved[a.id]) { refreshSettings(); return; }
     delete saved[a.id];
-    messages[a.id] = writeAppPaths(saved, apps) ? '已清除。' : '没能写入设置文件，没有清除。';
+    messages[a.id] = writeAppPaths(saved, apps) ? t('已清除。') : t('没能写入设置文件，没有清除。');
     refreshSettings();
   }
 
@@ -622,7 +632,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     // checked) right before shell.openPath, with nothing slow in between.
     const before = new Set(listCandidates(ffi, { apps, app: a.id }).map((c) => c.hwnd));
     const target = launchTarget(a);
-    if (!target.ok) { notice = `没有启动 ${a.name}：${target.reason}。`; render(); return; }
+    if (!target.ok) { notice = t('没有启动 {name}：{reason}。', { name: a.name, reason: target.reason }); render(); return; }
     const watch = createWatch(before, Date.now());
     starting.add(a.id);
     const stop = () => {
@@ -643,7 +653,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     shell.openPath(target.path).then((error) => {
       if (!error || watch.done) return;
       stop();
-      notice = `没能启动 ${a.name}（${error}）。`;
+      notice = t('没能启动 {name}（{error}）。', { name: a.name, error });
       render();
     });
   }
@@ -659,7 +669,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
   const LAYOUT_LABELS = { single: '单栏', columns: '左右两栏', grid: '四宫格' };
   function layoutMenu() {
     const menu = Menu.buildFromTemplate(LAYOUTS.map((l) => ({
-      label: LAYOUT_LABELS[l], type: 'radio', checked: state.layout === l, click: () => dispatch({ type: 'layout', layout: l }),
+      label: t(LAYOUT_LABELS[l]), type: 'radio', checked: state.layout === l, click: () => dispatch({ type: 'layout', layout: l }),
     })));
     menu.popup({ window: win, callback: () => restack() });
     return menu;
@@ -672,11 +682,11 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     const name = apps.find((a) => a.id === tab.app)?.name ?? tab.app;
     const list = listCandidates(ffi, { apps, exclude: boundHandles(), app: tab.app });
     Menu.buildFromTemplate([
-      { label: menuText(`选择 ${name} 的窗口（上次是“${tab.title}”）`), enabled: false },
+      { label: menuText(t('选择 {name} 的窗口（上次是“{title}”）', { name, title: tab.title })), enabled: false },
       { type: 'separator' },
       ...(list.length
         ? list.map((c) => ({ label: menuText(c.title), click: () => userAction({ type: 'choose', id, candidate: c }) }))
-        : [{ label: menuText(`${name} 现在没有在运行的窗口`), enabled: false }]),
+        : [{ label: menuText(t('{name} 现在没有在运行的窗口', { name })), enabled: false }]),
     ]).popup({ window: win, callback: () => restack() });
   }
 
@@ -690,7 +700,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     const f = event.senderFrame;
     const main = wc.isDestroyed() ? null : wc.mainFrame;
     return event.sender === wc && !!f && !!main && f.parent === null
-      && f.processId === main.processId && f.routingId === main.routingId && f.url === url;
+      && f.processId === main.processId && f.routingId === main.routingId && f.url === desktopPageUrl(url, uiLanguage);
   };
   const fromTabBar = (event) => fromPage(event, tabs, TABS_PAGE);
   const fromStrip = (event) => fromPage(event, strips, STRIP_PAGE);
@@ -713,6 +723,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     'settings:use': (...args) => args.length === 1 && isUseRequest(args[0], apps),
     'settings:pick': oneAppId,
     'settings:clear': oneAppId,
+    'settings:language': (...args) => args.length === 1 && isDesktopLanguage(args[0]),
     'settings:close': (...args) => args.length === 0,
     // A press in the tab bar anywhere but on "+": nothing else.
     'tabs:press': (...args) => args.length === 0,
@@ -756,6 +767,19 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     'settings:use': (req) => { if (settings) useOffer(appOf(req.app), req.token); },
     'settings:pick': (id) => { if (settings) pickProgram(appOf(id)); },
     'settings:clear': (id) => { if (settings) clearPath(appOf(id)); },
+    'settings:language': (value) => {
+      if (!settings || dialogOpen || value === uiLanguage) return;
+      uiLanguage = value;
+      setLanguage(value);
+      notice = null;
+      for (const id of Object.keys(messages)) delete messages[id];
+      persist();
+      settingsWin.setTitle(t('orrery 桌面设置'));
+      win.loadURL(desktopPageUrl(TABS_PAGE, value));
+      panel.loadURL(desktopPageUrl(STRIP_PAGE, value));
+      settingsWin.loadURL(desktopPageUrl(SETTINGS_PAGE, value));
+      render();
+    },
     'settings:close': () => closeSettings(),
   };
   function listen(table, from) {
@@ -780,7 +804,10 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     if (closing || win.isDestroyed()) return;
     hub = 'origin' in r ? { status: 'ready', origin: r.origin } : { status: 'error', message: r.error };
     // r.page carries the API token in its fragment; the page trades it for a session cookie and drops it.
-    if ('origin' in r) wc.loadURL(r.page ?? `${r.origin}/`).catch(() => { /* shown by the page itself, or retried by the user */ });
+    if ('origin' in r) {
+      hubPage = r.page ?? `${r.origin}/`;
+      wc.loadURL(desktopPageUrl(hubPage, uiLanguage)).catch(() => { /* shown by the page itself, or retried by the user */ });
+    }
     layout();
     render();
   }
@@ -818,9 +845,9 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
   // page listened for it; once loaded, it is sent again.
   strips.on('did-finish-load', () => render());
   settingsPage.on('did-finish-load', () => render());
-  win.loadURL(TABS_PAGE);
-  panel.loadURL(STRIP_PAGE);
-  settingsWin.loadURL(SETTINGS_PAGE);
+  win.loadURL(desktopPageUrl(TABS_PAGE, uiLanguage));
+  panel.loadURL(desktopPageUrl(STRIP_PAGE, uiLanguage));
+  settingsWin.loadURL(desktopPageUrl(SETTINGS_PAGE, uiLanguage));
   layout();
   connectHub();
 

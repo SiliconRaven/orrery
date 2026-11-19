@@ -13,7 +13,7 @@ const cm = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/conversati
 
 const at = (h: number) => `2026-11-15T${String(h).padStart(2, '0')}:00:00.000Z`;
 const cluster = (id: string, hour: number, extra: Record<string, unknown> = {}) => ({ id, name: id.toUpperCase(), createdAt: at(hour), lastMessageAt: at(hour), category: '', pinnedAt: null, archivedAt: null, ...extra });
-const member = (id: string, clusterId: string, extra: Record<string, unknown> = {}) => ({ id, clusterId, name: id, harness: 'claude', mode: 'native', workerSessionId: `s-${id}`, removedAt: null, ...extra });
+const member = (id: string, clusterId: string, extra: Record<string, unknown> = {}) => ({ id, clusterId, name: id, harness: 'claude', workerSessionId: `s-${id}`, removedAt: null, ...extra });
 
 function fixture() {
   const clusters = [
@@ -27,9 +27,9 @@ function fixture() {
     // The same session id in another app is another conversation.
     member('cx', 'a', { harness: 'codex', workerSessionId: 'S1', name: 'codex-1' }),
     member('cx2', 'c', { harness: 'codex', workerSessionId: 'S2', name: 'codex-2' }),
-    // Two distinct conversations of an additional native harness.
-    member('iso1', 'a', { mode: 'native', harness: 'mock', workerSessionId: 'X', name: 'iso' }),
-    member('iso2', 'b', { mode: 'native', harness: 'mock', workerSessionId: 'X2', name: 'iso' }),
+    // Two conversations of an app the page does not know, under its own name.
+    member('iso1', 'a', { harness: 'mock', workerSessionId: 'X1', name: 'iso' }),
+    member('iso2', 'b', { harness: 'mock', workerSessionId: 'X2', name: 'iso' }),
     member('gone', 'a', { removedAt: at(7), workerSessionId: 'S9', name: 'gone' }),
     member('arch', 'old', { workerSessionId: 'S7', name: 'archived-only' }),
     member('stray', 'deleted-cluster', { workerSessionId: 'S8', name: 'stray' }),
@@ -49,7 +49,7 @@ test('conversation matrix: one row per conversation, by app; removed, foreign an
   const model = cm.conversationMatrix(f.args());
   assert.deepEqual(model.rowGroups.map((g: any) => [g.label, g.rows.map((r: any) => r.label)]), [
     ['Claude', ['评审 / reviewer']], ['ChatGPT / Codex', ['codex-1', 'codex-2']], ['Kimi Code', ['kimi']], ['mock', ['iso', 'iso']],
-  ], 'apps by harness id A–Z under their app names, additional harness last; the archived-only conversation and the removed member are absent');
+  ], 'apps by harness id A–Z under their app names; the archived-only conversation and the removed member are absent');
   assert.deepEqual(model.rowGroups.map((g: any) => [g.harness, g.icon]), [
     ['claude', '/app-icons/claude.ico'], ['codex', '/app-icons/codex.png'], ['kimi', '/app-icons/kimi-code.png'], ['mock', null],
   ], 'each app group carries its icon');
@@ -61,11 +61,11 @@ test('conversation matrix: one row per conversation, by app; removed, foreign an
   assert.equal(rev.status, 'busy', 'busy if any membership is');
   assert.equal(rev.lastActivityAt, at(9), 'the newest activity of its memberships');
   assert.equal(model.rowGroups[1].rows[0].lastActivityAt, null, 'an unreadable time is no time');
-  assert.equal(model.rowGroups[3].rows[1].cells.b.coordinator, true, 'an additional native coordinator too');
+  assert.equal(model.rowGroups[3].rows[1].cells.b.coordinator, true, 'a coordinator in another app too');
   assert.deepEqual(model.rowGroups[3].rows.map((r: any) => r.status), ['idle', 'offline'], 'online before offline inside a group');
   assert.equal(cm.conversationKey(f.members[0]), cm.conversationKey(f.members[1]));
   assert.notEqual(cm.conversationKey(f.members[0]), cm.conversationKey(f.members[3]), 'another app');
-  assert.notEqual(cm.conversationKey(f.members[5]), cm.conversationKey(f.members[6]), 'different session ids have different rows');
+  assert.notEqual(cm.conversationKey(f.members[5]), cm.conversationKey(f.members[6]), 'two sessions are two rows');
   assert.notEqual(cm.conversationKey(member('n1', 'a', { workerSessionId: '' })), cm.conversationKey(member('n2', 'b', { workerSessionId: '' })), 'no session id yet: its own row');
 });
 

@@ -52,7 +52,7 @@ async function handle(msg) {
     return result(id, {
       protocolVersion: typeof msg.params?.protocolVersion === 'string' ? msg.params.protocolVersion : PROTOCOL_VERSION,
       capabilities: { tools: { listChanged: true } },
-      serverInfo: { name: 'orrery', version: '0.10.0-beta.1' },
+      serverInfo: { name: 'orrery', version: '0.10.0-beta.2' },
     });
   }
   if (method === 'ping') return result(id, {});

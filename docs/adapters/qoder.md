@@ -23,3 +23,15 @@ Qoder 适配器通过用户自行安装的插件中继（`plugins/qoder-orrery/`
 
 - **只读枚举（`src/adapters/qoder/store.ts`）**：复制 `<ORRERY_QODER_DATA 或 APPDATA/com.qoder.app.stable>/main.sqlite`（及 `-wal`）临时副本列 `workspaces` 与正常 UUID `chat_sessions`，用完即删；不提供新建会话、订阅额度或 token 统计。
 - **使用状态**：已在真实 Qoder 客户端验证列对话、插件目录展开、加入群聊、连续收信/回复/重挂、退出后离线及重开不补发。
+
+## 读对话原文
+
+进程内的 `Hub.memberTranscript` 经 `src/adapters/qoder/transcript.ts` 读群员当前绑定的 Qoder 对话（契约见 [架构](../architecture.md)）。按 Qoder 桌面 0.5.7 写下的 `main.sqlite` 结构实现（2026-11-19 核对）；这套表结构不是 Qoder 的对外接口，更新后可能变。
+
+- **来源**：Qoder 有两处记录：应用的 `main.sqlite`（表 `chat_session_messages`）和 qodercli 的 `~/.qoder/projects/<项目>/<会话 id>.jsonl`。选前者：它覆盖 orrery 能绑定的全部对话（绑定用的就是同库 `chat_sessions` 的会话 id，JSONL 不一定每个对话都有），是应用界面显示的线性记录，按 `(session_id, sequence)` 有唯一索引；JSONL 是带分支的树状日志，夹着大量非对话记录。代价：Qoder 给模型附加的提醒和技能清单在库里看不到。
+- **读法**：用共用读取器 `src/adapters/shared/sqlite-transcript.ts` 在原处只读打开，不复制、不写任何文件；有 `-wal` 却没有 `-shm`（异常退出后 `-shm` 被删）时不打开库、返回 `unsupported`，Qoder 下次打开这个库后就能再读（做法和剩下的一个竞态同 [ZCode](zcode.md#读对话原文)）；只查绑定会话的行，按 `sequence` 排序。会话不存在或已删除：`missing`；缺用到的列：`unsupported`；会话 ID 不是 UUID：`refused`。
+- **归类**：用户输入 → `user`；助手文字 → `assistant`；思考 → `thinking`，只给占位，不给正文；工具（调用和结果在同一部分）→ `tool_call` 加上结束后的 `tool_result`；钩子活动 → `system`；其他 → `unknown` 并计数。超过 256 KiB 的行读作一条截断的 `unknown`。还没结束的行下次往后读时重读（条目 ID 不变）；已经结束的行被原地改写时，指向它的游标返回 `reset`。
+- **MCP 调用**：Qoder 经自己的 `mcp_call` 工具调 MCP，`toolName` 是 `mcp__<服务器>__<工具>`；服务器名按记录拆出，不写死。
+- **投递**：等待命令只打印信封（或直发正文）。只有同时满足这些条件的 `Read` 结果才作为候选交给 Hub：它所在的轮次由一个后台任务结束而开启；这个任务是本会话之前最近 16 个助手轮次里、在后台运行、逐字等于本会话票据的等待命令；`Read` 只带 `file_path`，读的是这个任务的输出文件，结果从第 1 行起逐行编号。Hub 只在投递确实发给这个群员时才标成 orrery 投递。用户输入的文字、别的会话的票据、部分读取和别的工具的输出都不算。票据能用来占用这个会话的等待，所以返回的每段文字里 orrery 票据的签名部分都换成 `<hidden>`，判断证据仍用原始记录。
+- **发言**：`send_message` 成功结果里的 `messageId` 交给 Hub 核对，确实是这个群员在这个群发的才标成发言。
+- **未验证**：Qoder 正在写库时的读取；一轮进行中的行状态取值；对话回退和上下文压缩后的行；在 16 个助手轮次之前启动的等待命令（投递显示为普通工具结果）。

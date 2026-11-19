@@ -17,7 +17,7 @@ import { pathToFileURL } from 'node:url';
 export const CALLER_ARG = 'orreryCaller';
 const SERVER = 'orrery';
 // The model-facing name of an orrery tool: mcp_orrery_send_message, mcp__orrery__send_message, orrery/send_message …
-const TOOL_NAME = /(?:^|[^a-z0-9])orrery[^a-z0-9]+(?:list_agents|send_message|read_messages|skip_unread|get_deliveries|ack_messages|list_tasks|list_labels|manage_labels|get_task|get_task_context|list_bookmarks|create_task|task_action|raise_attention|resolve_attention|set_task_summary|link_message_tasks|bookmark_message|manage_roles|set_cluster_paused)$/i;
+const TOOL_NAME = /(?:^|[^a-z0-9])orrery[^a-z0-9]+(?:list_agents|send_message|read_messages|skip_unread|get_deliveries|ack_messages|list_tasks|list_labels|manage_labels|get_task|get_task_context|list_bookmarks|create_task|task_action|get_batch|manage_batch|raise_attention|resolve_attention|set_task_summary|link_message_tasks|bookmark_message|manage_roles|set_cluster_paused)$/i;
 const SERVER_KEYS = ['servername', 'server_name', 'server', 'mcpservername'];
 const ARGS_KEYS = ['arguments', 'args', 'toolarguments', 'tool_arguments', 'input', 'parameters'];
 const ASK = { decision: 'ask' };

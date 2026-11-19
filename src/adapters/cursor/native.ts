@@ -12,6 +12,7 @@ import type { NativeAdapter, NativeDeliveryResult, TokenTotals, TurnHookHarness,
 import { marker } from '../shared/marker.ts';
 import { appProcessRunning, appRunningCache } from '../shared/wait-native.ts';
 import { createCursorStore, defaultCursorData } from './store.ts';
+import { readCursorTranscript } from './transcript.ts';
 
 export const CURSOR = 'cursor';
 export const CURSOR_APP = 'Cursor.exe';
@@ -135,6 +136,8 @@ export function createCursorNativeAdapter(opts: {
     localSessions: true,   // attachSession reads only local files: the member list shows the current title and model
     listProjects: () => store.listProjects(),
     listSessions: (projectPath) => store.listSessions(projectPath),
+    transcript: (sessionId, request) =>
+      readCursorTranscript(join(cursorHome, 'projects'), () => store.transcriptCandidates(sessionId), sessionId, request),
     async attachSession(sessionId) {
       const info = await store.get(sessionId);
       if (!info) throw new Error(`cursor conversation ${sessionId} not found among the Cursor agent transcripts under ${cursorHome}`);

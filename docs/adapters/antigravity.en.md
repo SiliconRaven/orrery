@@ -20,6 +20,7 @@ The Antigravity adapter attaches open workspace conversations in Antigravity 2.0
 
 - **Setup**: Follow [plugins/antigravity-orrery/README.en.md](../../plugins/antigravity-orrery/README.en.md) (copy to `~/.gemini/config/sidecars/orrery/`, enable sidecar, update `mcp_config.json` and `hooks.json`; leave diagnostic `hook-dump.mjs` unconfigured in normal use).
 - **Store (`store.ts`)**: Copies `~/.gemini/antigravity/conversation_summaries.db` (+ `-wal`) via `withCopy` to list non-killed top-level `antigravity` UUID threads with local `file://` workspaces. No `createSession`, quotas, or tokens.
+- **Read-only bound transcript reading**: `Hub.memberTranscript` reads bounded pages from `<geminiHome>/antigravity/brain/<uuid>/.system_generated/logs/transcript_full.jsonl` (with bounded 256 KiB first-line probing and tolerance for half-written first lines, falling back to `transcript.jsonl` only when absent, rejecting hardlinks/junctions without fallback and never reading `.pb` or `conversations/*.db`). It redacts `thinking`, strips `orreryCaller` signatures and echoed credentials uniformly from `tool_call`, `tool_result`, and error text, checks only `SYSTEM_MESSAGE` (`sender=system`, `MESSAGE_PRIORITY_HIGH`) as Hub delivery candidates (`USER_INPUT` never promotes), and pairs `call_mcp_tool` (including JSON-quoted server/tool names) with `GENERIC` results by positional `callId` across pages.
 
 ## Limits & Verified Use
 

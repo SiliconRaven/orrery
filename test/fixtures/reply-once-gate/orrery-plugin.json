@@ -1,0 +1,14 @@
+{
+  "id": "reply-once-gate",
+  "version": "1.0.0",
+  "name": "一问一答裁判（测试用）",
+  "description": "主持人发言后，其他成员每人只能回复一次。只用于测试，不随产品发布。",
+  "apiVersion": 1,
+  "entry": "main.mjs",
+  "permissions": ["messages.gate", "clusters.read", "messages.send", "messages.mention"],
+  "commands": [
+    {"id": "kickoff", "title": "点名所有成员开始一轮"},
+    {"id": "count", "title": "统计存下的回复"},
+    {"id": "settings", "title": "查看发言设置"}
+  ]
+}

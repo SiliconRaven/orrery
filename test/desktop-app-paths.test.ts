@@ -241,7 +241,7 @@ test('desktop app paths: nothing is saved without the user\'s action in the sett
   assert.match(fnBody(shell, 'closeSettings'), /offers = \{\};/, 'closing voids every token');
   // The file dialog is the main process's own, for one .exe; its answer is checked again before it is saved.
   assert.match(fnBody(shell, 'pickProgram'), /dialog\.showOpenDialog\(settingsWin, \{/);
-  assert.match(fnBody(shell, 'pickProgram'), /filters: \[\{ name: `\$\{a\.name\} 程序`, extensions: \['exe'\] \}\]/);
+  assert.match(fnBody(shell, 'pickProgram'), /filters: \[\{ name: t\('\{name\} 程序', \{ name: a\.name \}\), extensions: \['exe'\] \}\]/);
   assert.match(fnBody(shell, 'savePath'), /const check = checkProgram\(a, path, io\);\n {4}if \(!check\.ok\)/);
   // Every settings channel takes one supported app id (or nothing, for the close): a path is refused by the check.
   for (const c of ['detect', 'pick', 'clear']) assert.match(shell, new RegExp(`'settings:${c}': oneAppId,`));
@@ -252,8 +252,8 @@ test('desktop app paths: nothing is saved without the user\'s action in the sett
   assert.match(shell, /'tabs:settings': \(\.\.\.args\) => args\.length === 1 && Number\.isFinite\(args\[0\]\),/);
   const preload = read('settings-preload.cjs');
   assert.deepEqual([...preload.matchAll(/ipcRenderer\.(send|on|invoke|sendSync)\('([^']+)'/g)].map((m) => `${m[1]} ${m[2]}`),
-    ['on settings:state', 'send settings:detect', 'send settings:use', 'send settings:pick', 'send settings:clear', 'send settings:close']);
-  assert.deepEqual([...preload.matchAll(/^ {2}(\w+):/gm)].map((m) => m[1]), ['onState', 'detect', 'use', 'pick', 'clear', 'close'], 'all it exposes');
+    ['on settings:state', 'send settings:detect', 'send settings:use', 'send settings:pick', 'send settings:clear', 'send settings:language', 'send settings:close']);
+  assert.deepEqual([...preload.matchAll(/^ {2}(\w+):/gm)].map((m) => m[1]), ['onState', 'detect', 'use', 'pick', 'clear', 'language', 'close'], 'all it exposes');
   assert.match(preload, /const id = \(v\) => \(typeof v === 'string' \? v : ''\);/);
   // The tab bar gains the gear's call only; the panel's preload is unchanged; the collaboration page has no preload.
   const tabsPreload = read('preload.cjs');
@@ -292,7 +292,7 @@ test('desktop app paths: the settings view is the shell\'s own trusted page, ope
   assert.doesNotMatch(win, /parent|modal/, 'no owner (as the + panel: lowerShell)');
   assert.match(win, /webPreferences: \{ preload: SETTINGS_PRELOAD, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false \}/);
   assert.match(shell, /export const SETTINGS_PAGE = pathToFileURL\(join\(HERE, 'ui', 'settings\.html'\)\)\.href;/);
-  assert.equal((shell.match(/settingsWin\.loadURL\(/g) ?? []).length, 1);
+  assert.equal((shell.match(/settingsWin\.loadURL\(/g) ?? []).length, 2, 'initial load and explicit trusted language change');
   assert.match(shell, /settingsPage\.on\('before-input-event', \(e, input\) => \{ if \(reloadKey\(input\)\) e\.preventDefault\(\); \}\);/);
   assert.match(shell, /win\.on\('closed', \(\) => \{ if \(!settingsWin\.isDestroyed\(\)\) settingsWin\.destroy\(\); \}\);/);
   assert.match(fnBody(shell, 'quit'), /if \(!settingsWin\.isDestroyed\(\)\) settingsWin\.destroy\(\);/);
@@ -313,7 +313,7 @@ test('desktop app paths: the settings view is the shell\'s own trusted page, ope
   const js = read('ui/settings.mjs');
   assert.doesNotMatch(js, /innerHTML|outerHTML|insertAdjacentHTML|fetch\(|XMLHttpRequest|import\(|location|window\.open/);
   // The gear: keyboard reachable (a button), named, and a press on it does not count as a press elsewhere.
-  assert.match(read('ui/tabs.html'), /<button id="settings" type="button" title="[^"]+" aria-label="应用位置设置" aria-expanded="false" aria-haspopup="dialog">/);
+  assert.match(read('ui/tabs.html'), /<button id="settings" type="button" data-i18n-title="[^"]+" title="[^"]+" data-i18n-aria-label="应用位置设置" aria-label="应用位置设置" aria-expanded="false" aria-haspopup="dialog">/);
   // Opened before its page (or the + panel's) had loaded: the state is sent again once it has.
   assert.match(shell, /strips\.on\('did-finish-load', \(\) => render\(\)\);\n {2}settingsPage\.on\('did-finish-load', \(\) => render\(\)\);/);
 });

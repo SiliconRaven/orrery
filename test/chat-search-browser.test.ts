@@ -201,7 +201,7 @@ test('browser: the search sheet stays consistent under racing actions (load more
 
     // The chosen sender leaves the group while the sheet is open: still chosen, now marked 已移出, nothing searched again.
     const left = await run(`
-      window.__fakeMembers = [{ id: 'm1', clusterId: 'fake', name: 'A', harness: 'mock', mode: 'native', removedAt: null, hiddenAt: null }];
+      window.__fakeMembers = [{ id: 'm1', clusterId: 'fake', name: 'A', harness: 'mock', removedAt: null, hiddenAt: null }];
       f.sheet.open('fake');
       const select = f.root.querySelector('select[aria-label="发送者"]');
       select.value = 'm1'; select.dispatchEvent(new Event('change'));

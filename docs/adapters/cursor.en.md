@@ -32,6 +32,7 @@ orrery never installs or edits Cursor settings automatically:
 ## Listing & Online Presence
 
 - **Read-only discovery**: Reads workspace folders from `%APPDATA%\Cursor\User\workspaceStorage\*\workspace.json` and transcripts from `~/.cursor/projects/<encoded>/agent-transcripts/<id>/<id>.jsonl` (parsing `<user_query>` while skipping `[orrery` envelopes). **Never opens `state.vscdb` databases containing login tokens.** New threads appear after completing at least one turn.
+- **Read-only bound transcript reading**: `Hub.memberTranscript` reads bounded pages from `<cursorHome>/projects/*/agent-transcripts/<id>/<id>.jsonl` (rejecting outside paths, hardlinks, and junctions; never opening `state.vscdb`), unwrapping `<timestamp>` and `<user_query>`, redacting `thinking`, and normalizing `CallDynamicTool`. Only first lines matching `[orrery · … · #<8-hex-handout>]` are submitted as unverified Hub delivery candidates (misses stay `user`); since Cursor JSONL omits `tool_result`, tool calls are never guessed as `orrery_post`.
 - **Online presence**: True while a `stop` hook is parked, an acknowledged turn is active, or within the 10s post-turn re-park grace window while `Cursor.exe` is running under the current Windows user. Exits cleanly via parent-PID checks when Cursor quits.
 - **Multi-turn cap**: Sets `"loop_limit": null` in `hooks.json` so Cursor's default 5-loop limit yields to Hub hop, chain, hourly, and pause limits.
 

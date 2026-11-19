@@ -1,4 +1,4 @@
-// Harness name → native adapter factory. Each new adapter adds one line here.
+// harness name → native adapter factory. Each new adapter adds one line here.
 import type { NativeAdapter } from '../core/types.ts';
 import { createAntigravityNativeAdapter } from './antigravity/native.ts';
 import { createClaudeNativeAdapter } from './claude/native.ts';
@@ -6,7 +6,7 @@ import { createCodexNativeAdapter } from './codex/native.ts';
 import { createCursorNativeAdapter } from './cursor/native.ts';
 import { createDeepseekNativeAdapter } from './deepseek/native.ts';
 import { createKimiNativeAdapter } from './kimi/native.ts';
-import { createMockNativeAdapter } from './mock/native.ts';
+import { createDemoMockAdapter } from './mock/demo.ts';
 import { createQoderNativeAdapter } from './qoder/native.ts';
 import { createWorkbuddyNativeAdapter } from './workbuddy/native.ts';
 import { createZcodeNativeAdapter } from './zcode/native.ts';
@@ -24,9 +24,9 @@ export const nativeFactories: Record<string, () => NativeAdapter> = {
 };
 
 /**
- * The registry a Hub starts with. The test harness `mock` is in it only on request (ORRERY_MOCK=1: try the web
+ * The registry a Hub starts with. The demo harness `mock` (./mock/demo.ts) is in it only on request (ORRERY_MOCK=1: try the web
  * without any real app), so the normal web never offers it.
  */
 export function registries(withMock: boolean): Record<string, () => NativeAdapter> {
-  return withMock ? { ...nativeFactories, mock: () => createMockNativeAdapter() } : nativeFactories;
+  return withMock ? { ...nativeFactories, mock: () => createDemoMockAdapter() } : nativeFactories;
 }

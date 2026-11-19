@@ -9,7 +9,7 @@ async function fixture(name = 'mentions') {
   const native = createMockNativeAdapter({ sessions });
   const app = await startTestHub({ dir, nativeAdapters: { claude: native } });
   const { cluster, members: [a, b, c] } = await app.hub.createCluster(name, ['A', 'B', 'C'].map((memberName, index) =>
-    ({ harness: 'claude', mode: 'native' as const, sessionId: sessions[index].id, name: memberName })));
+    ({ harness: 'claude', sessionId: sessions[index].id, name: memberName })));
   const deliveries = (message: { id: string }) => app.store.withDeliveries([app.store.getMessage(message.id)!])[0].deliveries;
   return { app, cluster, a, b, c, deliveries };
 }

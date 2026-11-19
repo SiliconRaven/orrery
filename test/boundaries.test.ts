@@ -34,13 +34,23 @@ export function checkBoundaries(sources: Source[]): string[] {
         ok = target !== null && target.startsWith('web/public/')
           // This pure table is served explicitly at /core/system-kinds.js; only its public re-export may reach it.
           || (path === 'web/public/system-kinds.js' && spec === '../../core/system-kinds.js')
+          // So are the plugin command argument rules, at /core/command-args.js, through their public re-export.
+          || (path === 'web/public/command-args.js' && spec === '../../core/command-args.js')
+          || (path === 'web/public/i18n.js' && spec === '../../../shared/i18n/index.js')
           // loadPluginSlots validates id against enabled official registry entries before invoking this loader.
-          || (path === 'web/public/plugin-slots.js' && spec === '`./official-plugins/${id}.js`');
+          || (path === 'web/public/plugin-slots.js' && spec === '`./official-plugins/${id}.js`')
+          // ...and against the Hub's list of full-trust plugins whose page module may load this start (`trustedFrontend`),
+          // which the Hub serves only for those; nothing else in the page may import a computed or absolute address.
+          || (path === 'web/public/plugin-slots.js' && spec === '`/plugin-web/${id}/`');
       } else if (area === 'main.ts') ok = true;
       else if (area === 'config.ts') ok = false;                  // node built-ins only
       else if (area === 'launcher.ts') ok = target === 'config.ts';   // talks to the Hub over hub.json and HTTP only
       else if (area === 'backup.ts') ok = target === 'config.ts';     // standalone backup CLI: config plus node built-ins
-      else if (area === 'core') ok = target !== null && target.startsWith('core/');
+      else if (area === 'update-check.ts') ok = false;
+      else if (area === 'plugin-install.ts') ok = target === 'plugin-install-archive.ts' || Boolean(target?.startsWith('core/'));
+      else if (area === 'plugin-install-archive.ts') ok = ['tar', 'yauzl'].includes(spec);
+      else if (area === 'core') ok = target !== null && target.startsWith('core/')
+        || (path === 'core/app-extensions.ts' && spec === 'smol-toml');   // data-only parsing of the app's TOML config
       else if (area === 'adapters') {
         // adapters/<harness>/* may import core/types.ts, files in its own folder and adapters/shared/* (helpers for
         // the harnesses' own files, which import only core/types.ts); the registry (adapters/index.ts) may import any
@@ -95,6 +105,11 @@ test('browser dependency rules reject Node, backend, desktop and computed import
     { path: 'web/public/app.js', code: "import('./' + target);" },
     { path: 'web/public/plugin-slots.js', code: 'import(`./${target}.js`);' },
     { path: 'web/public/app.js', code: "require('node:fs');" },
+    { path: 'web/public/app.js', code: 'import(`/plugin-web/${id}/`);' },
+    { path: 'web/public/plugin-slots.js', code: 'import(`/plugin-web/${id}/${file}`);' },
+    { path: 'web/public/plugin-slots.js', code: 'import(`/plugin-web/${id}`);' },
+    { path: 'web/public/plugin-slots.js', code: "import('/plugin-web/demo/');" },
+    { path: 'web/public/plugin-slots.js', code: 'import(`/plugin-ui/${id}/`);' },
   ];
   for (const source of bad) assert.equal(checkBoundaries([source]).length, 1, source.code);
   assert.deepEqual(checkBoundaries([
@@ -102,6 +117,7 @@ test('browser dependency rules reject Node, backend, desktop and computed import
     { path: 'web/public/official-plugins/bookmarks.js', code: "import { h } from '../ui.js';" },
     { path: 'web/public/system-kinds.js', code: "export * from '../../core/system-kinds.js';" },
     { path: 'web/public/plugin-slots.js', code: 'const load = (id) => import(`./official-plugins/${id}.js`);' },
+    { path: 'web/public/plugin-slots.js', code: 'const loadTrusted = (id) => import(`/plugin-web/${id}/`);' },
   ]), []);
 });
 
@@ -109,10 +125,11 @@ test('10: the checker catches deliberate violations', () => {
   const bad: Source[] = [
     { path: 'core/hub.ts', code: "import { handleWeb } from '../web/server.ts';" },
     { path: 'core/store.ts', code: "import { z } from 'zod';" },
+    { path: 'core/store.ts', code: "import { parse } from 'smol-toml';" },
     { path: 'adapters/mock/native.ts', code: "import type { Hub } from '../../core/hub.ts';" },
     { path: 'mcp/server.ts', code: "import { handleWeb } from '../web/server.ts';" },
     { path: 'web/server.ts', code: "const m = await import('../mcp/server.ts');" },
-    { path: 'adapters/claude/native.ts', code: "export { createMockNativeAdapter } from '../mock/native.ts';" },
+    { path: 'adapters/claude/cli.ts', code: "export { createMockNativeAdapter } from '../mock/native.ts';" },
     { path: 'adapters/codex/native.ts', code: "import { Store } from '../../core/store.ts';" },
     { path: 'adapters/claude/native.ts', code: "import { x } from '../index.ts';" },
     { path: 'bridge/claude-bridge.ts', code: "import type { BridgePort } from '../core/types.ts';" },
@@ -145,6 +162,7 @@ test('10: the checker catches deliberate violations', () => {
   // And the allowed shapes stay allowed.
   assert.deepEqual(checkBoundaries([
     { path: 'core/hub.ts', code: "import type { Store } from './store.ts';\nimport { mkdirSync } from 'node:fs';" },
+    { path: 'core/app-extensions.ts', code: "import { parse } from 'smol-toml';" },
     { path: 'adapters/index.ts', code: "import { createMockNativeAdapter } from './mock/native.ts';" },
     { path: 'adapters/mock/native.ts', code: "import { Client } from '@modelcontextprotocol/sdk/client/index.js';" },
     { path: 'adapters/claude/native.ts', code: "import { createSessionStore } from './store.ts';\nimport type { NativeAdapter } from '../../core/types.ts';" },
@@ -158,6 +176,18 @@ test('10: the checker catches deliberate violations', () => {
     { path: 'plugins/index.ts', code: "import { bookmarks } from './bookmarks/index.ts';\nimport type { OfficialPlugin } from '../core/plugin.ts';" },
     { path: 'plugins/bookmarks/index.ts', code: "import { z } from 'zod';\nimport { helper } from './store.ts';\nimport type { Store } from '../../core/store.ts';" },
   ]), []);
+});
+
+test('the core\'s event channel names no task, bookmark or coordinator type or field: their plugins declare those', () => {
+  const core = join(REPO_ROOT, 'src', 'core');
+  const files = ['event-registry.ts', 'core-events.ts', 'external-plugin-config.ts', 'external-plugin-process.ts', 'external-plugins.ts'];
+  const owned = /['"`](?:task|tasks|bookmark|coordinator)\.[a-z]|\b(?:taskId|acceptance|assignedMemberId|mergedCommitSha|commitSha|submissionId)\b/;
+  for (const file of files) {
+    const code = readFileSync(join(core, file), 'utf8');
+    assert.equal(owned.exec(code)?.[0], undefined, file);
+  }
+  // And the check itself bites.
+  assert.ok(owned.test("type: 'task.approved'") && owned.test('data.taskId') && owned.test('"bookmark.saved"'));
 });
 
 test('launcher 8: the launcher imports only node built-ins and config.ts; config.ts only node built-ins', () => {

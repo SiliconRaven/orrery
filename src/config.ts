@@ -19,6 +19,9 @@ export interface Config {
 
 export type Env = Record<string, string | undefined>;
 
+/** ORRERY_UPDATE_CHECKS=0 disables background release checks for this CLI process. */
+export const updateChecksOf = (env: Env): boolean => env.ORRERY_UPDATE_CHECKS !== '0';
+
 /** A non-negative integer variable, or undefined when unset or empty. */
 export function intEnv(env: Env, name: string): number | undefined {
   const v = env[name];
@@ -52,41 +55,89 @@ export function disabledPluginsOf(env: Env): string[] {
   return (env.ORRERY_DISABLED_PLUGINS ?? '').split(',').map((id) => id.trim()).filter(Boolean);
 }
 
-/** The ids the settings page switched off, from <home>/plugins.json. No file: none. A damaged file throws: the Hub must not quietly turn plugins back on. */
-export function readDisabledPlugins(home: string): string[] {
+/**
+ * ORRERY_SAFE_MODE=1: this start imports no full-trust plugin at all (docs/external-plugins.md「完全信任的插件」), so a
+ * plugin that breaks the Hub can be turned off from the page. Anything else but unset, empty or 0 is refused.
+ */
+export function safeModeOf(env: Env): boolean {
+  const v = env.ORRERY_SAFE_MODE ?? '';
+  if (v !== '' && v !== '0' && v !== '1') throw new Error(`ORRERY_SAFE_MODE must be 1, 0 or unset, not ${JSON.stringify(v)}`);
+  return v === '1';
+}
+
+/**
+ * The Hub's close gives each third-party plugin at most this long to answer `shutdown` (its manifest may ask for up to
+ * 30 s for its own stop and restart). The plugins stop together, so with the initialize wait a close may still be in
+ * (5 s) and the exit wait (1 s), a stopping Hub is gone in about 16 s: under the launcher's START_TIMEOUT_MS, which waits
+ * out a stopping Hub. test/plugin-lifecycle.test.ts keeps the two from drifting apart.
+ */
+export const HUB_CLOSE_PLUGIN_GRACE_MS = 10_000;
+
+/**
+ * <home>/plugins.json: the ids the settings page switched off for the next start (`disabled`), and the third-party
+ * plugins whose automatic restart after a failure (`autoRestart`) or development reload (`devReload`) the user turned
+ * on (docs/external-plugins.md「生命周期」), and those whose web UI the user turned off (`uiOff`,「网页界面」). The three
+ * lists are optional and empty when absent. `trusted`: the full-trust plugins the user confirmed on the settings page,
+ * each bound to the real path of its Hub entry file (「完全信任的插件」); only the page's confirmation writes it.
+ */
+export interface PluginsFile { disabled: string[]; autoRestart: string[]; devReload: string[]; uiOff: string[]; trusted?: TrustConfirmation[] }
+export interface TrustConfirmation { id: string; entry: string }
+const stringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((id) => typeof id === 'string');
+const trustList = (value: unknown): value is TrustConfirmation[] => Array.isArray(value) && value.every((t) =>
+  !!t && typeof t === 'object' && !Array.isArray(t) && Object.keys(t).sort().join(',') === 'entry,id'
+  && typeof (t as TrustConfirmation).id === 'string' && typeof (t as TrustConfirmation).entry === 'string');
+
+/** No file: all lists empty. A damaged file throws: the Hub must not quietly turn plugins back on. */
+export function readPluginsFile(home: string): PluginsFile {
   const file = join(home, 'plugins.json');
   let text: string;
   try {
     text = readFileSync(file, 'utf8');
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { disabled: [], autoRestart: [], devReload: [], uiOff: [] };
     throw e;
   }
   const hint = 'fix the file, or delete it to enable every plugin';
-  let data: { disabled?: unknown } | null;
+  let data: { disabled?: unknown; autoRestart?: unknown; devReload?: unknown; uiOff?: unknown; trusted?: unknown } | null;
   try {
     data = JSON.parse(text);
   } catch (e) {
     throw new Error(`${file} is not valid JSON (${(e as Error).message}); ${hint}`);
   }
-  const disabled = data?.disabled;
-  if (!Array.isArray(disabled) || !disabled.every((id) => typeof id === 'string')) {
-    throw new Error(`${file} must look like {"disabled":["plugin-id"]}; ${hint}`);
+  const { disabled, autoRestart = [], devReload = [], uiOff = [], trusted } = data && typeof data === 'object' ? data : {};
+  if (!stringList(disabled) || !stringList(autoRestart) || !stringList(devReload) || !stringList(uiOff) || (trusted !== undefined && !trustList(trusted))) {
+    throw new Error(`${file} must look like {"disabled":["plugin-id"]} (optionally with "autoRestart", "devReload" and "uiOff" lists of ids, `
+      + `and "trusted": [{"id","entry"}]); ${hint}`);
   }
-  return disabled;
+  return { disabled, autoRestart, devReload, uiOff, ...(trusted?.length ? { trusted } : {}) };
 }
 
-/** Replaces <home>/plugins.json whole (temp file + rename), so a crash never leaves half of it. */
-export function writeDisabledPlugins(home: string, disabled: readonly string[]): void {
+/** The ids the settings page switched off, from <home>/plugins.json (readPluginsFile). */
+export function readDisabledPlugins(home: string): string[] {
+  return readPluginsFile(home).disabled;
+}
+
+/**
+ * Changes some lists of <home>/plugins.json and keeps the others as the file has them. Replaces the file whole (temp
+ * file + rename), so a crash never leaves half of it. The empty optional lists are left out.
+ */
+export function writePluginsFile(home: string, patch: Partial<PluginsFile>): void {
   const file = join(home, 'plugins.json');
+  const next = { ...readPluginsFile(home), ...patch };
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ disabled }, null, 2) + '\n');
+  writeFileSync(tmp, JSON.stringify({ disabled: next.disabled, ...(next.autoRestart.length ? { autoRestart: next.autoRestart } : {}),
+    ...(next.devReload.length ? { devReload: next.devReload } : {}), ...(next.uiOff.length ? { uiOff: next.uiOff } : {}),
+    ...(next.trusted?.length ? { trusted: next.trusted } : {}) }, null, 2) + '\n');
   try {
     renameSync(tmp, file);
   } catch (e) {
     rmSync(tmp, { force: true });
     throw e;
   }
+}
+
+export function writeDisabledPlugins(home: string, disabled: readonly string[]): void {
+  writePluginsFile(home, { disabled: [...disabled] });
 }
 
 /** What an API token may be: long enough, and safe in a URL fragment and a cookie value as it is. */

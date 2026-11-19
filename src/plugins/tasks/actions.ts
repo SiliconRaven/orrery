@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { actorKey, canonical, CollaborationError, personName, required, strings } from '../../core/collaboration.ts';
 import { MAX_FILES_PER_MESSAGE } from '../../core/files.ts';
-import { gitRepositoryPathSync, gitSync } from '../../core/projects.ts';
+import { gitRepositoryPathSync, gitSync, sameRepositoryPath } from '../../core/projects.ts';
 import type {
   Approval, Assignment, Attention, CollaborationActor, CollaborationResult, CoordinatorPermission, Merge, Review,
   CollaborationCommand, Submission, Takeover, TakeoverBasis, Task, TaskChange, TaskChangeField, TaskCloseKind, TaskCloseReason, TaskPriority,
@@ -15,6 +15,8 @@ import type { PluginActionContext, PluginRefContext } from '../../core/plugin.ts
 import type { Store, StoredMember } from '../../core/store.ts';
 import type { HubEvent, SystemMessageKind } from '../../core/types.ts';
 import { allTasks, completionValid, displayTask, eligible, fail, memberName, missingRoleNames, participantKeys, resolveTaskRef, shipState, taskDependencyEvaluation, taskOf, versions } from './model.ts';
+import { batchLabel, batchSnapshot, batchTransitions, checkJoin, refuseEarlyReview, resolveBatchRef } from './batches.ts';
+import { decideBranchLink } from './branch-link.ts';
 import { announceLibrary, applyTaskLabels } from './labels.ts';
 import { noticeBody } from './notices.ts';
 import { mergedOnTarget, shipRunner } from './ship.ts';
@@ -22,7 +24,8 @@ import { authoriseSelfReview, selfReviewBound, selfReviewHolder, takeoverRecords
 import { runWatchAction, takeWatches, taskEnd, watchNoticeBody, type TaskEnd } from './watches.ts';
 import {
   collaborationLinkCount, collaborationLinkedMessageIds, collaborationRecord, collaborationRecords, deleteCollaborationTask,
-  linkCollaborationMessage, nextTaskNumber, saveCollaborationRecord, saveCollaborationTask, unlinkCollaborationMessage,
+  linkCollaborationMessage, nextTaskNumber, saveCollaborationRecord, saveCollaborationTask, saveTaskBatch, taskBatch, unlinkCollaborationMessage,
+  batchTaskRows,
 } from './store.ts';
 
 const priority = (value: unknown): TaskPriority => {
@@ -38,6 +41,7 @@ const commitSha = (value: unknown, mandatory: boolean): string | null => {
   if (typeof value !== 'string' || !/^[0-9a-f]{7,40}$/i.test(value)) return fail('INVALID_REQUEST', 'commitSha must be 7-40 hexadecimal characters');
   return value.toLowerCase();
 };
+const STORED_REPOSITORY_GONE = 'the task\'s linked repository is no longer at its path; clear the link with gitBranch null to use your own folder, or ask the user to choose the repository on the page';
 const reviewReason = (value: unknown, mandatory: boolean): string => {
   if (mandatory) return required(value, 'reason', 50_000);
   if (value === undefined) return '';
@@ -111,7 +115,7 @@ const taskChanges = (store: Store, before: Task | null, after: Task): TaskChange
  * A hidden member cannot be given work (docs/cluster-members.md「隐身」). The user and the coordinator, who see hidden
  * members, are told why; anyone else gets the same answer as for a name that matches no member.
  */
-function refuseHidden(store: Store, clusterId: string, actor: CollaborationActor, actorId: string, memberId: string): void {
+export function refuseHidden(store: Store, clusterId: string, actor: CollaborationActor, actorId: string, memberId: string): void {
   if (!store.getMember(memberId)?.hiddenAt) return;
   const policy = store.coordinator?.policy(clusterId);
   if (actor.kind === 'user' || (policy?.enabled && policy.memberId === actorId)) {
@@ -198,6 +202,7 @@ export function resolveTaskRefs({ store, clusterId, command, collaboration }: Pl
     if (command.reviewer?.kind === 'member') out.reviewer = { kind: 'member', memberId: collaboration.memberRef(clusterId, command.reviewer.memberId) };
   }
   if (action === 'task.create' && command.originMessageId) out.originMessageId = message(command.originMessageId, 'unknown source message');
+  if (action === 'task.create' && command.batchId != null) out.batchId = resolveBatchRef(store, clusterId, command.batchId);
   if (action === 'task.submit' && Array.isArray(command.evidenceMessageIds)) {
     out.evidenceMessageIds = command.evidenceMessageIds.map((id) => message(id, 'unknown evidence message'));
   }
@@ -284,7 +289,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       + `${holder ? memberName(store, holder) : 'nobody'}; to hand it over without that, first have the user or the coordinator change the reviewer to the user or a member)`);
     recordTakeover({ fromMemberId: task!.assignedMemberId, toMemberId: id, reviewFrom: task!.reviewer, reviewTo: task!.reviewer, basis });
   };
-  /** Who may be this task's executor; the reviewer never is (docs/collaboration.md). */
+  /** Who may be this task's executor; the reviewer never is (docs/collaboration.md, roles). */
   const checkExecutor = (id: string) => {
     refuseHidden(store, clusterId, actor, actorId, id);
     refuseCoordinator(store, clusterId, id);
@@ -325,6 +330,11 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     }
     endBefore = taskEnd(store, task);
   }
+  // A task in a review batch: where the batch stood before this change, so afterEvent tells only the change that completes
+  // it (batches.ts batchTransitions). Read in this transaction, so concurrent submits or a cancel cannot both cross the line.
+  const batchId = task?.batchId ?? (action === 'task.create' && typeof command.batchId === 'string' ? command.batchId : undefined);
+  const batchBefore = batchSnapshot(store, clusterId, batchId);
+  let leftBatch: string | undefined;
   if (action === 'task.create') {
     management('taskPlanning', true);
     if (command.reviewer !== undefined || command.reviewRoleIds !== undefined) management('reviewerManagement', true);
@@ -347,6 +357,24 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       dependencyIds, fileIds: taskFileIds(store, clusterId, command.fileIds),
       currentAssignmentId: null, latestSubmissionId: null, approvedSubmissionId: null, assignedMemberId: null,
       dependenciesReady: true, dependenciesChanged: false, completionValid: false, createdAt: now, updatedAt: now };
+    if (batchId) {
+      // Created in a review batch: it takes the batch's reviewer (docs/collaboration.md「验收批次」).
+      const batch = taskBatch(store, clusterId, batchId) ?? fail('OUT_OF_SCOPE', 'unknown batch in this cluster; get_batch lists them');
+      const policy = store.coordinator?.policy(clusterId);
+      if (actor.kind === 'member' && !(policy?.enabled && policy.memberId === actorId) && batch.createdBy !== actorId) {
+        return fail('FORBIDDEN', `only the batch creator, the user or the coordinator can add tasks to ${batchLabel(batch)}`);
+      }
+      if (command.reviewer !== undefined && canonical(task.reviewer) !== canonical(batch.reviewer)) {
+        return fail('INVALID_REQUEST', 'a task in a batch is reviewed by the batch reviewer; leave reviewer out');
+      }
+      task.reviewer = structuredClone(batch.reviewer);
+      checkJoin(store, batch, task);
+      task.batchId = batch.id;
+      if (!suggest) {
+        batch.notified = null;   // the old ready notice did not include this task
+        saveTaskBatch(store, batch);
+      }
+    }
     if (task.reviewer.kind === 'member' && !isEligible(task.reviewer.memberId, task.reviewRoleIds)) {
       return fail('ROLE_REQUIRED', `reviewer ${memberName(store, task.reviewer.memberId)} lacks roles: ${missing(task.reviewer.memberId, task.reviewRoleIds)}`);
     }
@@ -368,6 +396,11 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       || command.proposalState !== undefined || command.requiresApproval !== undefined || command.mergeRequired !== undefined
       || command.fileIds !== undefined;
     if (!hasEditableFields) return fail('INVALID_REQUEST', 'no editable fields were provided');
+    // Every task of a batch has the batch's reviewer and needs a merge; to change either, the task leaves the batch first.
+    if (task.batchId && ((command.reviewer !== undefined && canonical(command.reviewer) !== canonical(task.reviewer)) || command.mergeRequired === false)) {
+      const batch = taskBatch(store, clusterId, task.batchId);
+      return fail('INVALID_STATE', `the task is in ${batch ? batchLabel(batch) : 'a review batch'}, whose tasks all have its reviewer and need a merge; remove it from the batch (batch remove, before its work starts) or cancel the batch first`);
+    }
     const unstarted = task.status === 'pending';
     const reviewerEdit = command.reviewer !== undefined || command.reviewRoleIds !== undefined;
     const metaOnly = !reviewerEdit && command.scope === undefined && command.acceptance === undefined
@@ -477,7 +510,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
   } else if (action === 'task.approve' && task) {
     approve(command.verdict);
   } else if ((action === 'task.assign' || action === 'task.nominate' || action === 'task.claim') && task) {
-    // nominate and claim are the deprecated names of assigning someone and assigning yourself (docs/collaboration.md).
+    // nominate and claim are the deprecated names of assigning someone and assigning yourself; older clients still send them.
     const claim = action === 'task.claim';
     if (claim && actor.kind !== 'member') return fail('FORBIDDEN', 'only a member can claim a task; assign a member instead');
     const target = claim ? actorId : command.memberId === null ? null : member(command.memberId).id;
@@ -557,6 +590,11 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       contributorKeys, dependencyVersions: current, createdAt: now };
     save('submission', submission);
     task.latestSubmissionId = submission.id; out.submission = submission;
+    // The automatic branch link (branch-link.ts): git was read before this transaction; a refusal below rolls it back too.
+    const linkBefore = task.gitBranch ? { ...task.gitBranch } : null;
+    const branchLink = decideBranchLink(task, ctx.prepared, actorId, submission.commitSha, store.getMember(actorId)?.cwd ?? null);
+    if (branchLink) out.gitBranch = branchLink;
+    if (canonical(linkBefore) !== canonical(task.gitBranch ?? null)) changes = [{ field: 'gitBranch', before: linkBefore, after: task.gitBranch ?? null }];
     if (task.reviewer.kind === 'self') {
       // SELF-BINDING CHECK: on a taken-over task, only the executor the latest record authorised may approve its own result.
       const bound = selfReviewBound(store, task.id, actorId);
@@ -575,7 +613,8 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       out.review = review;
     } else {
       task.status = 'review';
-      if (task.reviewer.kind === 'member') recipients.add(task.reviewer.memberId);
+      // In a batch the reviewer is woken once, when the whole batch is submitted (batchTransitions); this one is only unread.
+      if (task.reviewer.kind === 'member') { recipients.add(task.reviewer.memberId); if (task.batchId) infoOnly.add(task.reviewer.memberId); }
     }
   } else if (action === 'task.review' && task) {
     if (task.status !== 'review' || !task.latestSubmissionId || task.latestSubmissionId !== command.submissionId) return fail('STALE_SUBMISSION', 'submission is not the latest');
@@ -584,6 +623,12 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       if (policy?.enabled && policy.memberId === actorId) return fail('FORBIDDEN', `${memberName(store, actorId)} is the coordinator and cannot review; the designated reviewer or the user reviews instead`);
       if (task.reviewer.kind !== 'member' || task.reviewer.memberId !== actorId) return fail('FORBIDDEN', `only the designated reviewer (${task.reviewer.kind === 'member' ? memberName(store, task.reviewer.memberId) : 'user'}) can review; ask that reviewer, or have the reviewer changed with task_action edit`);
       if (!isEligible(actorId, task.reviewRoleIds)) return fail('ROLE_REQUIRED', `reviewer ${memberName(store, task.reviewer.memberId)} lacks roles: ${missing(task.reviewer.memberId, task.reviewRoleIds)}`);
+      // A member reviews a batch once it is complete; the user, the authority, may review any time.
+      refuseEarlyReview(store, task);
+    }
+    if (task.batchId) {
+      const batch = taskBatch(store, clusterId, task.batchId);
+      if (batch && !batch.reviewedAt) { batch.reviewedAt = now; saveTaskBatch(store, batch); }   // no task joins after this
     }
     const submission = records<Submission>('submission').find((s) => s.id === command.submissionId)!;
     if (actor.kind === 'member' && submission.contributorKeys.includes(actorKey(member(actorId)))) return fail('REVIEW_NOT_INDEPENDENT', `${memberName(store, actorId)} participated in the result, so they cannot review it`);
@@ -618,14 +663,19 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       if (actor.kind !== 'user' && link.repositoryPath !== undefined) {
         return fail('FORBIDDEN', 'only the user can choose a local repository path');
       }
-      const path = actor.kind === 'user' ? required(link.repositoryPath, 'repositoryPath') : task.gitBranch?.repositoryPath ?? member(actorId).cwd;
+      // The executor names no path: the task's linked repository, or with no link its own folder.
+      const stored = actor.kind === 'user' ? undefined : task.gitBranch?.repositoryPath;
+      const path = actor.kind === 'user' ? required(link.repositoryPath, 'repositoryPath') : stored ?? member(actorId).cwd;
       if (!isAbsolute(path)) return fail('INVALID_REQUEST', 'repositoryPath must be an absolute local path');
       const branch = required(link.branch, 'branch', 1024);
       if (branch.startsWith('-') || branch === 'HEAD') return fail('INVALID_REQUEST', 'branch must be a valid Git branch name');
       // shortcut: two bounded Git reads run while saving a link; move resolution before the transaction if saves become slow.
       let repositoryPath: string;
       try { repositoryPath = gitRepositoryPathSync(path); }
-      catch { return fail('INVALID_REQUEST', 'could not resolve a local Git repository at repositoryPath'); }
+      catch { return fail('INVALID_REQUEST', stored ? STORED_REPOSITORY_GONE : 'could not resolve a local Git repository at repositoryPath'); }
+      // git also finds a repository upward from a plain directory: the stored path must still be the linked repository,
+      // not a parent one the executor never chose.
+      if (stored && !sameRepositoryPath(repositoryPath, stored)) return fail('INVALID_REQUEST', STORED_REPOSITORY_GONE);
       try { gitSync(path, 'check-ref-format', `refs/heads/${branch}`); }
       catch { return fail('INVALID_REQUEST', 'branch must be a valid Git branch name'); }
       task.gitBranch = { repositoryPath, branch };
@@ -678,6 +728,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     }
   } else if (action === 'task.merge' && task) {
     management('taskPlanning', true);
+    if (task.batchId) return fail('INVALID_STATE', 'the task is in a review batch, which is merged as a whole: run the batch ship command from get_batch, or record a landed batch merge with manage_batch merge');
     if (task.status !== 'completed' || !completionValid(store, task) || !task.mergeRequired) return fail('INVALID_STATE', 'task has no valid completed result awaiting merge');
     const sha = commitSha(command.commitSha, true)!;
     const merge: Merge = { id: randomUUID(), taskId: task.id, commitSha: sha,
@@ -694,6 +745,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     }
   } else if ((action === 'task.shipped' || action === 'task.ship_failed') && task) {
     if (actor.kind !== 'system') return fail('FORBIDDEN', 'only a verified ship report can record this; run the ship command');
+    if (task.batchId) return fail('INVALID_STATE', 'the task is in a review batch, which is merged as a whole');
     if (task.status !== 'completed' || !completionValid(store, task) || !task.mergeRequired || command.submissionId !== task.approvedSubmissionId) {
       return fail('INVALID_STATE', 'task has no valid completed result awaiting merge');
     }
@@ -817,6 +869,8 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     const before = structuredClone(task);
     const current = assignments.find((a) => a.id === task!.currentAssignmentId);
     previousExecutor = task.assignedMemberId;
+    // The review moves away from the batch reviewer, so the task leaves its batch and goes on as an ordinary task.
+    if (task.batchId) { leftBatch = task.batchId; delete task.batchId; }
     if (current && !current.endedAt && !suggest) { current.endedAt = now; current.endReason = 'reviewer takeover'; save('assignment', current); }
     task.assignedMemberId = reviewerId;
     task.currentAssignmentId = null;
@@ -931,6 +985,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     ...(command.taskIds ? { taskIds: command.taskIds } : {}), ...(command.removeTaskIds ? { removeTaskIds: command.removeTaskIds } : {}),
     ...(deletedMessageIds.length ? { messageIds: deletedMessageIds } : {}),
     ...(stoppedMemberId ? { coordinatorConfirmedStop: stoppedMemberId } : {}),
+    ...(action === 'task.create' && task?.batchId ? { batchId: task.batchId } : {}), ...(leftBatch ? { leftBatchId: leftBatch } : {}),
     ...(suggested ? { suggested: true } : {}) });
 
   ctx.outcome.afterEvent = (event) => {
@@ -1017,7 +1072,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       // A reviewer who is now the coordinator cannot review (the Hub refuses it), so the review would wake them for
       // nothing: they keep the submission as unread like any other attached member.
       const coordinatorId = policy?.enabled ? policy.memberId : null;
-      if (action === 'task.submit' && task.reviewer.kind === 'member' && task.reviewer.memberId !== coordinatorId) {
+      if (action === 'task.submit' && task.reviewer.kind === 'member' && task.reviewer.memberId !== coordinatorId && !task.batchId) {
         infoOnly.delete(task.reviewer.memberId);
       }
     }
@@ -1043,6 +1098,29 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       ctx.notice(event, { ...notice(event, item.task), systemKind: 'task', recipients: [item.memberId],
         body: `前置依赖已就绪：任务${item.task.number ? ` #${item.task.number}` : ''}「${item.task.title}」（${item.task.id}），事件 ${event.seq}。请查看任务上下文。` });
     }
+    // In a batch a submission is the new version of its in-batch dependents (model.ts versions): the owner of each direct
+    // dependent hears that it can build on it now, or that a result built on the old one must be submitted again.
+    if (!suggest && task?.batchId && action === 'task.submit' && out.submission) {
+      const evaluation = taskDependencyEvaluation(store, clusterId);
+      const commit = out.submission.commitSha ? `提交 ${out.submission.commitSha.slice(0, 7)}` : '没有提交号';
+      const base = `${commit}${task.gitBranch ? `，分支 ${task.gitBranch.branch}` : ''}`;
+      for (const dependent of batchTaskRows(store, clusterId, task.batchId)) {
+        if (!dependent.dependencyIds.includes(task.id) || dependent.proposalState === 'proposed') continue;
+        const approved = collaborationRecord<Submission>(store, dependent.id, 'submission', dependent.approvedSubmissionId);
+        const owner = dependent.assignedMemberId
+          ?? (approved && collaborationRecords<Assignment>(store, dependent.id, 'assignment').find((a) => a.id === approved.assignmentId)?.memberId);
+        if (!owner || owner === actorId || (policy?.enabled && owner === policy.memberId)) continue;
+        const canStart = ['pending', 'working'].includes(dependent.status) && evaluation.versions(dependent) !== null;
+        if (!canStart && !['review', 'completed'].includes(dependent.status)) continue;
+        woken.add(owner);
+        const label = `任务 #${dependent.number}「${dependent.title}」（${dependent.id}）`;
+        ctx.notice(event, { ...notice(event, dependent), systemKind: 'task', recipients: [owner], body: canStart
+          ? `前置依赖已就绪（批次内，按已提交的结果）：任务 #${task.number}【${task.title}】已提交（${base}），${label}可以在它上面继续；已开工的提交时用 expectedDependencyVersions 声明新版本，事件 ${event.seq}。get_task 的 dependencies 写着要基于的提交。`
+          : `批次内的前置任务 #${task.number}【${task.title}】有新提交（${base}），${label}的结果基于旧版本，要在新版本上重新提交（用 get_task_context 读版本，按 expectedDependencyVersions 声明），事件 ${event.seq}。` });
+      }
+    }
+    // The batch crossing a line in this change: complete (the reviewer, once) or fully approved (the ship runner, once).
+    if (!suggest) for (const id of batchTransitions(ctx, batchId ?? task?.batchId, batchBefore, event)) woken.add(id);
     // Watches end at the task's end, once (watches.ts), all in one ordinary task notice. The one who ended it and a hidden
     // watcher are not told; a watcher this event already wakes only finds it unread.
     const ended = !suggest && task && !endBefore ? taskEnd(store, task) : null;

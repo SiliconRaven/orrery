@@ -11,6 +11,7 @@ const TITLE_MAX = 80;
 interface Entry {
   type?: string;
   cwd?: string;
+  sessionId?: string;
   customTitle?: string;
   aiTitle?: string;
   isMeta?: boolean;
@@ -138,7 +139,7 @@ function tokensBackward(text: string): Tok[] {
   return out.reverse();
 }
 
-const TOP_FIELDS = ['cwd', 'type', 'customTitle', 'aiTitle'];
+const TOP_FIELDS = ['cwd', 'type', 'customTitle', 'aiTitle', 'sessionId'];
 
 /** Depth of each token: forward counts from the record's opening brace, backward from its closing brace. */
 function recordFields(toks: Tok[], fromEnd: boolean): Entry | null {
@@ -178,6 +179,7 @@ function recordFields(toks: Tok[], fromEnd: boolean): Entry | null {
   }
   const e: Entry = {};
   if (top.cwd) e.cwd = top.cwd;
+  if (!fromEnd && top.sessionId) e.sessionId = top.sessionId;
   if (top.customTitle) e.customTitle = top.customTitle;
   if (top.aiTitle) e.aiTitle = top.aiTitle;
   e.type = top.type ?? (top.customTitle ? 'custom-title' : top.aiTitle ? 'ai-title' : msg.role === 'assistant' ? 'assistant' : undefined);
@@ -185,7 +187,7 @@ function recordFields(toks: Tok[], fromEnd: boolean): Entry | null {
   // A model counts only from a record known to be on the main chain: never from a sidechain (subagent) record,
   // and not when isSidechain was cut off and ownership is unknown.
   if (msg.model && msg.role === 'assistant' && sidechain === 'false') e.message = { model: msg.model };
-  return e.cwd || e.customTitle || e.aiTitle || e.message ? e : null;
+  return e.cwd || e.customTitle || e.aiTitle || e.message || e.sessionId ? e : null;
 }
 
 function decode(raw: string): string | null {
@@ -206,6 +208,26 @@ export function cutRecordHead(text: string): Entry | null {
 export function cutRecordTail(text: string): Entry | null {
   const t = text.trimEnd();
   return t.endsWith('}') ? recordFields(tokensBackward(t), true) : null;
+}
+
+/** Identify a candidate by its main conversation rows. Older logs identify a readable workspace by cwd. */
+export function transcriptIdentity(prefix: Buffer, sessionId: string): 'match' | 'legacy' | 'refused' {
+  const end = prefix.lastIndexOf(10) + 1;
+  const entries = parseLines(prefix.subarray(0, end).toString('utf8'));
+  const cut = cutRecordHead(prefix.subarray(end).toString('utf8'));
+  if (cut) entries.push(cut);
+  let match = false;
+  let hasCwd = false;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object' || entry.isSidechain === true) continue;
+    if (typeof entry.sessionId === 'string') {
+      if (entry.sessionId.toLowerCase() !== sessionId.toLowerCase()) return 'refused';
+      match = true;
+    }
+    if (typeof entry.cwd === 'string' && entry.cwd) hasCwd = true;
+  }
+  if (match) return 'match';
+  return hasCwd ? 'legacy' : 'refused';
 }
 
 /**
@@ -333,7 +355,12 @@ export function createSessionStore(claudeDir: string) {
     /** The transcript file of the session (the copy list and attach pick), or null. */
     async file(sessionId: string): Promise<string | null> {
       if (!UUID_RE.test(sessionId)) return null;
-      return (await pick((await copiesById(sessionId)).get(sessionId) ?? []))?.copy.file ?? null;
+      const copies = (await copiesById(sessionId)).get(sessionId) ?? [];
+      return (await pick(copies))?.copy.file ?? null;
+    },
+    async transcriptFiles(sessionId: string): Promise<string[]> {
+      if (!UUID_RE.test(sessionId)) return [];
+      return ((await copiesById(sessionId)).get(sessionId) ?? []).map(({ file }) => file);
     },
     async get(sessionId: string): Promise<SessionInfo | null> {
       if (!UUID_RE.test(sessionId)) return null;

@@ -621,6 +621,26 @@ test('task detail links and clears a local Git branch, and ignores suggestions f
   assert.deepEqual(values(), []);
 });
 
+test('task detail marks a branch a submit linked as 自动, and a manual one without it', async (t) => {
+  const body = mockWorkbenchDom(t);
+  const task = { id: 't1', title: '任务', status: 'review', revision: 3,
+    gitBranch: { repositoryPath: 'D:\\Projects\\Repo', branch: 'topic', automatic: true } as { repositoryPath: string; branch: string; automatic?: true } };
+  const api = async (_method: string, url: string) => url.includes('/workspace')
+    ? { tasks: [task], labels: [], roles: [], memberRoles: [], nextCursor: null } : url.endsWith('/context') ? {} : { task, events: [] };
+  const workbench = ui.createWorkbench({ api, getMembers: () => [], getHistoryMembers: () => [],
+    getClusters: () => [{ id: 'c1', name: '群' }], nameOf: (id: string) => id, messageName: () => '',
+    showMessage() {}, selectCluster() {}, getActivity: () => ({}) });
+  const marks = () => body.all((node) => node.attributes.class?.split(' ').includes('wb-git-auto')).map((node) => node.textContent);
+  workbench.openTask('c1', 't1');
+  await new Promise((done) => setImmediate(done));
+  assert.deepEqual(marks(), ['自动']);
+  delete task.gitBranch.automatic;
+  task.revision++;
+  workbench.openTask('c1', 't1');
+  await new Promise((done) => setImmediate(done));
+  assert.deepEqual(marks(), []);
+});
+
 /** A workbench on task t1 of cluster c1 whose detail reads (GET …/tasks/t1) wait until the test answers them. */
 function watcherBench(t: TestContext) {
   const body = mockWorkbenchDom(t);

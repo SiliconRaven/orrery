@@ -39,7 +39,7 @@ const errText = (e) => (e instanceof Error ? e.message : String(e));
 
 // What the Hub's MCP server says about itself; initialize is answered here so a missing id is reported without asking
 // the Hub anything.
-const SERVER_INFO = { name: 'orrery', version: '0.10.0-beta.1' };
+const SERVER_INFO = { name: 'orrery', version: '0.10.0-beta.2' };
 const CAPABILITIES = { tools: { listChanged: true } };
 const NO_ID_INSTRUCTIONS = `${NO_ID}，无法识别这个对话：orrery 工具不可用，也收不到 orrery 的投递。`
   + '确认 orrery 已作为 WorkBuddy 的 MCP 服务器添加并信任，命令直接是 node；改动后要新开对话。';

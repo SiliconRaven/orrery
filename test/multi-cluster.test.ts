@@ -1,4 +1,3 @@
-import { tempDir } from './helpers.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -34,8 +33,8 @@ test('one native conversation joins two clusters and MCP selects only an authori
     const listing = (await app.hub.listSessions('mock', join(app.dir, 'project-1'))).find((s) => s.id === 's1')!;
     assert.equal(listing.memberId, a.id);
     assert.deepEqual(listing.memberships, [
-      { clusterId: one.id, clusterName: 'one', memberId: a.id, memberName: 'A', mode: 'native' },
-      { clusterId: two.id, clusterName: 'two', memberId: b.id, memberName: 'B', mode: 'native' },
+      { clusterId: one.id, clusterName: 'one', memberId: a.id, memberName: 'A' },
+      { clusterId: two.id, clusterName: 'two', memberId: b.id, memberName: 'B' },
     ]);
 
     const ambiguous = await call(app, 'list_agents', {});

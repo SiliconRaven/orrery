@@ -48,7 +48,7 @@ async function cHub(opts: { running?: () => Promise<boolean | null>; times?: Tim
     members: [
       { harness: 'cursor', mode: 'native', sessionId: S1, name: 'C1' },
       { harness: 'cursor', mode: 'native', sessionId: S2, name: 'C2' },
-      { projectPath: tempDir(), harness: 'mock', name: 'A' },
+      { harness: 'mock', mode: 'native', name: 'A', projectPath: '/work' },
     ],
   });
   const statusOf = async (id = c1.id) => ((await app.api('GET', '/api/state')).members as Member[]).find((m) => m.id === id)!.status;
@@ -404,7 +404,9 @@ test('cursor tokens, hand-over ids and the marker', () => {
   assert.equal(marker(['A']), '[orrery · 来自 A]', 'Kimi\'s marker is unchanged');
   assert.equal(marker(undefined), '[orrery]');
   assert.ok(nativeFactories.cursor, 'registered');
-  const src = readFileSync(join(REPO_ROOT, 'src', 'adapters', 'cursor', 'native.ts'), 'utf8') + readFileSync(join(REPO_ROOT, 'src', 'adapters', 'cursor', 'store.ts'), 'utf8');
+  const src = readFileSync(join(REPO_ROOT, 'src', 'adapters', 'cursor', 'native.ts'), 'utf8')
+    + readFileSync(join(REPO_ROOT, 'src', 'adapters', 'cursor', 'store.ts'), 'utf8')
+    + readFileSync(join(REPO_ROOT, 'src', 'adapters', 'cursor', 'transcript.ts'), 'utf8');
   assert.doesNotMatch(src, /cursor:\/\//, 'never opens a cursor:// link');
   assert.doesNotMatch(src, /\b(spawn|exec|execFile)\(/, 'never starts a program (tasklist is in the shared helper)');
   assert.doesNotMatch(src.replace(/^\s*\/\/.*$/gm, ''), /state\.vscdb/, 'never names a state.vscdb outside comments');

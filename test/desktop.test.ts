@@ -563,7 +563,7 @@ const FORBIDDEN = ['SetParent', 'SetWindowLongPtr', 'SetWindowLong', 'PostMessag
 
 function desktopSources(): { path: string; code: string }[] {
   return readdirSync(DESKTOP, { recursive: true, encoding: 'utf8' })
-    .filter((f) => /\.(mjs|cjs|js|html)$/.test(f) && !f.split(/[\\/]/).includes('node_modules'))
+    .filter((f) => /\.(mjs|cjs|js|html)$/.test(f) && !f.split(/[\\/]/).some((part) => ['node_modules', 'build', 'dist', '.cache'].includes(part)))
     .map((f) => ({ path: f.replaceAll('\\', '/'), code: readFileSync(join(DESKTOP, f), 'utf8') }));
 }
 
@@ -614,11 +614,11 @@ test('desktop C: only win32.mjs loads koffi, and only writer.mjs calls the Win32
   assert.equal((writer.match(/ffi\.showWindow\(/g) ?? []).length, 1, 'one ShowWindow call site, behind the command check');
 });
 
-test('desktop: the pure modules import nothing but each other; desktop and src stay apart; the Hub gains no dependency', () => {
+test('desktop: the pure modules import nothing but each other; Hub and shell dependencies stay separate', () => {
   const IMPORT = /(?:^|\s)(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|import\s*\(?\s*['"]([^'"]+)['"]/g;
   for (const f of ['apps.mjs', 'windows.mjs', 'geometry.mjs', 'dock.mjs', 'writer.mjs', 'navigation.mjs', 'startup.mjs', 'strip.mjs', 'launch.mjs', 'locate.mjs', 'peicon.mjs', 'app-paths.mjs']) {
     const specs = [...readFileSync(join(DESKTOP, 'lib', f), 'utf8').matchAll(IMPORT)].map((m) => m[1] ?? m[2]);
-    for (const s of specs) assert.match(s, /^\.\/(apps|windows|geometry|dock|writer|navigation|locate)\.mjs$/, `lib/${f} imports ${s}`);
+    for (const s of specs) assert.ok(s === '../../shared/i18n/index.js' || /^\.\/(apps|windows|geometry|dock|writer|navigation|locate)\.mjs$/.test(s), `lib/${f} imports ${s}`);
   }
   // Window bindings and the packaged runtime's file/HTTP I/O are the two non-pure modules.
   const runtimeImports = [...readFileSync(join(DESKTOP, 'lib', 'runtime.mjs'), 'utf8').matchAll(IMPORT)].map((m) => m[1] ?? m[2]);
@@ -633,14 +633,16 @@ test('desktop: the pure modules import nothing but each other; desktop and src s
     assert.doesNotMatch(readFileSync(join(REPO_ROOT, 'src', f), 'utf8'), /desktop\//, `src/${f} refers to desktop/`);
   }
   const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-  assert.deepEqual(Object.keys(pkg.dependencies).sort(), ['@modelcontextprotocol/sdk', 'zod']);
-  assert.deepEqual(Object.keys(pkg.devDependencies).sort(), ['@types/node', 'knip', 'typescript']);
+  assert.deepEqual(Object.keys(pkg.dependencies).sort(), ['@modelcontextprotocol/sdk', 'smol-toml', 'tar', 'yauzl', 'zod']);
+  assert.equal(pkg.dependencies['smol-toml'], '1.9.1');
+  assert.deepEqual(Object.keys(pkg.devDependencies).sort(), ['@types/node', '@types/yauzl', 'knip', 'typescript']);
   const desk = JSON.parse(readFileSync(join(DESKTOP, 'package.json'), 'utf8'));
   assert.deepEqual(desk.dependencies, { koffi: '3.3.3' }, 'runtime dependency stays pinned');
   assert.deepEqual(desk.devDependencies, { electron: '44.8.0', 'electron-builder': '26.18.0' }, 'build dependencies stay pinned');
   const lock = JSON.parse(readFileSync(join(DESKTOP, 'package-lock.json'), 'utf8'));
   assert.equal(lock.packages['node_modules/electron'].version, '44.8.0');
   assert.equal(lock.packages['node_modules/koffi'].version, '3.3.3');
+  assert.equal(lock.packages['node_modules/electron-builder'].version, '26.18.0');
 });
 
 // --- D / E, the parts that are plain functions -------------------------------------------------------------------
@@ -1031,8 +1033,8 @@ test('desktop: the + panel is the shell\'s own trusted page: fixed, sandboxed, n
   assert.doesNotMatch(panel, /parent|modal/);
   assert.match(shell, /win\.on\('closed', \(\) => \{ if \(!panel\.isDestroyed\(\)\) panel\.destroy\(\); \}\);/, 'and it never outlives the shell');
   assert.match(panel, /webPreferences: \{ preload: STRIP_PRELOAD, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false \}/);
-  assert.match(shell, /panel\.loadURL\(STRIP_PAGE\);/);
-  assert.equal((shell.match(/panel\.loadURL\(/g) ?? []).length, 1, 'loaded once, the fixed page');
+  assert.match(shell, /panel\.loadURL\(desktopPageUrl\(STRIP_PAGE, uiLanguage\)\);/);
+  assert.equal((shell.match(/panel\.loadURL\(/g) ?? []).length, 2, 'initial load and explicit trusted language change');
   assert.match(shell, /panel\.removeMenu\(\);/);
   // The same guards as the tab bar: no navigation, no webview, no new window; F5 / Ctrl+R never reload it.
   assert.match(shell, /for \(const page of \[tabs, strips, settingsPage\]\) \{\n {4}page\.on\('will-navigate', \(e\) => e\.preventDefault\(\)\);\n {4}page\.on\('will-frame-navigate', \(e\) => e\.preventDefault\(\)\);\n {4}page\.on\('will-attach-webview', \(e\) => e\.preventDefault\(\)\);\n {4}page\.setWindowOpenHandler\(\(\) => \(\{ action: 'deny' \}\)\);\n {2}\}/);
@@ -1069,7 +1071,7 @@ function ipcSenders(shell: string) {
   assert.match(shell, /const fromStrip = \(event\) => fromPage\(event, strips, STRIP_PAGE\);/);
   assert.match(shell, /const fromSettings = \(event\) => fromPage\(event, settingsPage, SETTINGS_PAGE\);/);
   assert.match(shell, /const settingsPage = settingsWin\.webContents;/);
-  assert.match(shell, /return event\.sender === wc && !!f && !!main && f\.parent === null\n {6}&& f\.processId === main\.processId && f\.routingId === main\.routingId && f\.url === url;/);
+  assert.match(shell, /return event\.sender === wc && !!f && !!main && f\.parent === null\n {6}&& f\.processId === main\.processId && f\.routingId === main\.routingId && f\.url === desktopPageUrl\(url, uiLanguage\);/);
   assert.match(shell, /const tabs = win\.webContents;/);
   assert.match(shell, /const strips = panel\.webContents;/);
   // The panel's table: exactly its two channels; neither is in the tab bar's table, and the tab bar's are not in it.
@@ -1079,7 +1081,7 @@ function ipcSenders(shell: string) {
     return [...m[1].matchAll(/^ {4}'([a-z]+:[a-z]+)':/gm)].map((x) => x[1]);
   };
   assert.deepEqual(block('stripHandlers'), ['strip:pick', 'strip:close']);
-  assert.deepEqual(block('settingsHandlers'), ['settings:detect', 'settings:use', 'settings:pick', 'settings:clear', 'settings:close']);
+  assert.deepEqual(block('settingsHandlers'), ['settings:detect', 'settings:use', 'settings:pick', 'settings:clear', 'settings:language', 'settings:close']);
   const tabChannels = block('handlers');
   assert.ok(tabChannels.length >= 8 && tabChannels.every((c) => !c.startsWith('strip:') && !c.startsWith('settings:')), tabChannels.join());
 }

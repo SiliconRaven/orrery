@@ -8,7 +8,7 @@ import { tempDir } from './helpers.ts';
 
 test('bridge done validates and returns structured outcomes only to the matching wait, preserving legacy done', async () => {
   const store = new Store(':memory:');
-  const hub = new Hub({ store, nativeAdapters: {},  limits: { bridgeAckMs: 20 } });
+  const hub = new Hub({ store, nativeAdapters: {}, limits: { bridgeAckMs: 20 } });
   const server = createServer((req, res) => { void handleBridge(hub, 'test-secret', req, res); });
   const disconnect = hub.connectBridge('fake', 's1', { send() {}, close() {} });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

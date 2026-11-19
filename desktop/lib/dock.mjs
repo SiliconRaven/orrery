@@ -1,3 +1,4 @@
+import { t } from '../../shared/i18n/index.js';
 // Tab state machine of the desktop shell (docs/desktop.md). Pure: `step` turns a user action or an event of the orrery
 // window into a new state plus a list of window operations; `runOps` hands those to the writer (lib/writer.mjs), the
 // only place that touches Win32. Imports neither Electron nor the FFI library.
@@ -99,7 +100,7 @@ const firstEmpty = (panes) => Math.max(0, panes.indexOf(null));
 
 function tooSmall(state, tab, apps) {
   const name = apps.find((a) => a.id === tab.app)?.name ?? tab.app;
-  return { tab: tab.id, text: `${name} 的窗口缩不到这么小，会盖住旁边一栏。可以拖动分隔线，或换成${state.layout === 'grid' ? '两栏' : '单栏'}。` };
+  return { tab: tab.id, text: t('{name} 的窗口缩不到这么小，会盖住旁边一栏。可以拖动分隔线，或换成{layout}。', { name, layout: t(state.layout === 'grid' ? '两栏' : '单栏') }) };
 }
 
 /**
@@ -122,7 +123,7 @@ function selectTab(state, id, trigger, env) {
       // Then the shell's own window goes beneath the docked windows, whether or not Windows granted the foreground switch.
       ops.push(op('restore', tab, trigger), op('place', tab, trigger, { rect }), op('foreground', tab, trigger), lowerShell(next, tab, trigger));
     } else {
-      notices.push({ tab: id, text: 'orrery 窗口的内容区算不出可用的位置，没有移动应用窗口。' });
+      notices.push({ tab: id, text: t('orrery 窗口的内容区算不出可用的位置，没有移动应用窗口。') });
     }
   }
   if (replaced) ops.push(op('minimize', replaced, trigger));
@@ -132,10 +133,10 @@ function selectTab(state, id, trigger, env) {
 /** Checks a picked candidate and reads its placement; a binding exists only if both succeed. */
 function bind(state, tabId, candidate, env) {
   if (state.tabs.some((t) => t.binding?.hwnd === candidate.hwnd)) {
-    return { error: '这个窗口已经在另一个标签里了。' };
+    return { error: t('这个窗口已经在另一个标签里了。') };
   }
   const got = env.capture(candidate);
-  if (!got.ok) return { error: `没有接管这个窗口（${got.reason}）：它可能已经关了或变了，也可能读不到它原来的位置。` };
+  if (!got.ok) return { error: t('没有接管这个窗口（{reason}）：它可能已经关了或变了，也可能读不到它原来的位置。', { reason: got.reason }) };
   const { hwnd, pid, exePath, className } = candidate;
   return { binding: { id: state.nextBinding, hwnd, pid, exePath, className, placement: got.placement } };
 }
@@ -315,13 +316,13 @@ export function step(state, event, env, apps = APPS) {
       const gone = new Set((event.lost ?? []).map((l) => l.binding.id));
       const tabs = state.tabs.map((t) => (t.binding && gone.has(t.binding.id) ? { ...t, binding: null } : t));
       const notices = state.tabs.filter((t) => t.binding && gone.has(t.binding.id))
-        .map((t) => ({ tab: t.id, text: '窗口已经关了或身份变了，需要重新选择。orrery 没有再动它。' }));
+        .map((tab) => ({ tab: tab.id, text: t('窗口已经关了或身份变了，需要重新选择。orrery 没有再动它。') }));
       // A tab closed in the same step is no longer in the state, so its failed put-back is reported here, once.
       // (Quitting the shell reports its own list, and this step is not reached once the shell is closing.)
       for (const l of event.lost ?? []) {
         if (l.op !== 'putBack' || l.trigger !== 'close' || state.tabs.some((t) => t.id === l.tab)) continue;
-        const name = apps.find((a) => a.id === l.app)?.name ?? '这个应用';
-        notices.push({ tab: l.tab, text: `${name} 的窗口已经关了或不是原来那个了（${l.reason}），关标签时没有把它还原。orrery 没有动它。` });
+        const name = apps.find((a) => a.id === l.app)?.name ?? t('这个应用');
+        notices.push({ tab: l.tab, text: t('{name} 的窗口已经关了或不是原来那个了（{reason}），关标签时没有把它还原。orrery 没有动它。', { name, reason: l.reason }) });
       }
       return { state: { ...state, tabs }, ops: [], notices };
     }

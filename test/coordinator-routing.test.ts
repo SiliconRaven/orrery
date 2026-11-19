@@ -1,4 +1,3 @@
-import { tempDir } from './helpers.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -149,7 +148,7 @@ test('the existing hop, chain-turn and hourly guards apply to coordinator delive
 test('unaddressed member chat and task comments never reach the coordinator; only a named one or a user message does', async () => {
   const { app, cluster, a, b, policy, deliveries } = await fixture();
   try {
-    const { members: [c] } = await app.hub.addMembers(cluster.id, [{ projectPath: tempDir(), harness: 'mock', mode: 'native', name: 'C' }]);
+    const { members: [c] } = await app.hub.addMembers(cluster.id, [{ harness: 'mock', mode: 'native', name: 'C', projectPath: '/work' }]);
     const task = app.hub.collaboration.command({ kind: 'user' }, cluster.id, {
       action: 'task.create', operationId: 'routing-quiet-task', title: 'task', scope: 'scope', acceptance: 'done',
     }).task!;

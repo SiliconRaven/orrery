@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 export function runtimeConfig({ packaged, resourcesPath, userData, node, env = process.env }) {
-  if (!packaged) return { node: node || 'node', launcher: join(import.meta.dirname, '..', '..', '..', 'src', 'launcher.ts'), env };
+  if (!packaged) return { node: node || 'node', launcher: join(import.meta.dirname, '..', '..', 'src', 'launcher.ts'), env };
   const home = resolve(env.ORRERY_HOME || join(userData, 'hub'));
   return {
     node: join(resourcesPath, 'node', 'node.exe'),

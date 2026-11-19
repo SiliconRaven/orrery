@@ -1,3 +1,4 @@
+import { t, language } from './i18n.js';
 // The "全部对话" matrix (docs/architecture.md「全部对话」): conversations × clusters, as data. Pure: no DOM, no fetches,
 // so a later view (a star map, say) can draw the same model.
 import { harnessApp, sidebarSections, UNGROUPED } from './ui.js';
@@ -5,9 +6,9 @@ import { harnessApp, sidebarSections, UNGROUPED } from './ui.js';
 export { harnessApp };   // its home moved to ui.js (avatars use it too); importers of this module keep working
 
 /**
- * Which physical conversation a membership is. A native conversation is one row however many clusters it is in: the
- * same app (harness) and the same session id (the Hub never shares one native session between two harnesses). A
- * member with no session id yet is its own row.
+ * Which physical conversation a membership is. A conversation is one row however many clusters it is in: the same
+ * app (harness) and the same session id (the Hub never shares one session between two harnesses). A member with no
+ * session id yet is its own row.
  */
 export function conversationKey(member) {
   return member.workerSessionId
@@ -22,8 +23,7 @@ const STATUS_RANK = { busy: 2, idle: 1, offline: 0 };
  * - columns: clusters in the sidebar's order (置顶, then the groups in the Hub's order, then 已归档), under column
  *   groups named as in the sidebar; archived clusters only with `showArchived` (`hiddenArchived` counts them);
  *   each with its active member count and how many are online;
- * - rowGroups: rows by app (harness), A–Z; inside a group
- *   busy first, then online, then offline, then by label;
+ * - rowGroups: rows by app (harness), A–Z; inside a group busy first, then online, then offline, then by label;
  * - rows: one per conversation (conversationKey): its names in its clusters, status (busy if any membership is busy,
  *   online if any is), latest activity, and cells by cluster id ({ memberId, name, status, coordinator }); a row
  *   whose clusters are all hidden is left out.
@@ -33,9 +33,9 @@ const STATUS_RANK = { busy: 2, idle: 1, offline: 0 };
 export function conversationMatrix({ members, clusters, groups = [], coordinators = {}, statusOf, activityAt = () => null, showArchived = false }) {
   const sections = sidebarSections(clusters, groups);
   const columnGroups = [
-    ...(sections.pinned.length ? [{ name: '置顶', clusters: sections.pinned }] : []),
-    ...sections.groups.filter((g) => g.clusters.length).map((g) => ({ name: g.name || UNGROUPED, clusters: g.clusters })),
-    ...(showArchived && sections.archived.length ? [{ name: '已归档', clusters: sections.archived }] : []),
+    ...(sections.pinned.length ? [{ name: t("置顶"), clusters: sections.pinned }] : []),
+    ...sections.groups.filter((g) => g.clusters.length).map((g) => ({ name: g.name || t(UNGROUPED), clusters: g.clusters })),
+    ...(showArchived && sections.archived.length ? [{ name: t("已归档"), clusters: sections.archived }] : []),
   ];
   const shown = new Map(columnGroups.flatMap((g) => g.clusters.map((c) => [c.id, c])));
   const active = members.filter((m) => !m.removedAt && clusters.some((c) => c.id === m.clusterId));
@@ -55,7 +55,7 @@ export function conversationMatrix({ members, clusters, groups = [], coordinator
     if (!shown.has(m.clusterId)) continue;
     const key = conversationKey(m);
     if (!byKey.has(key)) {
-      byKey.set(key, { key, harness: m.harness, mode: 'native', sessionId: m.workerSessionId || null, cwd: m.cwd || null,
+      byKey.set(key, { key, harness: m.harness, sessionId: m.workerSessionId || null, cwd: m.cwd || null,
         names: [], status: 'offline', lastActivityAt: null, cells: {} });
     }
     const row = byKey.get(key);
@@ -67,10 +67,10 @@ export function conversationMatrix({ members, clusters, groups = [], coordinator
     const at = activityAt(m);
     if (at && Number.isFinite(Date.parse(at)) && (!row.lastActivityAt || Date.parse(at) > Date.parse(row.lastActivityAt))) row.lastActivityAt = at;
   }
-  const order = (a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status] || a.names.join('/').localeCompare(b.names.join('/'), 'zh-CN') || a.key.localeCompare(b.key);
+  const order = (a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status] || a.names.join('/').localeCompare(b.names.join('/'), language() === 'en' ? 'en' : 'zh-CN') || a.key.localeCompare(b.key);
   const rows = [...byKey.values()].map((r) => ({ ...r, label: r.names.join(' / ') }));
   const harnesses = [...new Set(rows.map((r) => r.harness))].sort((a, b) => a.localeCompare(b));
-  const rowGroups = harnesses.map((harness) => ({ key: `native:${harness}`, harness, mode: 'native', label: harnessApp(harness).name, icon: harnessApp(harness).icon,
+  const rowGroups = harnesses.map((harness) => ({ key: `native:${harness}`, harness, label: harnessApp(harness).name, icon: harnessApp(harness).icon,
     rows: rows.filter((r) => r.harness === harness).sort(order) }));
   return { columnGroups: grouped, columns, rowGroups,
     rowCount: rows.length, hiddenArchived: showArchived ? 0 : sections.archived.length };
@@ -98,4 +98,4 @@ export const CONVERSATIONS_VIEW_KEY = 'orrery.conversationsView';
 /** The stored view; anything else is the list. */
 export const viewFromStored = (value) => value === 'matrix' ? 'matrix' : 'list';
 /** Short words for a cell's status, so it never rests on colour alone. */
-export const STATUS_WORD = { busy: '忙', idle: '在线', offline: '离线' };
+export const STATUS_WORD = { get busy() { return t("忙"); }, get idle() { return t("在线"); }, get offline() { return t("离线"); } };

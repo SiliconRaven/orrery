@@ -24,7 +24,8 @@ See [plugins/workbuddy-orrery/README.en.md](../../plugins/workbuddy-orrery/READM
 2. *(Optional)* Copy `plugins/workbuddy-orrery/skill/SKILL.md` (or `SKILL.en.md`) into WorkBuddy's skills directory and say `"加入 orrery"` / `"join orrery"`.
 3. **Permission warning**: WorkBuddy's default sandbox preset may run operations without per-command prompts; approve only the exact `wait.mjs` line if asked, and never enable "allow full access".
 
-## Read-Only Session Store
+## Read-Only Session Store & Transcript Reading
 
 - **Store**: Queries temp copies of `<WORKBUDDY_CONFIG_DIR or ~/.workbuddy>/workbuddy.db` (+ `-wal`), filtering local non-playground/non-automation sessions. No `createSession`, quotas, or tokens.
+- **Read-only bound transcript reading**: `Hub.memberTranscript` reads bounded pages from `<workbuddyHome>/projects/<proj>/<sessionId>.jsonl` (verifying `session-meta.sessionId`, skipping `subagents/`, rejecting outside paths, hardlinks, and junctions, without touching `workbuddy.db`). It redacts `reasoning` and session wait tickets before display, maps `isMeta` to `system`, normalizes both direct MCP and `DeferExecuteTool` calls with cross-page pairing, and submits Hub candidates only for `TaskOutput` or explicitly paired Shell wait-command results whose full command matches this session's `wait.mjs` command (unpaired results, embedded command snippets, and misses remain unchanged).
 - Session identity is supplied by the host. Reconnect MCP if a reset, rewind, or new conversation changes the identity.

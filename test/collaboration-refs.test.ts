@@ -11,14 +11,14 @@ function fixture(opts: { twins?: boolean } = {}) {
   const store = new Store(':memory:', new PluginHost(officialPlugins));
   const member = (id: string, name: string, clusterId = 'c') => ({
     id, clusterId, name, avatar: null, harness: 'mock', model: null, effort: null,
-    mode: 'native' as const, workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null,
+    workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null,
   });
   // The schema forbids equal active names, so a duplicate needs the index gone.
   if (opts.twins) store.db.exec('DROP INDEX members_active_name');
   store.insertCluster({ id: 'c', name: 'c', category: '', createdAt: '2026-01-01' },
     [member('id-a', 'alice'), member('id-b', 'bob'), ...(opts.twins ? [member('id-t1', 'twin'), member('id-t2', 'twin')] : [])]);
   store.insertCluster({ id: 'other', name: 'other', category: '', createdAt: '2026-01-01' }, [member('id-x', 'xavier', 'other')]);
-  const hub = new Hub({ store, nativeAdapters: {}, });
+  const hub = new Hub({ store, nativeAdapters: {} });
   let serial = 0;
   const user: CollaborationActor = { kind: 'user' };
   const alice: CollaborationActor = { kind: 'member', memberId: 'id-a' };

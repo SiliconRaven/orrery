@@ -16,6 +16,7 @@ import { basename, join } from 'node:path';
 import type { AgentEvent, NativeAdapter, NativeDeliverContext, NativeDeliveryResult, ProjectInfo, SessionInfo, TokenTotals } from '../../core/types.ts';
 import { decideServerRequest, fetchModels, toSessionInfo, type CodexProcess, type CodexThread } from './protocol.ts';
 import { RpcPeer } from './rpc.ts';
+import { codexTranscript } from './transcript.ts';
 import { createCodexUsage, fromAppServer } from './usage.ts';
 
 /** v2/ThreadItem.ts and v2/Turn.ts, the subset read here. */
@@ -77,7 +78,6 @@ export function initPrompt(clusterName: string, memberName: string): string {
  * in the shape each request expects; unknown requests get a JSON-RPC error.
  */
 function declineAll(method: string, params: unknown): unknown {
-  if (method === 'mcpServer/elicitation/request') return { action: 'decline', content: null, _meta: null };
   return decideServerRequest(method, (params ?? {}) as Record<string, unknown>).result;
 }
 
@@ -427,6 +427,11 @@ export function createCodexNativeAdapter(opts: CodexNativeOptions = {}): NativeA
 
   return {
     harness: 'codex',
+
+    async transcript(sessionId, request) {
+      checkId(sessionId);
+      return codexTranscript(codexHome, await usage.transcriptRolloutOf(sessionId), sessionId, request);
+    },
 
     async listProjects(): Promise<ProjectInfo[]> {
       const byCwd = new Map<string, number>();

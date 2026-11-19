@@ -2,7 +2,7 @@
 
 Language: [中文](README.md) | **English**
 
-Standalone external plugin example (bundled with `orrery v0.10.0-beta.1` Beta pre-release; APIs may change) using Node built-ins only. Subscribes to `task.submitted`, waits 5 minutes, and posts one reminder attributed as `"插件 review-reminder"` (without `messages.mention`, so no member is woken) if no `task.approved`, `task.rejected`, or `task.merged` arrives. Resubmitting resets the timer; self-review completions do not trigger reminders.
+Standalone external plugin example (bundled with `orrery v0.10.0-beta.2` Beta pre-release; APIs may change) using Node built-ins only. Subscribes to `task.submitted`, waits 5 minutes, and posts one reminder attributed as `"插件 review-reminder"` (without `messages.mention`, so no member is woken) if no `task.approved`, `task.rejected`, or `task.merged` arrives. Resubmitting resets the timer; self-review completions do not trigger reminders.
 
 ## Running in a Dedicated Test Environment
 
@@ -19,7 +19,7 @@ Standalone external plugin example (bundled with `orrery v0.10.0-beta.1` Beta pr
    $env:ORRERY_MOCK = '1'
    npm run open
    ```
-   Create a `mock` cluster (grab its ID from `#c=...` or `GET /api/clusters`), copy this folder outside the repo (optionally shortening `REMINDER_DELAY_MS` in `main.mjs`), write `$demo\home\external-plugins.json`, and restart the temp Hub:
+   Create a cluster with `mock` ticked, choose its demo project and tick one of its ready-made conversations (or "also create a new conversation") (grab its ID from `#c=...` or `GET /api/clusters`), copy this folder outside the repo (optionally shortening `REMINDER_DELAY_MS` in `main.mjs`), write `$demo\home\external-plugins.json`, and restart the temp Hub:
 
    ```json
    {

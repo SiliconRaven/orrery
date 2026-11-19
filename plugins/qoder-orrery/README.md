@@ -4,7 +4,7 @@
 
 Qoder 桌面应用的原生模式接入件。本插件零第三方依赖，只要 PATH 中存在 Node 24 即可运行；orrery 不替你安装插件或改写 Qoder 设置。
 
-> **Beta 版本提示**：本插件随 `orrery v0.10.0-beta.1`（Beta 测试版）提供，接口、钩子与配置格式仍可能变化。
+> **Beta 版本提示**：本插件随 `orrery v0.10.0-beta.2`（Beta 测试版）提供，接口、钩子与配置格式仍可能变化。
 
 安装版用户请使用内置 Node 路径，并为宿主插件设置 `ORRERY_HOME`，见[安装版接入说明](../../docs/desktop.md)。
 

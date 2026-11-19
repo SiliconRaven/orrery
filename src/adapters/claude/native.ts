@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import type { NativeAdapter, QuotaSnapshot } from '../../core/types.ts';
 import { cliEnv, resolveClaudeCommand, type ClaudeCommand } from './cli.ts';
 import { createSessionStore } from './store.ts';
+import { readClaudeTranscript } from './transcript.ts';
 import { askUsage, createClaudeUsage, fromGetUsage } from './usage.ts';
 
 export interface ClaudeNativeOptions {
@@ -51,6 +52,10 @@ export function createClaudeNativeAdapter(opts: ClaudeNativeOptions = {}): Nativ
     async conversationTokens(sessionId) {
       const file = await store.file(sessionId);
       return file ? usage.transcriptTokens(file) : null;
+    },
+    async transcript(sessionId, request) {
+      const files = await store.transcriptFiles(sessionId);
+      return readClaudeTranscript(join(claudeDir, 'projects'), files, sessionId, request);
     },
     async deliver(sessionId, text, ctx) {
       if (!ctx.bridge.isOnline('claude', sessionId)) return 'offline';

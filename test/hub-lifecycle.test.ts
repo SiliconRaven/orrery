@@ -65,7 +65,7 @@ test('startup: a discovery write failure releases the Hub, database and port wit
     let failure;
     try {
       await startHub({ home, dbPath: join(dir, 'test.db'), port: Number(rawPort),
-        apiToken: 'test-token-0123456789abcdefghijklmnopqrstuvwxyz', nativeAdapters: { faulty: adapter, fake: native } });
+        apiToken: 'test-token-0123456789abcdefghijklmnopqrstuvwxyz', nativeAdapters: { first: adapter, fake: native } });
     } catch (error) { failure = error; }
     assert.equal(failure?.syscall, 'rename', 'the original discovery error is returned');
     assert.equal(failure?.dest, join(home, 'hub.json'));
@@ -105,7 +105,7 @@ test('launcher 2: a second Hub on the same port and database fails with EADDRINU
     const discovery = readFileSync(join(app.home, 'hub.json'), 'utf8');
     const secret = readFileSync(join(app.home, 'secret'), 'utf8');
 
-    const b = startMain({ ORRERY_PORT: String(port), ORRERY_DB: join(app.dir, 'test.db'), ORRERY_HOME: app.home, ORRERY_SANDBOX: join(app.dir, 'sandbox') });
+    const b = startMain({ ORRERY_PORT: String(port), ORRERY_DB: join(app.dir, 'test.db'), ORRERY_HOME: app.home });
     const [code] = await b.exit;
     assert.notEqual(code, 0);
     assert.match(b.out.text, /EADDRINUSE/);
@@ -125,7 +125,9 @@ test('launcher 4: /api/health describes the Hub without the bridge secret', asyn
     const res = await fetch(app.url + '/api/health');
     assert.equal(res.status, 200);
     const text = await res.text();
-    assert.deepEqual(JSON.parse(text), { app: 'orrery', pid: process.pid, state: 'running', home: app.home, db: join(app.dir, 'test.db'), executable: process.execPath });
+    const health = JSON.parse(text);
+    assert.match(health.instance, /^[0-9a-f]{32}$/, 'this start of the Hub');
+    assert.deepEqual(health, { app: 'orrery', pid: process.pid, instance: health.instance, state: 'running', home: app.home, db: join(app.dir, 'test.db'), executable: process.execPath });
     const { secret } = JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8'));
     assert.ok(!text.includes(secret));
     // Same Host check as the rest of the API.
@@ -189,11 +191,11 @@ test('launcher 4: shutdown refuses GET, cross-site and non-JSON requests; repeat
 test('launcher 4: node src/main.ts exits after POST /api/shutdown, removes hub.json and keeps the data', async () => {
   const dir = tempDir();
   const home = join(dir, 'home');
-  const hub = startMain({ ORRERY_PORT: '0', ORRERY_DB: join(dir, 'h.db'), ORRERY_SANDBOX: join(dir, 'sb'), ORRERY_HOME: home, ORRERY_MOCK: '1' });
+  const hub = startMain({ ORRERY_PORT: '0', ORRERY_DB: join(dir, 'h.db'), ORRERY_HOME: home, ORRERY_MOCK: '1' });
   try {
     const url = await waitFor(() => /listening on (http:\S+)/.exec(hub.out.text)?.[1], 'hub to start', 10_000);
     const send = (path: string, body: unknown) => fetch(url + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    const { cluster } = await (await send('/api/clusters', { name: 'kept', members: [{ projectPath: tempDir(), harness: 'mock' }] })).json();
+    const { cluster } = await (await send('/api/clusters', { name: 'kept', members: [{ harness: 'mock', mode: 'native', projectPath: '/work' }] })).json();
     await send(`/api/clusters/${cluster.id}/messages`, { body: 'still here' });
     assert.ok(existsSync(join(home, 'hub.json')));
     assert.equal((await send('/api/shutdown', {})).status, 202);

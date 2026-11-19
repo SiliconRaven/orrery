@@ -1,5 +1,6 @@
 // Hub side of the bridge protocol (docs/native-mode.md, "桥协议"). Every request carries x-orrery-bridge: <secret>.
-//   GET  /bridge/stream?harness=<h>&session=<id>   SSE; connected = online; events `deliver` { deliveryId, sessionId, text }
+//   GET  /bridge/stream?harness=<h>&session=<id>   SSE; connected = online; events `deliver` { deliveryId, sessionId, text },
+//                                                  and `tools-changed` {} when third-party plugin tools came or went
 //   GET  /bridge/stream?harness=<h>                the harness's shared stream: every session of <h> is online through it
 //        &version=<v> (optional)                   the app version the bridge runs in, shown on the web page (Antigravity)
 //   POST /bridge/ack   { deliveryId, ok, error?, follows? }   the receipt for one deliver; follows: a done comes later
@@ -86,6 +87,8 @@ export async function handleBridge(hub: Hub, secret: string, req: IncomingMessag
     const disconnect = hub.connectBridge(harness, session, {
       send: (e) => res.write(`event: deliver\ndata: ${JSON.stringify(e)}\n\n`),
       ...(activity === '1' ? { sendActivity: (frame: { observerId: string; sessions: string[] }) => res.write(`event: activity-targets\ndata: ${JSON.stringify(frame)}\n\n`) } : {}),
+      // A session's own stream serves that conversation's tool list (the Claude bridge): third-party tools changed.
+      ...(session !== null ? { toolsChanged: () => res.write('event: tools-changed\ndata: {}\n\n') } : {}),
       close: () => res.end(),
       ...(version !== null ? { version } : {}),
     });

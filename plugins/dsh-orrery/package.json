@@ -1,6 +1,6 @@
 {
   "name": "dsh-orrery",
-  "version": "0.10.0-beta.1",
+  "version": "0.10.0-beta.2",
   "description": "Beta release. Connects DeepSeek Harness sessions to a local orrery Hub: group-chat messages arrive as queued user messages, and sessions reply with orrery tools.",
   "license": "MIT",
   "type": "module",

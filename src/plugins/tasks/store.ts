@@ -37,7 +37,67 @@ export const MIGRATIONS = [
   // Per-cluster task settings (./takeover.ts): one row per cluster the user changed; no row reads as every setting off.
   `CREATE TABLE IF NOT EXISTS task_cluster_settings (cluster_id TEXT PRIMARY KEY REFERENCES clusters(id),
      takeover_self_review INTEGER NOT NULL DEFAULT 0);`,
+  // Review batches (./batches.ts): empty after the upgrade. A task names its batch in its JSON (batchId, absent outside
+  // a batch, like every other optional task field); the partial index finds a batch's tasks.
+  `CREATE TABLE IF NOT EXISTS task_batches (id TEXT PRIMARY KEY, cluster_id TEXT NOT NULL REFERENCES clusters(id),
+     number INTEGER NOT NULL, data_json TEXT NOT NULL);
+   CREATE UNIQUE INDEX IF NOT EXISTS task_batches_number ON task_batches(cluster_id, number);
+   CREATE INDEX IF NOT EXISTS collaboration_tasks_batch ON collaboration_tasks(json_extract(data_json, '$.batchId'))
+     WHERE json_extract(data_json, '$.batchId') IS NOT NULL;`,
+  // Clean up watches left by earlier removals. Core schema v30 runs the normal memberRemoved hook for its own removals.
+  `DELETE FROM task_watches WHERE member_id IN (SELECT id FROM members WHERE removed_at IS NOT NULL);`,
 ];
+
+/** A review batch (docs/collaboration.md「验收批次」), stored as JSON in task_batches. */
+export interface TaskBatch {
+  id: string; clusterId: string;
+  /** Shown as B3: 1, 2, 3… per cluster; batches are never deleted, so a number is never given twice. */
+  number: number; title: string;
+  /** Every task of the batch has this reviewer: the user or a member, never self. */
+  reviewer: { kind: 'user' } | { kind: 'member'; memberId: string };
+  createdBy: string; createdAt: string;
+  /** Cancelled: its tasks were released back to ordinary tasks. */
+  cancelledAt: string | null;
+  /** The first review of one of its tasks; no task may join after it. */
+  reviewedAt: string | null;
+  /** The last "complete" notice and the submissions it put up for review. */
+  notified: { at: string; eventId: number; submissions: { taskId: string; submissionId: string }[] } | null;
+  /** The last failed batch ship: what failed and which tasks went back. */
+  shipFailure: { kind: 'conflict' | 'checks'; taskIds: string[]; at: string; eventId: number } | null;
+}
+
+export function saveTaskBatch(store: Store, batch: TaskBatch): void {
+  store.db.prepare('INSERT INTO task_batches (id, cluster_id, number, data_json) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET data_json = excluded.data_json')
+    .run(batch.id, batch.clusterId, batch.number, JSON.stringify(batch));
+}
+
+export function taskBatch(store: Store, clusterId: string, batchId: string): TaskBatch | null {
+  const row = store.db.prepare('SELECT data_json FROM task_batches WHERE cluster_id = ? AND id = ?').get(clusterId, batchId) as Row | undefined;
+  return row ? JSON.parse(String(row.data_json)) as TaskBatch : null;
+}
+
+/** The cluster's batches, newest first. */
+export function taskBatches(store: Store, clusterId: string): TaskBatch[] {
+  return store.db.prepare('SELECT data_json FROM task_batches WHERE cluster_id = ? ORDER BY number DESC').all(clusterId)
+    .map((row) => JSON.parse(String(row.data_json)) as TaskBatch);
+}
+
+export function taskBatchIdByNumber(store: Store, clusterId: string, number: number): string | null {
+  const row = store.db.prepare('SELECT id FROM task_batches WHERE cluster_id = ? AND number = ?').get(clusterId, number) as Row | undefined;
+  return row ? String(row.id) : null;
+}
+
+/** Call in the transaction that saves the batch. */
+export function nextBatchNumber(store: Store, clusterId: string): number {
+  const row = store.db.prepare('SELECT COALESCE(MAX(number), 0) + 1 AS n FROM task_batches WHERE cluster_id = ?').get(clusterId) as Row;
+  return Number(row.n);
+}
+
+/** Every task of the batch, cancelled ones too, oldest first. */
+export function batchTaskRows(store: Store, clusterId: string, batchId: string): Task[] {
+  return store.db.prepare("SELECT data_json FROM collaboration_tasks WHERE cluster_id = ? AND json_extract(data_json, '$.batchId') = ? ORDER BY rowid")
+    .all(clusterId, batchId).map((row) => readTask(String(row.data_json)));
+}
 
 /** Takes this cluster's next task number. Call it in the transaction that saves the task, so a failure gives it back. */
 export function nextTaskNumber(store: Store, clusterId: string): number {
@@ -198,7 +258,7 @@ export function collaborationLabels(store: Store, clusterId: string): string[] {
 }
 
 export type ReminderTask = Pick<Task, 'id' | 'clusterId' | 'number' | 'title' | 'status' | 'proposalState' | 'assignedMemberId'
-  | 'reviewer' | 'dependencyIds' | 'executeRoleIds' | 'reviewRoleIds' | 'updatedAt'>;
+  | 'reviewer' | 'dependencyIds' | 'executeRoleIds' | 'reviewRoleIds' | 'updatedAt'> & { batchId: string | null };
 
 /** The facts used by idle/stalled checks. Legacy accepted tasks and nominees are read as in readTask. */
 export function collaborationReminderTasks(store: Store, clusterId: string): ReminderTask[] {
@@ -209,7 +269,7 @@ export function collaborationReminderTasks(store: Store, clusterId: string): Rem
         CASE WHEN json_extract(data_json, '$.status') IN ('pending', 'accepted') THEN json_extract(data_json, '$.nominatedMemberId') END),
       'proposalState', 'active', 'reviewer', json_extract(data_json, '$.reviewer'), 'updatedAt', json_extract(data_json, '$.updatedAt'),
       'dependencyIds', json_extract(data_json, '$.dependencyIds'), 'executeRoleIds', json_extract(data_json, '$.executeRoleIds'),
-      'reviewRoleIds', json_extract(data_json, '$.reviewRoleIds')) AS task
+      'reviewRoleIds', json_extract(data_json, '$.reviewRoleIds'), 'batchId', json_extract(data_json, '$.batchId')) AS task
     FROM collaboration_tasks WHERE cluster_id = ? AND json_extract(data_json, '$.proposalState') = 'active'
       AND json_extract(data_json, '$.status') IN ('pending', 'accepted', 'working', 'review')
     ORDER BY rowid`).all(clusterId).map((row) => JSON.parse(String(row.task)) as ReminderTask);
@@ -259,7 +319,7 @@ export function purgeClusterTasks(store: Store, clusterId: string): void {
   store.db.prepare(`DELETE FROM collaboration_links WHERE task_id IN (${tasks}) OR message_id IN (SELECT id FROM messages WHERE cluster_id = ?)`)
     .run(clusterId, clusterId);
   store.db.prepare(`DELETE FROM collaboration_records WHERE task_id IN (${tasks})`).run(clusterId);
-  for (const table of ['collaboration_tasks', 'merge_windows', 'task_counters', 'cluster_label_groups', 'task_cluster_settings']) {
+  for (const table of ['collaboration_tasks', 'merge_windows', 'task_counters', 'cluster_label_groups', 'task_cluster_settings', 'task_batches']) {
     store.db.prepare(`DELETE FROM ${table} WHERE cluster_id = ?`).run(clusterId);
   }
 }

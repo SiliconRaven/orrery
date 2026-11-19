@@ -40,20 +40,20 @@ test('restart recovery atomically records unknown and does not repeat events on 
   const dir = tempDir();
   store.insertCluster({ id: 'c', name: 'c', createdAt: 'now', category: '' }, [{
     id: 'm', clusterId: 'c', name: 'A', avatar: null, harness: 'mock', model: null, effort: null,
-    workerSessionId: 's', cwd: dir, origin: 'created', mode: 'native', removedAt: null,
+    workerSessionId: 's', cwd: dir, origin: 'created', removedAt: null,
   }]);
   const [d] = store.insertMessage({ id: 'msg', clusterId: 'c', from: 'user', mentions: ['m'], body: 'work', replyTo: null, chainId: 'msg', hop: 0, createdAt: 'now' }, ['m']);
   store.startDelivery(d.id, d.id);
   const append = store.appendEvent;
   store.appendEvent = () => { throw new Error('injected recovery event failure'); };
-  assert.throws(() => new Hub({ store, nativeAdapters: {}, }), /injected recovery/);
+  assert.throws(() => new Hub({ store, nativeAdapters: {} }), /injected recovery/);
   assert.equal(store.getDelivery(d.id)!.state, 'running');
   store.appendEvent = append;
-  const first = new Hub({ store, nativeAdapters: {}, });
+  const first = new Hub({ store, nativeAdapters: {} });
   assert.deepEqual([store.getDelivery(d.id)!.state, store.getDelivery(d.id)!.outcome], ['failed', 'unknown']);
   assert.equal(store.listEvents(0).filter((e) => e.kind === 'delivery').length, 1);
   await first.close();
-  const second = new Hub({ store, nativeAdapters: {}, });
+  const second = new Hub({ store, nativeAdapters: {} });
   assert.equal(store.listEvents(0).filter((e) => e.kind === 'delivery').length, 1);
   await second.close();
   store.close();

@@ -1,4 +1,3 @@
-import { tempDir } from './helpers.ts';
 // The page's history search, GET /api/clusters/:id/messages/search (src/web/message-search.ts, Store.searchMessages):
 // every criterion alone and combined, removed / hidden / same-name members, literal keywords, time bounds, paging with a
 // stable cursor, the per-call scan cap, validation, auth, and no leak across clusters.
@@ -53,7 +52,7 @@ test('search: each criterion alone and combined, removed / hidden / same-name me
     put(app, other.id, 'user', 'deploy in another cluster');
     // c is removed, a new member takes its name; h is hidden.
     app.hub.removeMember(cluster.id, c.id);
-    const { members: [c2] } = await app.hub.addMembers(cluster.id, [{ projectPath: tempDir(), harness: 'mock', name: 'c' }]);
+    const { members: [c2] } = await app.hub.addMembers(cluster.id, [{ harness: 'mock', mode: 'native', name: 'c', projectPath: '/work' }]);
     const fromC2 = put(app, cluster.id, c2.id, 'new c says deploy');
     app.hub.setMemberHidden(h.id, true);
 

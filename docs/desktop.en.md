@@ -1,8 +1,8 @@
-# Electron Desktop Shell (`desktop/`, `v0.10.0-beta.1`)
+# Electron Desktop Shell (`desktop/`, `v0.10.0-beta.2`)
 
 Language: [中文](desktop.md) | **English**
 
-> **Beta Notice**: `desktop/` is part of **v0.10.0-beta.1 (Beta pre-release)**, not a stable release; window docking and layout interfaces may change.
+> **Beta Notice**: `desktop/` is part of **v0.10.0-beta.2 (Beta pre-release)**, not a stable release; window docking and layout interfaces may change.
 
 `desktop/` is an optional Electron wrapper around the orrery collaboration UI (using the character-free orbital project icon) built on **top-level window docking** without embedding or reparenting third-party applications.
 
@@ -24,6 +24,17 @@ Allowlisted apps are maintained in `desktop/lib/apps.mjs`:
    - **Non-MSIX desktop apps**: Checks any local `.exe` saved in trusted shell settings (`checkProgram` enforces local drive `.exe`, no `..`, `%`, or symlinks/aliases, matching allowlisted filename), falling back to read-only parameterless Start Menu shortcuts.
 3. **Token-separated settings (`checkProgram`)**: Trusted settings calls authorize via in-process shell tokens; neither the web collaboration view nor any Hub API holds Electron main-process or Win32 privileges.
 4. **Clean-exit restore**: Restores managed top-level windows without closing external applications.
+
+## Launching Apps from the Tab Bar
+
+The shell is the only part of orrery that ever starts a user's app, and only on the user's own click:
+
+- Clicking `+` in the tab bar opens the app panel right below it (a small always-on-top window of the shell, above docked app windows), one icon per supported app. If the app has one window not yet in a tab, it becomes a tab; if it has several, a menu lists them by window title for you to pick; if it is **not running**, the shell starts it.
+- The launch target is looked up read-only at click time: first the program path you confirmed and saved under "App locations", if it passes this click's re-check, otherwise system sources (an MSIX app's execution alias, or a Start Menu shortcut without arguments). Launches pass no arguments and no URL protocol; neither the shell's state file, the Hub nor the collaboration page can choose the target.
+- For about 20 seconds after launching, the shell looks read-only for windows of that app that appeared after the click: one window becomes a new docked tab, several are offered in a menu, none means nothing happens and nothing is retried. While starting, the icon shows "starting" and further clicks do not launch again.
+- Apps are never started when the shell starts, restores tabs or loses an app; a tab that needs re-selection only lists running windows.
+
+**App locations**: the gear in the tab bar opens the "App locations" settings, one row per app with how the shell finds it and the path a launch would use. You can "Detect" (shows the result without saving), "Use this location" (saves the detected location), "Choose program…" (pick an `.exe` in the system file dialog) or "Clear" (with confirmation). Saved paths live in the shell's own data folder and are re-checked before every use: a `.exe` on a local drive that exists, is not a link, and has a file name allowed for that app; a path that fails is treated as unset and shown as invalid. MSIX apps (Claude, ChatGPT / Codex) can only start through their own execution alias and cannot take a path. Known residual risk: other programs under the same Windows account can edit that file; the checks stop a switch to another program, arguments or URLs, but not a different file with the same name.
 
 ## Installation & Startup
 
@@ -51,4 +62,8 @@ npm ci --prefix desktop
 npm run dist --prefix desktop
 ```
 
-The build verifies the pinned official Node 24.19.0 archive and includes its license. Output: `desktop/dist/Orrery-0.10.0-beta.1-Setup-x64.exe`. Build files and caches are ignored by Git.
+The build verifies the pinned official Node 24.19.0 archive and includes its license. Output: `desktop/dist/Orrery-0.10.0-beta.2-Setup-x64.exe`. Build files and caches are ignored by Git.
+
+## Interface language
+
+Desktop settings switch the shell between Chinese and English immediately. The collaboration page keeps its drafts and uses the new language on the next open or manual F5 refresh. Its own language selector confirms unsaved work before reloading.

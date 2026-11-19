@@ -19,7 +19,7 @@ test('member list layout: at 280 px on a touch screen names keep their width and
   const hub = await startTestHub({ dir, nativeAdapters: { mock: fixtureNativeMock(dir), claude: { ...fixtureNativeMock(dir), harness: 'claude' } } });
   let browser: Browser | null = null;
   try {
-    await hub.api('POST', '/api/clusters', { name: 'narrow', members: [...['bot', LONG, '前端评审员小王'].map((name) => ({ projectPath: tempDir(), harness: 'mock', name })),
+    await hub.api('POST', '/api/clusters', { name: 'narrow', members: [...['bot', LONG, '前端评审员小王'].map((name) => ({ harness: 'mock', mode: 'native', name, projectPath: '/work' })),
       { harness: 'claude', mode: 'native', sessionId: 's1', name: 'opus' }, { harness: 'claude', mode: 'native', sessionId: 's2', name: 'sonnet' }] });
     browser = await launchBrowser(found.path, { redact: [TEST_TOKEN] });
     const page = browser.page;
@@ -211,14 +211,14 @@ test('member list: each long conversation warns in its own row; contrast holds i
 test('default avatars: same-prefix members of one app differ in the header stack, the @ picker and the list; a removed member keeps its old avatar', { skip, timeout: 120_000 }, async () => {
   assert.ok(found.path, `ORRERY_REQUIRE_BROWSER=1 but ${found.path === null ? found.reason : ''}`);
   const dir = tempDir();
-  // Mocks registered as 'claude', native and isolated, so all of these share Claude's icon.
+  // A mock registered as 'claude' (attached and new conversations), so all of these share Claude's icon.
   const hub = await startTestHub({ dir, nativeAdapters: { mock: fixtureNativeMock(dir), claude: { ...fixtureNativeMock(dir), harness: 'claude' } } });
   let browser: Browser | null = null;
   try {
-    const fresh = (name: string) => ({ projectPath: tempDir(), harness: 'claude', mode: 'native', name });
+    const iso = (name: string) => ({ harness: 'claude', mode: 'native', name, projectPath: '/work' });
     const { cluster, members } = await hub.api('POST', '/api/clusters', { name: 'same', members: [
       { harness: 'claude', mode: 'native', sessionId: 's1', name: 'claude-2' }, { harness: 'claude', mode: 'native', sessionId: 's2', name: 'claude-opus' },
-      fresh('claude-opus-2'), fresh('前端评审'), fresh('前端开发'), fresh('Retired')] });
+      iso('claude-opus-2'), iso('前端评审'), iso('前端开发'), iso('Retired')] });
     const retired = members.find((m: any) => m.name === 'Retired');
     hub.hub.sendFromMember(retired.id, '我先走了');
     await hub.api('DELETE', `/api/clusters/${cluster.id}/members/${retired.id}`, {});
@@ -234,6 +234,8 @@ test('default avatars: same-prefix members of one app differ in the header stack
     await page.evaluate(`document.getElementById('composer-input').focus(); true`);
     await page.send('Input.insertText', { text: '@' });
     await page.waitFor(`document.querySelectorAll('.mention-menu li').length >= 5`, 'the @ picker');
+    // The chat history loads after the member list: wait for the removed member's message before reading its avatar.
+    await page.waitFor(`[...document.querySelectorAll('#messages article.msg .who')].some((w) => w.textContent.startsWith('Retired'))`, 'the removed member\x27s message');
     const seen = await page.evaluate<any>(`(() => {
       const mark = (a) => ({ app: a.classList.contains('app'), label: a.querySelector('.avatar-mark')?.textContent ?? null,
         hidden: a.querySelector('.avatar-mark')?.getAttribute('aria-hidden') ?? null,

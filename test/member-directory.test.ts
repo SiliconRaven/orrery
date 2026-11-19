@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { nativeHeaders, holdScript, startTestHub, waitFor } from './helpers.ts';
+import { bearer, holdScript, startTestHub, waitFor, turnsOf, memberHeaders } from './helpers.ts';
 
 test('task results carry role names and errors name the member and the missing roles', async () => {
   const app = await startTestHub();
@@ -113,8 +113,10 @@ test('list_agents carries memberId, role names and per-member load', async () =>
     send(as(b), { action: 'task.submit', commitSha: 'abcdef0', taskId: rStart.task!.id, expectedRevision: rStart.task!.revision,
       assignmentId: rClaim.assignment!.id, summary: 'done', evidenceMessageIds: [evidence.id] });
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@A hold' });
+    await waitFor(() => turnsOf(app, a.id) > 0, 'member turn');
+    const token = memberHeaders(app, a.id);
     client = new Client({ name: 'test', version: '0' });
-    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: nativeHeaders(app, a.id) } }));
+    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: token } }));
     const result = await client.callTool({ name: 'list_agents', arguments: {} });
     const members = JSON.parse((result.content as any)[0].text);
     const byName = Object.fromEntries(members.map((member: any) => [member.name, member]));

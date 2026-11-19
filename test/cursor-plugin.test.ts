@@ -66,7 +66,7 @@ type PHub = Awaited<ReturnType<typeof pHub>>;
 
 async function member(app: PHub) {
   const { cluster, members: [c1] } = await app.api('POST', '/api/clusters', {
-    name: 'cp', members: [{ harness: 'cursor', mode: 'native', sessionId: S1, name: 'C1' }, { projectPath: tempDir(), harness: 'mock', name: 'A' }],
+    name: 'cp', members: [{ harness: 'cursor', mode: 'native', sessionId: S1, name: 'C1' }, { harness: 'mock', mode: 'native', name: 'A', projectPath: '/work' }],
   });
   return { cluster, c1 };
 }

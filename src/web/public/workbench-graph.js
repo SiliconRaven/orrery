@@ -1,3 +1,4 @@
+import { t } from "./i18n.js";
 // The dependency graph's canvas: wheel zoom, panning, free node dragging and automatic arrangement. Layout preferences
 // stay in this browser (localStorage, per cluster) and never reach the Hub. Pure helpers are tested in test/workbench-graph.test.ts.
 import { confirmDialog, emptyState, h, icon } from './ui.js';
@@ -175,7 +176,7 @@ function layoutStandaloneGrid(buckets, cols, heightOf) {
     const usedCols = Math.min(cols, groupNodes.length);
     const headerW = usedCols * NODE_WIDTH + Math.max(0, usedCols - 1) * GRID_COLUMN_GAP;
     width = Math.max(width, headerW);
-    sections.push({ key: group.key, label: `${group.label}（${groupNodes.length}）`, x: 0, y, width: headerW, height: SECTION_HEADER_HEIGHT });
+    sections.push({ key: group.key, label: t('{label}（{count}）', { label: t(group.label), count: groupNodes.length }), x: 0, y, width: headerW, height: SECTION_HEADER_HEIGHT });
     y += SECTION_HEADER_HEIGHT + SECTION_HEADER_GAP;
     for (let i = 0; i < groupNodes.length; i += cols) {
       const row = groupNodes.slice(i, i + cols);
@@ -428,7 +429,7 @@ export function createGraphCanvas({ onOpen, rerender, settled }) {
     const sectionLayer = h('div', { class: 'workbench-graph-sections', 'aria-hidden': 'true' });
     const world = h('div', { class: 'workbench-graph-world' }, svg, sectionLayer, [...elements.values()]);
     const emptyEl = emptyNote && !elements.size ? emptyState(emptyNote) : null;
-    const viewport = h('div', { class: 'workbench-graph', role: 'group', 'aria-label': '任务依赖图' }, world, emptyEl);
+    const viewport = h('div', { class: 'workbench-graph', role: 'group', 'aria-label': t("任务依赖图") }, world, emptyEl);
     const rects = new Map();   // id -> { x, y, width, height } in world units
     let sectionRects = [];
     let restoringFocus = false;
@@ -453,9 +454,9 @@ export function createGraphCanvas({ onOpen, rerender, settled }) {
       let ok = false;
       try {
         ok = await confirmDialog({
-          title: '自动整理依赖图？',
-          message: '这会清除你在这个群里手动拖动过的位置，并按依赖和状态重新排布全部任务。',
-          confirmText: '自动整理',
+          title: t("自动整理依赖图？"),
+          message: t("这会清除你在这个群里手动拖动过的位置，并按依赖和状态重新排布全部任务。"),
+          confirmText: t("自动整理"),
           danger: state.positions.size > 0,
         });
       } finally {
@@ -558,12 +559,12 @@ export function createGraphCanvas({ onOpen, rerender, settled }) {
           rerender();
         },
       }),
-      '隐藏已结束');
+      t("隐藏已结束"));
     return h('div', { class: 'workbench-graph-wrap' },
-      h('div', { class: 'workbench-graph-tools', role: 'toolbar', 'aria-label': '依赖图视图' },
+      h('div', { class: 'workbench-graph-tools', role: 'toolbar', 'aria-label': t("依赖图视图") },
         toggle,
-        tool(icon('plus', 'ico-sm'), () => zoomBy(GRAPH_ZOOM.step), '放大'), tool(icon('minus', 'ico-sm'), () => zoomBy(1 / GRAPH_ZOOM.step), '缩小'),
-        tool('适应窗口', fit), tool('自动整理', arrange)),
+        tool(icon('plus', 'ico-sm'), () => zoomBy(GRAPH_ZOOM.step), t("放大")), tool(icon('minus', 'ico-sm'), () => zoomBy(1 / GRAPH_ZOOM.step), t("缩小")),
+        tool(t("适应窗口"), fit), tool(t("自动整理"), arrange)),
       viewport);
   }
 

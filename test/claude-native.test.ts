@@ -138,7 +138,7 @@ function spawnBridge(env: Record<string, string>) {
   };
 }
 
-/** A Hub with the real native Claude adapter over a fake ~/.claude holding session SID; the cluster: native C, isolated A. */
+/** A Hub with the real native Claude adapter over a fake ~/.claude holding session SID; the cluster: Claude C and mock A. */
 async function claudeHub(dir = tempDir(), sid = randomUUID(), startupGraceMs = 0) {
   const project = join(dir, 'project');
   const adapter = createClaudeNativeAdapter({ claudeDir: claudeDir(dir, sid, project) });
@@ -149,7 +149,7 @@ async function claudeHub(dir = tempDir(), sid = randomUUID(), startupGraceMs = 0
 
 async function mixedCluster(app: TestHub, sid: string) {
   const { cluster, members: [c, a] } = await app.api('POST', '/api/clusters', {
-    name: 'mix', members: [{ harness: 'claude', mode: 'native', sessionId: sid, name: 'C' }, { projectPath: tempDir(), harness: 'mock', name: 'A' }],
+    name: 'mix', members: [{ harness: 'claude', mode: 'native', sessionId: sid, name: 'C' }, { harness: 'mock', mode: 'native', name: 'A', projectPath: '/work' }],
   });
   return { cluster, c, a };
 }
@@ -420,7 +420,9 @@ test('claude bridge: tools/list answered from the built-in list while the Hub wa
   const hub = await fakeStreamHub();
   try {
     await bridge.initialize();
-    assert.equal((await bridge.rpc('tools/list')).result.tools.length, 21, 'the built-in list');
+    const tools = (await bridge.rpc('tools/list')).result.tools;
+    assert.equal(tools.length, 23, 'the built-in list');
+    for (const name of ['get_batch', 'manage_batch']) assert.equal(tools.find((tool: any) => tool.name === name)?.inputSchema.type, 'object', name);
     assert.equal(listChanged(bridge), 0);
     writeHubJson(home, hub.url, 'f'.repeat(64));
     await waitFor(() => connectedLogs(bridge) === 1, 'first connect');
@@ -430,6 +432,37 @@ test('claude bridge: tools/list answered from the built-in list while the Hub wa
     await bridge.stop();
     await inbox.close();
     await hub.down();
+  }
+});
+
+test('claude bridge: the stream\'s tools-changed (a third-party plugin\'s tools came or went) becomes tools/list_changed', async () => {
+  const home = join(tempDir(), 'home');
+  const open: import('node:http').ServerResponse[] = [];
+  const srv = createHttpServer((req, res) => {
+    if (req.method !== 'GET' || !req.url?.startsWith('/bridge/stream')) { res.writeHead(503).end(); return; }
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.flushHeaders();
+    open.push(res);
+  });
+  await new Promise<void>((ok) => srv.listen(0, '127.0.0.1', ok));
+  writeHubJson(home, `http://127.0.0.1:${(srv.address() as AddressInfo).port}`, 'f'.repeat(64));
+  const inbox = await fakeInbox();
+  const bridge = spawnBridge({ ORRERY_HOME: home, CLAUDE_CODE_SESSION_ID: randomUUID(), CLAUDE_CODE_MESSAGING_SOCKET: inbox.path, CLAUDE_CODE_MESSAGING_TOKEN: 't' });
+  try {
+    await bridge.initialize();
+    await waitFor(() => open.length === 1, 'connected');
+    await settle();
+    assert.equal(listChanged(bridge), 0);
+    open[0].write('event: tools-changed\ndata: {}\n\n');
+    await waitFor(() => listChanged(bridge) === 1, 'list_changed');
+    open[0].write('event: something-else\ndata: {}\n\n');
+    await settle();
+    assert.equal(listChanged(bridge), 1, 'other events change nothing');
+  } finally {
+    await bridge.stop();
+    await inbox.close();
+    srv.closeAllConnections();
+    await new Promise((ok) => srv.close(ok));
   }
 });
 

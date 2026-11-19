@@ -17,7 +17,7 @@ import { defaultScript, type MockScript } from './mock.ts';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import type { HubEvent } from '../src/core/types.ts';
 import { fakeCursor, fakeCursorAdapter } from './cursor-fake.ts';
-import { bearer, fixtureNativeMock, startTestHub, tempDir, TEST_TOKEN, waitFor, type TestHub } from './helpers.ts';
+import { bearer, startTestHub, tempDir, TEST_TOKEN, waitFor, type TestHub } from './helpers.ts';
 
 const finite = (value: number) => ({ kind: 'finite', value });
 const UNLIMITED = { kind: 'unlimited' };
@@ -101,7 +101,7 @@ test('hop 1: a new database and a migrated v6 database both default to 6; hop 6 
   db.close();
   const migrated = await startTestHub({ dir });
   try {
-    assert.equal((migrated.store.db.prepare('PRAGMA user_version').get() as any).user_version, 29);
+    assert.equal((migrated.store.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
     assert.deepEqual(hopsOf(await migrated.api('GET', '/api/settings')), { maxHops: finite(6), source: 'default' });
     assert.deepEqual((await migrated.api('GET', '/api/state')).clusters.map((c: any) => c.id), ['c-old']);
   } finally {
@@ -113,7 +113,7 @@ test('hop 1: a new database and a migrated v6 database both default to 6; hop 6 
 async function spawnHub(dir: string, maxHops: string) {
   const child = spawn(process.execPath, ['src/main.ts'], {
     cwd: REPO_ROOT,
-    env: { ...process.env, ORRERY_PORT: '0', ORRERY_DB: join(dir, 'h.db'), ORRERY_SANDBOX: join(dir, 'sb'), ORRERY_HOME: join(dir, 'home'), ORRERY_MAX_HOPS: maxHops, ORRERY_API_TOKEN: TEST_TOKEN },
+    env: { ...process.env, ORRERY_PORT: '0', ORRERY_DB: join(dir, 'h.db'), ORRERY_HOME: join(dir, 'home'), ORRERY_MAX_HOPS: maxHops, ORRERY_API_TOKEN: TEST_TOKEN },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   let out = '';
@@ -271,7 +271,7 @@ test('hop 6: under unlimited an offline member\'s message ends offline and is ne
   let online = false;
   native.isOnline = () => online;
   const store = new Store(':memory:');
-  const hub = new Hub({ store, nativeAdapters: { mock: native },  limits: { startupGraceMs: 0 } });
+  const hub = new Hub({ store, nativeAdapters: { mock: native }, limits: { startupGraceMs: 0 } });
   try {
     hub.start();
     hub.setLimit('maxHops', UNLIMITED, { confirmUnlimited: true });
@@ -357,7 +357,7 @@ test('hop 7: a malformed saved value stops the Hub from starting, naming the set
   // Nor does a start-up value that is no safe integer become one.
   const mem = new Store(':memory:');
   try {
-    assert.throws(() => new Hub({ store: mem, nativeAdapters: {},  limits: { maxHops: 2 ** 53 } }), /ORRERY_MAX_HOPS/);
+    assert.throws(() => new Hub({ store: mem, nativeAdapters: {}, limits: { maxHops: 2 ** 53 } }), /ORRERY_MAX_HOPS/);
   } finally {
     mem.close();
   }
@@ -419,7 +419,7 @@ test('hop 10: a native Cursor member in a ping-pong chain is stopped by the hop 
   const app = await startTestHub({ limits: { maxHops: 4 }, mock: { script: pingBack }, nativeAdapters: { cursor: fakeCursorAdapter([S]) } });
   const cursor = fakeCursor(app, S, 'A');
   try {
-    const { cluster } = await app.api('POST', '/api/clusters', { name: 'c', members: [{ harness: 'cursor', mode: 'native', sessionId: S, name: 'C' }, { projectPath: tempDir(), harness: 'mock', name: 'A' }] });
+    const { cluster } = await app.api('POST', '/api/clusters', { name: 'c', members: [{ harness: 'cursor', mode: 'native', sessionId: S, name: 'C' }, { harness: 'mock', mode: 'native', name: 'A', projectPath: '/work' }] });
     await waitFor(() => app.hub.bridge.isOnline('cursor', S), 'the Cursor member parked');
     const start = await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@C ping h1' });
     await waitFor(() => hopGuards(app.events).some((g) => g.chainId === start.id), 'hop guard', CHAIN_TIMEOUT_MS);

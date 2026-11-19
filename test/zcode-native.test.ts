@@ -154,7 +154,7 @@ async function zCluster(app: ZHub) {
     members: [
       { harness: 'zcode', mode: 'native', sessionId: S1, name: 'Z1' },
       { harness: 'zcode', mode: 'native', sessionId: S2, name: 'Z2' },
-      { projectPath: tempDir(), harness: 'mock', name: 'A' },
+      { harness: 'mock', mode: 'native', name: 'A', projectPath: '/work' },
     ],
   });
   return { cluster, z1, z2, a };
@@ -574,6 +574,6 @@ test('wait.mjs: Node built-ins only, no fetch; the plugin folder is self-contain
   assert.ok(!code.includes('secret'), 'never reads the bridge secret');
 });
 
-test('zcode: registered as a native harness only', () => {
+test('zcode: registered as a native harness', () => {
   assert.ok('zcode' in nativeFactories);
 });

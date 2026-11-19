@@ -1,4 +1,3 @@
-import { tempDir } from './helpers.ts';
 import type { StalledHint, TasksService } from '../src/plugins/tasks/service.ts';
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -136,7 +135,7 @@ test('offline members and members without activity evidence are described truthf
     assert.doesNotMatch(notices()[0].body, /当前离线/);
 
     // A new member, offline before it is ever observed: offline wording next to the missing evidence.
-    const { members: [c] } = await app.hub.addMembers(cluster.id, [{ projectPath: tempDir(), harness: 'mock', mode: 'native', name: 'C' }]);
+    const { members: [c] } = await app.hub.addMembers(cluster.id, [{ harness: 'mock', mode: 'native', name: 'C', projectPath: '/work' }]);
     const online = app.native.isOnline.bind(app.native);
     app.native.isOnline = (sessionId, bridge) => sessionId !== c.workerSessionId && online(sessionId, bridge);
     const offlineTask = create('离线的任务', { reviewer: { kind: 'user' } });

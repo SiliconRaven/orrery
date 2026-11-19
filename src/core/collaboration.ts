@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { ensureDefaultRoles } from './default-roles.ts';
 import type { Hub } from './hub.ts';
-import type { PluginActionOutcome } from './plugin.ts';
+import { asyncRefused, isThenable, type PluginActionOutcome } from './plugin.ts';
 import type { Store, StoredMember } from './store.ts';
 import type { HubEvent, Message, SystemMessageKind } from './types.ts';
 import type {
@@ -21,6 +21,18 @@ const NEXT_STEP: Record<string, string> = {
 };
 const fail = (code: string, message: string): never => { throw new CollaborationError(code, message + (NEXT_STEP[code] ?? '')); };
 export const MIN_ID_PREFIX = 8;
+/** `prepared` when no prepare step ran at all (Collaboration.command), as opposed to one that prepared nothing. */
+const NOT_PREPARED = Symbol('not prepared');
+/**
+ * A plugin's action, query or reference resolution answers synchronously (it runs inside the command's transaction or
+ * the query's read): a promise is refused with PLUGIN_ASYNC, its rejection caught, and the transaction rolls back.
+ */
+function sync<T>(value: T, what: string): T {
+  if (isThenable(value)) fail('PLUGIN_ASYNC', `plugin ${asyncRefused(value, what).message}; nothing was changed`);
+  return value;
+}
+/** How long commandAsync waits for an action's plugin `prepare` step (Collaboration.prepareTimeoutMs; tests shorten it). */
+export const PREPARE_TIMEOUT_MS = 5000;
 /** What every orrery tool answers a hidden member (docs/cluster-members.md「隐身」); it names nobody else. */
 export const HIDDEN_TOOL_TEXT = '你已被设为隐身，暂时不在这个群里：orrery 工具不会执行任何操作，也不会发出消息。等用户或协调员取消隐身后再使用。';
 /** Core actions that take the generation pre-check; plugins declare theirs (OfficialPlugin.managementActions). */
@@ -106,6 +118,8 @@ export class Collaboration {
   private readonly notification: CollaborationNotification;
   private readonly hub: Hub;
   private readonly deliveriesChanged: (events: HubEvent[]) => void;
+  /** commandAsync's time limit for a plugin `prepare` step (Limits.prepareTimeoutMs). */
+  prepareTimeoutMs = PREPARE_TIMEOUT_MS;
   constructor(store: Store, notify: (event: HubEvent) => void, notification: CollaborationNotification, hub: Hub,
     deliveriesChanged: (events: HubEvent[]) => void) {
     this.store = store; this.notify = notify; this.notification = notification; this.hub = hub;
@@ -170,7 +184,7 @@ export class Collaboration {
   /** Every later check, the event and any suggestion see full IDs, whichever form the caller used. */
   private resolveRefs(clusterId: string, command: CollaborationCommand): CollaborationCommand {
     const refs = this.store.plugins.refs(command.action);
-    if (refs) return refs({ store: this.store, clusterId, command, collaboration: this });
+    if (refs) return sync(refs({ store: this.store, clusterId, command, collaboration: this }), `refs for ${command.action}`);
     if (command.messageId && this.store.plugins.action(command.action)) {
       return { ...command, messageId: this.resolveId('messages', clusterId, command.messageId, 'unknown message') };
     }
@@ -195,11 +209,54 @@ export class Collaboration {
     if (!query || typeof query !== 'object') return fail('INVALID_REQUEST', 'query is required');
     const limit = Number.isSafeInteger(query.limit) && query.limit! > 0 ? Math.min(query.limit!, 100) : 50;
     const pluginQuery = this.store.plugins.query(query.kind);
-    if (pluginQuery) return pluginQuery({ store: this.store, actor, clusterId, query, limit, task: (taskId) => this.task(clusterId, taskId), collaboration: this });
+    if (pluginQuery) return sync(pluginQuery({ store: this.store, actor, clusterId, query, limit, task: (taskId) => this.task(clusterId, taskId), collaboration: this }), `query ${query.kind}`);
     return fail('INVALID_REQUEST', 'unknown collaboration query');
   }
 
+  /**
+   * command(), after the action's plugin `prepare` step when it has one: bounded reads outside the database, run before
+   * the transaction opens (docs/plugins.md). A retry of a recorded operation skips it and replays as usual; a prepare
+   * that throws or does not answer within prepareTimeoutMs (its signal aborts then) prepares nothing, or fails the
+   * command with PREPARE_FAILED when the plugin lists the action in prepareRequired. The action re-checks whatever was
+   * prepared, which was read before an await.
+   */
+  async commandAsync(actor: CollaborationActor, clusterId: string, command: CollaborationCommand): Promise<CollaborationResult> {
+    const prepare = typeof command?.action === 'string' ? this.store.plugins.prepare(command.action) : undefined;
+    // A request command() refuses on its shape alone never gets the prepare step: command() refuses it right away.
+    if (!prepare || typeof command.operationId !== 'string' || !command.operationId.trim() || command.operationId.length > 200) {
+      return this.command(actor, clusterId, command);
+    }
+    const actorId = this.actor(actor, clusterId);
+    let prepared: unknown;
+    if (!this.store.collaborationOperation(clusterId, actorId, command.operationId)) {
+      const controller = new AbortController();
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<never>((_ok, fail) => {
+        timer = setTimeout(() => fail(new Error(`no answer within ${this.prepareTimeoutMs} ms`)), this.prepareTimeoutMs);
+      });
+      try {
+        prepared = await Promise.race([prepare({ store: this.store, actor, actorId, clusterId, command, signal: controller.signal }), late]);
+      } catch (e) {
+        controller.abort();
+        if (this.store.plugins.prepareRequired(command.action)) {
+          return fail('PREPARE_FAILED', `${command.action} could not read what it needs before running (${e instanceof Error ? e.message : String(e)}); nothing was changed, try again`);
+        }
+        prepared = undefined;
+      } finally { clearTimeout(timer); }
+    }
+    return this.execute(actor, clusterId, command, prepared);
+  }
+
+  /**
+   * A command without the prepare step: every caller that is not commandAsync. An action whose plugin lists it in
+   * prepareRequired is refused here (PREPARE_REQUIRED) unless it is the replay of an operation already recorded, so no
+   * entry point can run it without what it depends on.
+   */
   command(actor: CollaborationActor, clusterId: string, command: CollaborationCommand): CollaborationResult {
+    return this.execute(actor, clusterId, command, NOT_PREPARED);
+  }
+
+  private execute(actor: CollaborationActor, clusterId: string, command: CollaborationCommand, prepared: unknown): CollaborationResult {
     const actorId = this.actor(actor, clusterId);
     if (!command || typeof command.operationId !== 'string' || !command.operationId.trim() || command.operationId.length > 200) {
       return fail('INVALID_REQUEST', 'operationId is required');
@@ -222,6 +279,9 @@ export class Collaboration {
       if (previous) {
         if (previous.request !== request) return fail('OPERATION_CONFLICT', 'operationId was already used for a different command');
         return JSON.parse(previous.result) as CollaborationResult;
+      }
+      if (prepared === NOT_PREPARED && typeof command.action === 'string' && this.store.plugins.prepareRequired(command.action)) {
+        return fail('PREPARE_REQUIRED', `${command.action} needs its prepare step; send it through commandAsync (the MCP tools and the web API do)`);
       }
       // After the retry check: a retry is compared with what was sent, and it replays even if a prefix has since become ambiguous.
       command = this.resolveRefs(clusterId, command);
@@ -292,12 +352,12 @@ export class Collaboration {
       } else {
         const pluginAction = this.store.plugins.action(action);
         if (!pluginAction) return fail('INVALID_REQUEST', 'unsupported collaboration action');
-        Object.assign(out, pluginAction({ store: this.store, actor, actorId, clusterId, command, now, collaboration: this, hub: this.hub,
+        Object.assign(out, sync(pluginAction({ store: this.store, actor, actorId, clusterId, command, now, collaboration: this, hub: this.hub,
           management: (permission, ordinaryAllowed) => { management(permission, ordinaryAllowed); return suggest; },
           outcome,
           notice: (source, notice) => { const publish = this.notification(actor, clusterId, source, notice); if (publish) afterCommit.push(publish); },
           deliveriesChanged: (events) => { if (events.length) afterCommit.push(() => this.deliveriesChanged(events)); },
-          afterCommit: (publish) => afterCommit.push(publish) }));
+          afterCommit: (publish) => afterCommit.push(publish), prepared: prepared === NOT_PREPARED ? undefined : prepared }), `action ${action}`));
       }
 
       if (suggest) {

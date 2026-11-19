@@ -16,7 +16,7 @@ import { pathKey, withCopy } from '../shared/sqlite-copy.ts';
 export { pathKey } from '../shared/sqlite-copy.ts';
 
 const DB = 'conversation_summaries.db';
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TITLE_MAX = 80;
 
 /** One listable conversation: its id, title, newest time and every workspace folder it belongs to. */

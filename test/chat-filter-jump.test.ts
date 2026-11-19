@@ -27,7 +27,9 @@ test('browser: with 只看警告 on, a jump from the delivery problems opens the
       { harness: 'claude', mode: 'native', sessionId: 's2', name: 'B' },
     ]);
     const sent = app.hub.sendFromUser(cluster.id, '@B offline hello');
-    await waitFor(() => app.store.withDeliveries([sent])[0].deliveries.some((d) => d.state === 'offline'), 'the offline delivery');
+    const offline = await waitFor(() => app.store.withDeliveries([sent])[0].deliveries.find((d) => d.state === 'offline'), 'the offline delivery');
+    // Exercise a recorded batch in the existing receipt-diagnosis path.
+    app.store.prepared('UPDATE deliveries SET batch_id = ? WHERE id = ?').run('batch-regression', offline.id);
     browser = await launchBrowser(found.path!, { redact: [TEST_TOKEN] });
     const page = browser.page;
     const item = `[...document.querySelectorAll('#cluster-list .cluster-item')].find((b) => b.querySelector('.name')?.textContent === 'jumps')`;
@@ -54,6 +56,8 @@ test('browser: with 只看警告 on, a jump from the delivery problems opens the
     await page.click(entry, 'the problem entry');
     await page.waitFor(`${message}?.querySelector('.jump-shown') && ${message}.querySelector('.receipts')?.open`,
       'the message shown by the jump, marked, with its receipts open');
+    await page.waitFor(`${message}?.querySelector('.receipt-diagnosis')?.textContent.includes('批次 batch-re')`,
+      'the recorded batch ID rendered by the diagnosis');
     assert.equal(await page.evaluate(`document.querySelectorAll('#messages article.msg.user').length`), 1, 'only the target is let through');
 
     step = 'changing the filter ends the exception';

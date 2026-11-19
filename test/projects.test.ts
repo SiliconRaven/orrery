@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import { CollaborationError } from '../src/core/collaboration.ts';
+import { sameRepositoryPath } from '../src/core/projects.ts';
 import type { ProjectInfo, SessionInfo } from '../src/core/types.ts';
 import { startTestHub, tempDir } from './helpers.ts';
 
@@ -15,7 +16,16 @@ function init(path: string) {
   git(path, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'initial');
 }
 
-test('Hub groups discovered Git worktrees while retaining session cwd in both modes', async () => {
+test('task repository paths are compared lexically without filesystem lookups', (t) => {
+  const path = process.platform === 'win32' ? 'C:\\Work\\Repo' : '/work/repo';
+  const native = t.mock.method(realpathSync, 'native', () => { throw new Error('unexpected filesystem lookup'); });
+  assert.equal(sameRepositoryPath(path, path.replaceAll('\\', '/') + '/sub/..'), true);
+  assert.equal(sameRepositoryPath(path, path.toUpperCase()), process.platform === 'win32');
+  assert.equal(sameRepositoryPath(path, path + '-alias'), false);
+  assert.equal(native.mock.callCount(), 0);
+});
+
+test('Hub groups discovered Git worktrees while retaining session cwd', async () => {
   const dir = tempDir();
   const main = join(dir, 'main', 'repo');
   const external = join(dir, 'external worktree');
@@ -36,21 +46,19 @@ test('Hub groups discovered Git worktrees while retaining session cwd in both mo
   const native = createMockNativeAdapter({ projects, sessions });
   const app = await startTestHub({ nativeAdapters: { mock: native } });
   try {
-    { const mode = 'native';
-      const grouped = await app.hub.listProjects('mock');
-      assert.equal(grouped.length, 5);
-      assert.deepEqual(grouped.find((p) => p.path === main), { path: main, label: 'repo', updatedAt: projects[2].updatedAt });
-      assert.ok(grouped.some((p) => p.path === nested));
-      assert.ok(grouped.some((p) => p.path === other));
-      assert.ok(grouped.some((p) => p.path === plain));
-      assert.ok(grouped.some((p) => p.path === missing));
-      for (const path of [main, external, child]) {
-        assert.deepEqual((await app.hub.listSessions('mock', path)).map((s) => [s.id, s.cwd]),
-          [['s2', child], ['s1', external], ['s0', main]]);
-      }
-      assert.deepEqual((await app.hub.listSessions('mock', nested)).map((s) => s.id), ['s3']);
-      assert.deepEqual((await app.hub.listSessions('mock', missing)).map((s) => s.id), ['s6']);
+    const grouped = await app.hub.listProjects('mock');
+    assert.equal(grouped.length, 5);
+    assert.deepEqual(grouped.find((p) => p.path === main), { path: main, label: 'repo', updatedAt: projects[2].updatedAt });
+    assert.ok(grouped.some((p) => p.path === nested));
+    assert.ok(grouped.some((p) => p.path === other));
+    assert.ok(grouped.some((p) => p.path === plain));
+    assert.ok(grouped.some((p) => p.path === missing));
+    for (const path of [main, external, child]) {
+      assert.deepEqual((await app.hub.listSessions('mock', path)).map((s) => [s.id, s.cwd]),
+        [['s2', child], ['s1', external], ['s0', main]]);
     }
+    assert.deepEqual((await app.hub.listSessions('mock', nested)).map((s) => s.id), ['s3']);
+    assert.deepEqual((await app.hub.listSessions('mock', missing)).map((s) => s.id), ['s6']);
     const query = encodeURIComponent(main);
     const webProjects = await app.api('GET', '/api/harnesses/mock/projects?mode=native');
     assert.equal(webProjects.filter((p: ProjectInfo) => p.path === main).length, 1);

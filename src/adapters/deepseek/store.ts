@@ -2,7 +2,8 @@
 // <DSH_HOME or ~/.dsh>/storages/session_projcache/sessions/<session id>.json, one file per session:
 //   { version, record: { identity: { cwd?, createdAt, … }, rows: { <projection key>: { ver, seq, val } } } }
 // Shape: upstream packages/session/session-projection-cache/src/spec.ts (tag dsh-v0.2.1-rc.2). Never reads the session
-// logs themselves (zstd jsonl under ~/.dsh/sessions) and never writes anything. docs/adapters/deepseek.md, "适配器".
+// logs themselves (zstd jsonl under ~/.dsh/sessions; only transcript.ts does, for a bound member) and never writes
+// anything. docs/adapters/deepseek.md, "适配器".
 import { readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { ProjectInfo, SessionInfo, TokenTotals } from '../../core/types.ts';

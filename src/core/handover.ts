@@ -20,7 +20,7 @@ const excerpt = (text: string, max: number): string => {
 };
 
 export interface HandoverPackage {
-  member: { id: string; name: string; harness: string; mode: string; model: string | null; cwd: string; sessionId: string };
+  member: { id: string; name: string; harness: string; model: string | null; cwd: string; sessionId: string };
   cluster: { id: string; name: string };
   generatedAt: string;
   /** The user's recent requests in the cluster, oldest first (their own messages only). */
@@ -51,7 +51,7 @@ export interface HandoverPackage {
 }
 
 export interface HandoverInput {
-  member: Pick<Member, 'id' | 'name' | 'harness' | 'mode' | 'model' | 'cwd' | 'workerSessionId'>;
+  member: Pick<Member, 'id' | 'name' | 'harness' | 'model' | 'cwd' | 'workerSessionId'>;
   cluster: Pick<Cluster, 'id' | 'name'>;
   generatedAt: string;
   /** The newest user messages of the cluster, oldest first. */
@@ -67,7 +67,7 @@ export interface HandoverInput {
 export function handoverPackage(input: HandoverInput): HandoverPackage {
   const { member, cluster } = input;
   return {
-    member: { id: member.id, name: member.name, harness: member.harness, mode: member.mode, model: member.model,
+    member: { id: member.id, name: member.name, harness: member.harness, model: member.model,
       cwd: member.cwd, sessionId: member.workerSessionId },
     cluster: { id: cluster.id, name: cluster.name },
     generatedAt: input.generatedAt,

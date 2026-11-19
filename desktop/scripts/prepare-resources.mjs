@@ -11,7 +11,7 @@ export const NODE_SHA256 = '57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f0
 const archiveName = `node-v${NODE_VERSION}-win-x64.zip`;
 const release = `https://nodejs.org/dist/v${NODE_VERSION}/`;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-export const HUB_INPUTS = ['src', 'plugins', 'package.json', 'package-lock.json', 'LICENSE', 'scripts/ship.ts', 'scripts/test-queue.ts'];
+export const HUB_INPUTS = ['src', 'shared', 'plugins', 'package.json', 'package-lock.json', 'LICENSE', 'scripts/ship.ts', 'scripts/test-queue.ts'];
 
 export function verifySha256(bytes, expected = NODE_SHA256) {
   const actual = createHash('sha256').update(bytes).digest('hex');
@@ -73,6 +73,7 @@ export async function prepareResources() {
   await stageHub(root, hub);
   await mkdir(nodeStage, { recursive: true });
   for (const name of ['node.exe', 'LICENSE']) await cp(join(distribution, name), join(nodeStage, name));
+  await cp(join(distribution, 'node_modules', 'npm'), join(nodeStage, 'node_modules', 'npm'), { recursive: true });
   // npm gets empty config files and a local cache; no user npm configuration or system PATH changes.
   const userConfig = join(cache, 'npm-user.npmrc');
   const globalConfig = join(cache, 'npm-global.npmrc');

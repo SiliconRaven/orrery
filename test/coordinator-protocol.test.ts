@@ -43,7 +43,7 @@ test('versioned coordinator rules reach setup, workspace, MCP and current coordi
     ];
     for (const check of checks) assert.match(COORDINATOR_RULES.text, check);
     assert.doesNotMatch(COORDINATOR_RULES.text, /merge\.claim|合并窗口/, 'ship replaced the merge window');
-    assert.equal(COORDINATOR_RULES.version, 'v16');
+    assert.equal(COORDINATOR_RULES.version, 'v17');
     const set = (memberId: string, enabled: boolean, mode: 'execute' | 'suggest', operationId: string) =>
       app.hub.collaboration.command({ kind: 'user' }, cluster.id, { action: 'coordinator.set', operationId, memberId, enabled, mode });
     const initial = set(a.id, true, 'execute', 'coordinator-a');
@@ -272,7 +272,7 @@ test('a newly appointed coordinator is not woken by its earlier reviewer or nomi
 test('dependency notices reach a newly ready nominee and preserve review and completion invalidation', async () => {
   const { app, cluster, a, b, c } = await fixture();
   try {
-    const { members: [d] } = await app.hub.addMembers(cluster.id, [{ projectPath: tempDir(), harness: 'claude', mode: 'native', name: 'D' }]);
+    const { members: [d] } = await app.hub.addMembers(cluster.id, [{ harness: 'claude', mode: 'native', name: 'D', projectPath: '/work' }]);
     const user: CollaborationActor = { kind: 'user' };
     const actor = (id: string): CollaborationActor => ({ kind: 'member', memberId: id });
     let serial = 0;
@@ -423,7 +423,7 @@ test('an upstream reviewer who owns a downstream task receives its ready notice'
 test('a notification listener failure does not prevent other ready notices from being published', async () => {
   const { app, cluster, a, b, c } = await fixture();
   try {
-    const { members: [d] } = await app.hub.addMembers(cluster.id, [{ projectPath: tempDir(), harness: 'claude', mode: 'native', name: 'D' }]);
+    const { members: [d] } = await app.hub.addMembers(cluster.id, [{ harness: 'claude', mode: 'native', name: 'D', projectPath: '/work' }]);
     const user: CollaborationActor = { kind: 'user' };
     const executor: CollaborationActor = { kind: 'member', memberId: d.id };
     let serial = 0;

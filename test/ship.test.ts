@@ -16,7 +16,7 @@ import { shipState } from '../src/plugins/tasks/model.ts';
 import { readShipTicket, reportShip, SHIP_SCRIPT, shipCommand, shipFor, shipForRunner, ShipRefused, shipTicket, verifyShip } from '../src/plugins/tasks/ship.ts';
 import { ticketFor } from '../src/mcp/wait-core.ts';
 import { ZCODE_WAIT } from '../src/core/types.ts';
-import { nativeHeaders, holdScript, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { bearer, holdScript, startTestHub, tempDir, waitFor, turnsOf, memberHeaders } from './helpers.ts';
 import { collaborationRecords, saveCollaborationRecord } from '../src/plugins/tasks/store.ts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
@@ -290,7 +290,7 @@ const a = member('a'), b = member('b');
 function hubFixture(t: TestContext, cwd = '/tmp') {
   const store = new Store(':memory:', new PluginHost(officialPlugins));
   store.insertCluster({ id: 'c', name: 'c', category: '', createdAt: '2026-01-01' }, ['a', 'b'].map((id) => ({
-    id, clusterId: 'c', name: `name-${id}`, avatar: null, harness: 'mock', model: null, effort: null, mode: 'native' as const,
+    id, clusterId: 'c', name: `name-${id}`, avatar: null, harness: 'mock', model: null, effort: null,
     workerSessionId: 'session-' + id, cwd, origin: 'attached' as const, removedAt: null,
   })));
   const hub = new Hub({ store, nativeAdapters: {} });
@@ -566,7 +566,7 @@ test('the whole new flow over HTTP, from a linked worktree: create with an execu
   const app = await startTestHub();
   t.after(async () => { await app.close(); rmSync(app.dir, { recursive: true, force: true, maxRetries: 5 }); });
   app.hub.store.insertCluster({ id: 'c', name: 'c', category: '', createdAt: '2026-01-01' }, ['a', 'b'].map((id) => ({
-    id, clusterId: 'c', name: `name-${id}`, avatar: null, harness: 'mock', model: null, effort: null, mode: 'native' as const,
+    id, clusterId: 'c', name: `name-${id}`, avatar: null, harness: 'mock', model: null, effort: null,
     workerSessionId: 'session-' + id, cwd: r.root, origin: 'attached' as const, removedAt: null,
   })));
   const secret = JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8')).secret as string;
@@ -606,9 +606,10 @@ test('over MCP: an approving reviewer gets ship.command; the executor of a self-
   const { task: self } = await cmd({ action: 'task.create', operationId: 't2', title: 'two', scope: 's', acceptance: 'a', reviewer: { kind: 'self' } });
   const message = await app.api('POST', `${path}/messages`, { body: 'proof' });
   await app.api('POST', `${path}/messages`, { body: '@A @B hold' });
+  await waitFor(() => [m1.id, m2.id].every((id) => turnsOf(app, id) > 0), 'both turns');
   const connect = async (memberId: string) => {
     const client = new Client({ name: 'test', version: '0' });
-    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: nativeHeaders(app, memberId) } }));
+    await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), { requestInit: { headers: memberHeaders(app, memberId) } }));
     t.after(() => client.close());
     return async (name: string, args: Record<string, unknown>) => {
       const result = await client.callTool({ name, arguments: args });

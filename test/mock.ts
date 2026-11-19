@@ -1,9 +1,12 @@
-// Scripted native conversations used only by isolated test Hubs.
+// Scripted mock members for test Hubs: the native mock harness ('queue' kind, src/adapters/mock/native.ts) whose
+// delivered turns run a script. The script answers through a real MCP HTTP client that names its conversation with the
+// bridge secret and session header, exactly as a native member's bridge does, so tests cover that identity path.
+import { setTimeout as sleep } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { AgentEvent } from '../src/core/types.ts';
 import { createMockNativeAdapter, type MockNativeAdapter, type MockNativeOptions } from '../src/adapters/mock/native.ts';
-import { setTimeout as sleep } from 'node:timers/promises';
+import type { AgentEvent } from '../src/core/types.ts';
+
 export interface Envelope {
   cluster: string;
   from: string;            // sender name, or 'user'
@@ -76,39 +79,44 @@ export const defaultScript: MockScript = async (msg, tools, emit, signal) => {
   } else emit({ type: 'text', text: `mock received: ${msg.body}` });
 };
 
-
 export interface MockOptions extends MockNativeOptions { script?: MockScript }
 
-export function scriptedNative(opts: MockOptions, endpoint: () => { url: string; secret: string } | null): MockNativeAdapter {
+/** Where the scripted member reaches the Hub's MCP endpoint, known once the Hub listens. */
+export type MockEndpoint = () => { url: string; secret: string } | null;
+
+/**
+ * A 'queue' mock whose delivered turns run `script` (default defaultScript) over each message of the envelope, in one
+ * turn. A direct message (the user's `to` exactly one member: plain text, no envelope) only gets one text event.
+ */
+export function scriptedNative(opts: MockOptions, endpoint: MockEndpoint): MockNativeAdapter {
   const script = opts.script ?? defaultScript;
+  const harness = opts.harness ?? 'mock';
   return createMockNativeAdapter({ ...opts, onDeliver: opts.onDeliver ?? (async (sessionId, text, ctx) => {
     if (!text.startsWith('[orrery]')) {
-      ctx.onEvent({ type: 'text', text: 'mock received: ' + text });
+      ctx.onEvent({ type: 'text', text: `mock received: ${text}` });
       return 'completed';
     }
-    const client = new Client({ name: 'orrery-test-native', version: '0.10.0-beta.1' });
-    let connected = false;
-    const call = async (name: string, args: Record<string, unknown>) => {
-      if (!connected) {
-        // A queued message can start before startTestHub returns its endpoint.
-        await new Promise<void>((resolve) => setImmediate(resolve));
+    let client: Client | null = null;
+    const connect = async () => {
+      if (!client) {
+        // A queued message can start before startTestHub has the endpoint: wait one turn of the event loop.
+        if (!endpoint()) await new Promise<void>((resolve) => setImmediate(resolve));
         const target = endpoint();
         if (!target) throw new Error('test MCP endpoint is not ready');
-        const transport = new StreamableHTTPClientTransport(new URL(target.url + '/mcp'), {
-          requestInit: { headers: {
-            'x-orrery-bridge': target.secret,
-            'x-orrery-harness': opts.harness ?? 'mock',
-            'x-orrery-session': sessionId,
-          } },
+        const transport = new StreamableHTTPClientTransport(new URL(`${target.url}/mcp`), {
+          requestInit: { headers: { 'x-orrery-bridge': target.secret, 'x-orrery-harness': harness, 'x-orrery-session': sessionId } },
         });
+        client = new Client({ name: `orrery-mock-${harness}`, version: '0.1.0' });
         await client.connect(transport);
-        connected = true;
       }
+      return client;
+    };
+    const call = async (name: string, args: Record<string, unknown>) => {
       ctx.onEvent({ type: 'tool', name, phase: 'start' });
-      const result = await client.callTool({ name, arguments: args }, undefined, { signal: ctx.signal });
-      const output = (result.content as { text?: string }[]).map((content) => content.text ?? '').join('');
-      ctx.onEvent({ type: 'tool', name, phase: 'end', detail: output });
-      return { text: output, isError: result.isError === true };
+      const res = await (await connect()).callTool({ name, arguments: args }, undefined, { signal: ctx.signal });
+      const out = (res.content as { type: string; text?: string }[]).map((c) => c.text ?? '').join('');
+      ctx.onEvent({ type: 'tool', name, phase: 'end', detail: out });
+      return { text: out, isError: res.isError === true };
     };
     const tools: MockTools = {
       send: (body, replyTo) => call('send_message', replyTo ? { body, replyTo } : { body }),
@@ -116,9 +124,10 @@ export function scriptedNative(opts: MockOptions, endpoint: () => { url: string;
       listAgents: () => call('list_agents', {}),
     };
     try {
-      for (const message of parseEnvelopes(text)) await script(message, tools, ctx.onEvent, ctx.signal);
+      // A batch: the script handles each message in turn, all within this one turn.
+      for (const msg of parseEnvelopes(text)) await script(msg, tools, ctx.onEvent, ctx.signal);
     } finally {
-      await client.close();
+      await (client as Client | null)?.close();
     }
     return 'completed';
   }) });

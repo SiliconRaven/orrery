@@ -13,10 +13,10 @@ const a = member('a'), b = member('b'), coordinator = member('coord');
 function fixture(t: TestContext) {
   const store = new Store(':memory:', new PluginHost(officialPlugins));
   store.insertCluster({ id: 'c', name: 'c', category: '', createdAt: '2026-01-01' }, ['a', 'b', 'coord'].map((id) => ({
-    id, clusterId: 'c', name: id, avatar: null, harness: 'mock', model: null, effort: null, mode: 'native' as const,
+    id, clusterId: 'c', name: id, avatar: null, harness: 'mock', model: null, effort: null,
     workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null,
   })));
-  const hub = new Hub({ store, nativeAdapters: {}, });
+  const hub = new Hub({ store, nativeAdapters: {} });
   t.after(async () => { await hub.close(); store.close(); });
   let serial = 0;
   const send = (actor: CollaborationActor, command: Omit<CollaborationCommand, 'operationId'>) =>

@@ -1,11 +1,12 @@
+import { t, language, translateStatic } from './i18n.js';
 // orrery web UI: cluster list, group chat, member page. Live state comes from the Hub's SSE event log.
-// See docs/architecture.md (HTTP API, event kinds, @ rules).
+// See docs/architecture.md and docs/native-mode.md (HTTP API, event kinds, @ rules).
 import {
   unwrittenRecipients,
   handoverText,
   toolVersionView,
   usageAlertText,
-  attachmentNode, fileLabel, fileUrl, pendingFileNode, rebindWarnings, activeMember, activeMembers, activitySummary, attachMentions, attachTaskRefs, hubRestartAction, longWaitingHint, reloadWouldLose, clusterUsageText, memberTokensText, memberDetails, memberDetailsView, projectName, usageView, attachSkills, autogrowHeight, avatarEl, bodySegments, canHandoff, deliveryAdvice, timelineStageView, resendBlockedText, categoryInput, clampPane, clusterNameInput, clusterOrder, clusterUnread, sidebarSections, unreadLabel, clusterGroups, moveGroup, moveTargets, refreshRelativeTimes, relativeTimeEl, COLLAPSED_GROUPS_KEY, collapsedFromStored, collapsedSignature, confirmDialog, conversationActivity, conversations, deliveryProblem, deliveryView, editFields, effortChoices, expandedFromStored, fmtTime, h, handoffNeedsConfirmation, appRowSummary, createRequest, focusAfterTick, memberNameProblem, rowAfterKey, isSystemMessage, chatRowState, chatShowsMessage, jumpCurrent, jumpExceptionId, jumpPending, nextJump, CHAT_FILTER_DEFAULT, CHAT_FILTER_KEY, chatFilterCount, chatFilterFromStored, systemMark, limitFormEdited, limitSubmission, limitView, memberDefaultName, memberHealth, memberStatus, memberStatusLabel, memberSummary, HIDDEN_MARK, memberCounts, heldTasks, heldTasksPath, allPages, hiddenConfirmText, hiddenMentionHint, mergeMemberAt, messageAuthorName, noticeBoard, noticeDialog, notifyFormEdited, notifySubmission, notifyView, offlineHint, PANEL_OPEN_KEY, paneFromStored, paneKey, PANES, pastedFiles, pickFiles, presetName, receiptMembers, recordOnlyNotice, sessionAvailability, snippet, splitReceiptMembers, stackedMembers, submitOnEnter, systemAvatar, UNGROUPED, userAvatar, withLastMessage,
+  attachmentNode, fileLabel, fileUrl, pendingFileNode, rebindWarnings, activeMember, activeMembers, activitySummary, attachMentions, attachTaskRefs, hubRestartAction, longWaitingHint, reloadWouldLose, clusterUsageText, memberTokensText, memberDetails, memberDetailsView, projectName, usageView, attachSkills, autogrowHeight, avatarEl, bodySegments, canHandoff, deliveryAdvice, timelineStageView, resendBlockedText, categoryInput, clampPane, clusterNameInput, clusterOrder, clusterUnread, sidebarSections, unreadLabel, clusterGroups, moveGroup, moveTargets, refreshRelativeTimes, relativeTimeEl, COLLAPSED_GROUPS_KEY, collapsedFromStored, collapsedSignature, confirmDialog, conversationActivity, conversations, deliveryProblem, deliveryView, editFields, effortChoices, expandedFromStored, fmtTime, h, handoffNeedsConfirmation, appRowSummary, createRequest, focusAfterTick, memberNameProblem, rowAfterKey, isSystemMessage, plainTextRecord, chatRowState, chatShowsMessage, jumpCurrent, jumpExceptionId, jumpPending, nextJump, CHAT_FILTER_DEFAULT, CHAT_FILTER_KEY, chatFilterCount, chatFilterFromStored, systemMark, limitFormEdited, limitSubmission, limitView, memberDefaultName, memberHealth, memberStatus, memberStatusLabel, memberSummary, HIDDEN_MARK, memberCounts, heldTasks, heldTasksPath, allPages, hiddenConfirmText, hiddenMentionHint, mergeMemberAt, messageAuthorName, noticeBoard, noticeDialog, notifyFormEdited, notifySubmission, notifyView, offlineHint, PANEL_OPEN_KEY, paneFromStored, paneKey, PANES, pastedFiles, pickFiles, presetName, receiptMembers, recordOnlyNotice, sessionAvailability, snippet, splitReceiptMembers, stackedMembers, submitOnEnter, systemAvatar, UNGROUPED, userAvatar, withLastMessage,
 } from './ui.js';
 import { attachMenu } from './ui.js';
 import { SYSTEM_CATEGORIES, SYSTEM_CATEGORY_LABELS } from './system-kinds.js';
@@ -15,17 +16,25 @@ import { createWorkbench } from './workbench.js';
 import { createUsageRenderer } from './usage-view.js';
 import { createStalledWatch, stalledBadge, stalledSummary } from './stalled.js';
 import { createPluginSettings } from './plugins.js';
+import { createPluginConfig } from './plugin-config.js';
 import { initSettings } from './settings.js';
-import { loadPluginSlots } from './plugin-slots.js';
+import { mountPluginInstall } from './plugin-install.js';
+import { mountUpdates } from './updates.js';
+import { detachPluginSlots, loadPluginSlots, trustedChange, trustNoticeText } from './plugin-slots.js';
+import { formDialog } from './workbench-form.js';
+import { createPluginUi } from './plugin-ui.js';
 import { isTaskChangeNotice, parseLegacyTaskNotice, shipFailureNotice } from './task-diff.js';
 import { createTaskCandidates, createTaskRefs, inRanges, quotedRanges, taskRefIds } from './task-refs.js';
 import { conversationMatrix, CONVERSATIONS_VIEW_KEY, harnessApp, mountKeepingScroll, STATUS_WORD, viewFromStored } from './conversation-matrix.js';
 import { avatarKind, emptyState, hiddenMark, icon, memberAppText, memberMarks, memberPresence, memberRowActions, removeMemberConfirm, setAvatarMarks } from './ui.js';   // the member list's icons (kept apart from the long import above)
 import { createShipFailureView, createTaskDiffView } from './task-diff-view.js';
 import { openTrash } from './trash.js';
+import { openExtensions } from './extensions.js';
 import { createChatSearch, criteriaFromFilter, hiddenWarnings, senderChoices, warningBadge, FIXED_SENDERS } from './chat-search.js';
+import { attachCommands, chatSubmitAllowed, commandForm, createCommandState, drawNotices, drawRuns, mountCommandForm, unmountCommandForm } from './plugin-commands.js';
 
 const $ = (id) => document.getElementById(id);
+translateStatic(document);
 let pluginSlots = { message: [] };
 
 // ---- state ----
@@ -45,7 +54,7 @@ const S = {
   rebinds: new Map(),        // memberId -> its moves to another conversation, oldest first ('member' events with `rebind`)
   running: new Map(),        // memberId -> Set<deliveryId> currently running (from /api/state, then delivery events)
   identity: 0,               // bumped when a name or avatar changes, so rendered messages refresh
-  skills: [],                // GET /api/skills: [{ name, description }], read once when the page loads
+  skills: [],                // GET /api/skills: [{ name, description }], read when the page loads and after an install (loadSkills)
   skillNames: new Set(),
   avatars: [],               // GET /api/avatars: preset avatar names, read once when the page loads
   skillsVersion: 0,          // bumped when the skills list arrives, so rendered messages highlight $name
@@ -715,6 +724,7 @@ setInterval(() => {
   if (document.visibilityState !== 'visible') return;
   render();   // a slow or hung request must not keep an old observing state fresh
   loadActivity();
+  if (hubCheckPending) checkHub();   // the health check or the plugin list could not be read yet
 }, 10_000);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') cancelActivityRequest();
@@ -723,12 +733,12 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function activityEl(summary, group = null) {
-  const name = group ? `活动观察（${group}）` : '活动观察';
+  const name = group ? t('活动观察（{group}）', { group: group }) : t('活动观察');
   const source = summary.source ? ` · ${summary.source}` : '';
-  const hasChannel = summary.seen || summary.activity || !summary.state.startsWith('暂无观察');
-  const seen = hasChannel ? ` · 最近响应 ${summary.seen ?? '未知'}` : '';
+  const { hasChannel } = summary;
+  const seen = hasChannel ? t(' · 最近响应 {value}', { value: summary.seen ?? t('未知') }) : '';
   const heading = `${name}：${summary.state}${source}${seen}`;
-  const detail = summary.activity ? `最近活动 ${summary.activity}` : hasChannel ? '最近活动 暂无记录' : null;
+  const detail = summary.activity ? t('最近活动 {activity}', { activity: summary.activity }) : hasChannel ? t('最近活动 暂无记录') : null;
   return h('div', { class: 'activity-summary' },
     h('span', { class: 'activity-head', title: heading }, h('span', { class: 'activity-scope' }, name),
       h('span', {}, `：${summary.state}${seen}`)), detail ? h('span', { title: detail }, detail) : null);
@@ -741,15 +751,19 @@ async function refreshQuota() {
 // ---- server ----
 
 /** `withSeq`: answers { data, seq }, seq being the event seq the Hub read the rows at (X-Orrery-Seq; 0 if missing). */
-async function api(method, path, body, withSeq = false) {
-  const init = body === undefined ? { method }
-    : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+async function api(method, path, body, withSeq = false, fetchOptions = {}) {
+  const headers = new Headers(fetchOptions.headers);
+  if (method !== 'GET' && method !== 'HEAD' && !headers.has('content-type')) headers.set('content-type', 'application/json');
+  const init = { ...fetchOptions, method, headers };
+  if (body !== undefined) init.body = headers.get('content-type') === 'application/octet-stream' ? body : JSON.stringify(body);
   const res = await fetch(path, init);
   if (res.status === 401) unauthorized();
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status, data });
   return withSeq ? { data, seq: Number(res.headers.get('x-orrery-seq')) || 0 } : data;
 }
+
+const featureApi = (method, path, body, options) => api(method, path, body, false, options);
 
 // Every /api/* request needs the API token (docs/security.md); the page carries it as a session cookie. A 401 means
 // this browser has no valid one: say so once and stop reconnecting.
@@ -759,7 +773,7 @@ function unauthorized() {
   denied = true;
   stream?.close();
   setConn(false);   // shows 未通过验证 (review api-token r1, P2)
-  noticeDialog('这个页面没有通过 Hub 的验证（没有令牌，或令牌已失效）。请从 orrery 启动器或桌面版重新打开页面。', '需要重新打开页面');
+  noticeDialog(t('这个页面没有通过 Hub 的验证（没有令牌，或令牌已失效）。请从 orrery 启动器或桌面版重新打开页面。'), t('需要重新打开页面'));
 }
 
 // An EventSource cannot see a 401: before rebuilding a closed stream, /api/health tells.
@@ -781,13 +795,25 @@ function connect(since, rebuilt = false) {
   stream = es;
   let down = rebuilt;   // a rebuilt stream follows an outage (maybe a Hub restart), so it re-syncs pause on first open
   es.onmessage = (m) => applyEvent(JSON.parse(m.data));
+  // A plugin command run (docs/external-plugins.md「命令」): a named frame outside the event log, for this page only.
+  es.addEventListener('plugin-run', (m) => { try { runState.apply(JSON.parse(m.data)); } catch { /* a bad frame changes nothing */ } render(); });
+  // A third-party plugin's state (docs/external-plugins.md「生命周期」): its card on the settings page, if drawn, keeps the newer copy.
+  es.addEventListener('plugin-state', (m) => {
+    try { pluginSettings.applyState(JSON.parse(m.data)); } catch { /* a bad frame changes nothing */ }
+    pluginUi.pluginState();   // its UI may have stopped, come back or been switched off
+  });
+  // A third-party plugin's own UI (docs/external-plugins.md「网页界面」): pushes to its frames, its chip, revoked frames.
+  es.addEventListener('plugin-ui', (m) => { try { pluginUi.event(JSON.parse(m.data)); } catch { /* a bad frame changes nothing */ } });
+  es.addEventListener('plugin-config', (m) => { try { pluginConfig.changed(JSON.parse(m.data)); } catch { /* ignore a malformed frame */ } });
   es.onopen = () => {
     setConn(true);
+    if (down || loadedPid === null || hubCheckPending) checkHub();
     if (down) {   // the Hub may have restarted, which resets pause and may bring new web code
       syncPaused().catch(() => {});
-      checkHub();
       retryMessageMetadata(S.sel.cluster);
       loadProblemsSoon();
+      if (S.sel.cluster) loadCommands(S.sel.cluster).catch(() => {});   // runs that ended while the stream was down drop out
+      pluginUi.reconnected();   // a restarted Hub knows none of the open frames: they load again
     }
     down = false;
   };
@@ -804,18 +830,53 @@ function connect(since, rebuilt = false) {
 // else it shows a banner and the user decides.
 
 let loadedPid = null;   // the Hub process this page was loaded from (first answer of /api/health)
+let pagePlugins = null;   // the GET /api/plugins answer this page loaded its plugin modules from
+let pluginsStart = null;  // the Hub start (`instance`) whose plugin list the page loaded or compared last
+let legacyPluginsPid = null;  // Hub versions without an instance use the health PID
+const detachedNames = new Map();   // full-trust plugin id -> its name, for the plugins detached from this page
+const triedContinuouslyListed = new Set();   // a failed attempt is offered again only after the module disappears and returns
+let hubCheckPending = false;
 let checkingHub = false;
+
+async function readPagePlugins() {
+  const list = await api('GET', '/api/plugins', undefined, false, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+  if (!Array.isArray(list?.plugins) || !list.plugins.every((plugin) => typeof plugin?.id === 'string')) return null;
+  if (typeof list.instance === 'string' && Array.isArray(list.trustedFrontend)
+    && list.trustedFrontend.every((id) => typeof id === 'string')) return list;
+  // Hub versions before page modules had neither field.
+  if (list.instance === undefined && list.trustedFrontend === undefined) return { ...list, trustedFrontend: [] };
+  return null;
+}
+
 async function checkHub() {
   if (quitting || denied || checkingHub) return;
   checkingHub = true;
+  const retry = hubCheckPending;
+  hubCheckPending = true;
   try {
-    const res = await fetch('/api/health', { cache: 'no-store' });
+    const res = await fetch('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
     if (res.status === 401) return unauthorized();
+    if (!res.ok) return;
     const health = await res.json();
-    if (loadedPid === null && Number.isInteger(health?.pid)) loadedPid = health.pid;
-    const action = hubRestartAction(loadedPid, health, unsaved());
-    if (action === 'reload') location.reload();
-    else if (action === 'banner') $('update-banner').hidden = false;
+    if (health?.app !== 'orrery' || !Number.isInteger(health.pid)
+      || (health.instance !== undefined && typeof health.instance !== 'string')) return;
+    const start = health.instance ?? null;
+    loadedPid ??= health.pid;
+    const restarted = pagePlugins !== null && (pagePlugins.instance ?? null) !== start;
+    if (retry || start !== pluginsStart || (start === null && health.pid !== legacyPluginsPid)) {
+      const now = await readPagePlugins();
+      // A restart between these GETs must be checked against the health of the same start.
+      if (now === null || (now.instance ?? null) !== start || denied || quitting) return;
+      pluginsStart = start;
+      legacyPluginsPid = start === null ? health.pid : null;
+      trustedPluginsChanged(now);
+    }
+    hubCheckPending = false;
+    const content = unsaved();
+    const action = restarted ? (reloadWouldLose(content) ? 'banner' : 'reload') : hubRestartAction(loadedPid, health, content);
+    // While the plugin notice is up the page reloads only when the user says so; the usual banner still shows.
+    if (action === 'reload' && $('trust-banner').hidden) location.reload();
+    else if (action !== 'none') $('update-banner').hidden = false;
   } catch { /* no Hub right now: the next reconnect checks again */ } finally {
     checkingHub = false;
   }
@@ -825,12 +886,15 @@ async function checkHub() {
  * What a reload would lose: composer drafts, attachments waiting to be sent, open dialogs and edits, sends in flight,
  * and unsaved limit edits (the settings forms keep them when the dialog is closed).
  */
-function unsaved() {
+function unsaved({ fromSettings = false } = {}) {
   return {
     drafts: [chat.input.value, direct.input.value, ...drafts.values()],
     uploads: [...uploads.values()].reduce((n, list) => n + list.length, 0),
-    editing: sending.size > 0 || editingId !== null || panelEditor.dirty() || [...taskDrafts.values()].some((ids) => ids.length)
-      || [...document.querySelectorAll('dialog[open]')].some((d) => d.id !== 'viewer')
+    editing: sending.size > 0 || editingId !== null || panelEditor.dirty() || Boolean(openForm) || [...taskDrafts.values()].some((ids) => ids.length)
+      || [...document.querySelectorAll('dialog[open]')].some((d) => d.id !== 'viewer' && (!fromSettings || d.id !== 'settings-dialog'))
+      || (fromSettings && installPanel?.hasDraft() === true)
+      || (fromSettings && [...$('settings-dialog').querySelectorAll('.plugin-write input')].some((input) =>
+        input.type === 'checkbox' ? input.checked !== input.defaultChecked : input.value !== input.defaultValue))
       || Boolean(S.settings?.usageAlert && (String(S.settings.usageAlert.turnTokens) !== $('usage-alert-turn').value
         || String(S.settings.usageAlert.conversationTokens) !== $('usage-alert-conversation').value))
       || LIMIT_FORMS.some((f) => limitFormEdited(f.setting, S.settings, { unlimited: $(`${f.id}-unlimited`).checked, value: $(`${f.id}-value`).value }))
@@ -838,30 +902,53 @@ function unsaved() {
   };
 }
 
-window.addEventListener('focus', () => { if (loadedPid !== null) checkHub(); allowRead(S.sel.cluster); render(); });
+window.addEventListener('focus', () => { if (loadedPid !== null || hubCheckPending) checkHub(); allowRead(S.sel.cluster); render(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') allowRead(S.sel.cluster); render(); });
 // Here as well as in the workbench, which is gone when the tasks plugin is off: a paused cluster must stay resumable.
 $('cluster-resume').addEventListener('click', async () => {
   try {
     await api('POST', `/api/clusters/${encodeURIComponent(S.sel.cluster)}/collaboration`, { action: 'cluster.pause', paused: false, operationId: crypto.randomUUID() });
-  } catch (e) { await noticeDialog(e.message, '恢复投递失败'); }
+  } catch (e) { await noticeDialog(e.message, t('恢复投递失败')); }
 });
 
-$('update-reload').addEventListener('click', async () => {
+/**
+ * After a Hub restart: full-trust plugins this page runs that the Hub no longer lists are detached at once (no more
+ * calls, what they rendered removed, their onDispose run), and the notice says what is true and offers the reload. The
+ * page never reloads by itself for this and leaves every input alone. An unchanged list changes nothing here.
+ */
+function trustedPluginsChanged(now) {
+  const listed = new Set(now.trustedFrontend);
+  for (const id of triedContinuouslyListed) if (!listed.has(id)) triedContinuouslyListed.delete(id);
+  const { stale, fresh } = trustedChange({ trusted: pluginSlots.trusted, tried: [...triedContinuouslyListed] }, now);
+  const pluginName = (id) => [...(pagePlugins?.installed ?? []), ...(now.installed ?? [])].find((p) => p.id === id && typeof p.name === 'string')?.name ?? id;
+  for (const id of stale) detachedNames.set(id, pluginName(id));
+  detachPluginSlots(pluginSlots, stale);   // pluginSlots.onRelease follows in the workbench and redraws
+  $('safe-mode-banner').hidden = now.safeMode !== true;   // the notice describes this list; so does this banner
+  const unavailable = [...detachedNames].filter(([id]) => !listed.has(id)).map(([, name]) => name);
+  const reappeared = fresh.some((id) => detachedNames.has(id));
+  const text = trustNoticeText(unavailable, fresh.map(pluginName))
+    + (reappeared ? t(' 重新列出的已摘除插件仍需刷新页面才能恢复。') : '');
+  $('trust-banner-text').textContent = text;
+  $('trust-banner').hidden = text === '';
+}
+
+async function reloadUnlessUnsaved() {
   if (reloadWouldLose(unsaved())) {
     const ok = await confirmDialog({
-      title: '现在刷新页面？', message: '未发送的草稿、附件和没保存的编辑会丢失。可以先发送或复制它们，再点横幅刷新。',
-      confirmText: '刷新', danger: true,
+      title: t('现在刷新页面？'), message: t('未发送的草稿、附件和没保存的编辑会丢失。可以先发送或复制它们，再点横幅刷新。'),
+      confirmText: t('刷新'), danger: true,
     });
     if (!ok) return;
   }
   location.reload();
-});
+}
+$('update-reload').addEventListener('click', reloadUnlessUnsaved);
+$('trust-reload').addEventListener('click', reloadUnlessUnsaved);
 
 function setConn(ok) {
   const el = $('conn');
   el.className = `conn ${ok ? 'ok' : 'bad'}`;
-  el.textContent = ok ? '已连接' : denied ? '未通过验证' : '已断开，重连中…';
+  el.textContent = ok ? t('已连接') : denied ? t('未通过验证') : t('已断开，重连中…');
 }
 
 // ---- selection (kept in the URL hash so a reload stays put) ----
@@ -1056,7 +1143,7 @@ function fitPane(pane) {
   p.divider.setAttribute('aria-valuenow', String(p.width));
   p.divider.setAttribute('aria-valuemin', String(PANES[pane].min));
   p.divider.setAttribute('aria-valuemax', String(PANES[pane].max));
-  p.divider.setAttribute('aria-valuetext', `${p.width} 像素`);
+  p.divider.setAttribute('aria-valuetext', t('{width} 像素', { width: p.width }));
 }
 function fitPanes() {
   fitPane('side');
@@ -1139,7 +1226,7 @@ function stableList(el) {
 
 function activityOf(members) {
   const busy = members.filter((m) => statusOf(m) === 'busy');
-  return busy.length ? '投递中' : '';
+  return busy.length ? t('投递中') : '';
 }
 const clusterActivity = (c) => activityOf(membersOf(c.id));
 
@@ -1217,44 +1304,46 @@ async function clusterMenuAction(id, action) {
   closeClusterMenu(false);
   if (trigger?.isConnected) trigger.focus({ preventScroll: true });
   if (!cluster) return;
+  if (action === 'plugin-config') return pluginConfig.openCluster(id, () => clusterMenuTrigger(id));
   if (action === 'rename') return renameCluster(cluster);
   if (action === 'delete') return deleteCluster(cluster);
   if (action === 'new-group') {
-    return groupNameDialog('新建分组', '', async (name) => {
+    return groupNameDialog(t('新建分组'), '', async (name) => {
       await api('POST', '/api/cluster-groups', { name });
       await moveToGroup(id, name);
-    }, `“${cluster.name}”会移进这个新分组。`);
+    }, t('“{name}”会移进这个新分组。', { name: cluster.name }));
   }
   if (action.startsWith('group:')) return moveToGroup(id, action.slice('group:'.length));
   try {
     await api('PATCH', `/api/clusters/${encodeURIComponent(id)}`, action === 'pin'
       ? cluster.archivedAt ? { archived: false, pinned: true } : { pinned: !cluster.pinnedAt }
       : { archived: !cluster.archivedAt });
-  } catch (error) { await noticeDialog(error.message, '更新群聊失败'); }
+  } catch (error) { await noticeDialog(error.message, t('更新群聊失败')); }
 }
 
 function openClusterMenu(id, trigger) {
   const cluster = S.clusters.get(id);
   if (!cluster) return;
   const actions = [
-    { key: 'pin', label: cluster.pinnedAt ? '取消置顶' : '置顶' },
-    { key: 'archive', label: cluster.archivedAt ? '取消归档' : '归档' },
-    { key: 'move', label: '移到分组…' },
-    { key: 'rename', label: '改名' }, { key: 'delete', label: '删除' },
+    { key: 'pin', label: cluster.pinnedAt ? t('取消置顶') : t('置顶群聊') },
+    { key: 'archive', label: cluster.archivedAt ? t('取消归档') : t('归档') },
+    { key: 'move', label: t('移到分组…') },
+    { key: 'plugin-config', label: t('插件配置') },
+    { key: 'rename', label: t('改名') }, { key: 'delete', label: t('删除') },
   ];
   const item = (key, label, extra = {}) => h('button', { type: 'button', role: 'menuitem', 'data-menu-action': key,
     onclick: () => { void clusterMenuAction(id, key); }, ...extra }, label);
   // "移到分组…" turns the same menu into the list of groups (keyboard and touch reach it like any other item).
   const showTargets = () => {
-    menu.setAttribute('aria-label', `移到分组：${cluster.name}`);
-    menu.replaceChildren(h('div', { class: 'cluster-menu-title' }, '移到分组'),
-      ...moveTargets(groupList(), cluster.category).map((t) => item(`group:${t.name}`, t.current ? [icon('check', 'ico-sm'), t.label, h('span', { class: 'sr-only' }, '（当前分组）')] : t.label,
-        t.current ? { 'aria-disabled': 'true', disabled: true } : {})),
-      item('new-group', '新建分组…'));
+    menu.setAttribute('aria-label', t('移到分组：{name}', { name: cluster.name }));
+    menu.replaceChildren(h('div', { class: 'cluster-menu-title' }, t('移到分组')),
+      ...moveTargets(groupList(), cluster.category).map((targetGroup) => item(`group:${targetGroup.name}`, targetGroup.current ? [icon('check', 'ico-sm'), targetGroup.label, h('span', { class: 'sr-only' }, t('（当前分组）'))] : targetGroup.label,
+        targetGroup.current ? { 'aria-disabled': 'true', disabled: true } : {})),
+      item('new-group', t('新建分组…')));
     positionClusterMenu();
     menu.querySelector('[role="menuitem"]:not([disabled])')?.focus();
   };
-  const menu = h('div', { class: 'cluster-menu', role: 'menu', 'aria-label': `群聊操作：${cluster.name}` },
+  const menu = h('div', { class: 'cluster-menu', role: 'menu', 'aria-label': t('群聊操作：{name}', { name: cluster.name }) },
     actions.map((action) => action.key === 'move'
       ? h('button', { type: 'button', role: 'menuitem', 'aria-haspopup': 'menu', 'data-menu-action': 'move', onclick: showTargets }, action.label)
       : item(action.key, action.label)));
@@ -1267,8 +1356,8 @@ document.addEventListener('pointerdown', (event) => {
 
 function renameCluster(cluster) {
   sidebarNameDialog({
-    title: '改名', label: '群聊名称', initial: cluster.name, note: '允许与其他群聊重名。',
-    validate: clusterNameInput, invalidTitle: '改名失败',
+    title: t('改名'), label: t('群聊名称'), initial: cluster.name, note: t('允许与其他群聊重名。'),
+    validate: clusterNameInput, invalidTitle: t('改名失败'),
     save: (name) => api('PATCH', `/api/clusters/${encodeURIComponent(cluster.id)}`, { name }),
     findOpener: () => clusterMenuTrigger(cluster.id),
   });
@@ -1279,8 +1368,8 @@ function sidebarNameDialog({ title, label, initial, note, maxLength, validate, s
   const input = h('input', { 'aria-label': label, maxlength: maxLength });
   input.value = initial;
   let saving = false;
-  const cancel = h('button', { type: 'button', onclick: () => { if (!saving) dialog.close(); } }, '取消');
-  const ok = h('button', { type: 'submit', class: 'primary' }, '保存');
+  const cancel = h('button', { type: 'button', onclick: () => { if (!saving) dialog.close(); } }, t('取消'));
+  const ok = h('button', { type: 'submit', class: 'primary' }, t('保存'));
   const dialog = h('dialog', { 'aria-label': title }, h('form', { class: 'workbench-form' }, h('h2', {}, title),
     note ? h('p', { class: 'muted' }, note) : null, h('label', {}, label, input), h('div', { class: 'row end' }, cancel, ok)));
   dialog.addEventListener('cancel', (event) => { if (saving) event.preventDefault(); });
@@ -1292,7 +1381,7 @@ function sidebarNameDialog({ title, label, initial, note, maxLength, validate, s
     saving = true;
     ok.disabled = true; cancel.disabled = true; input.disabled = true;
     try { await save(result.name); dialog.close(); }
-    catch (error) { await noticeDialog(error.message, `${title}失败`); }
+    catch (error) { await noticeDialog(error.message, t('{title}失败', { title: title })); }
     finally { saving = false; ok.disabled = false; cancel.disabled = false; input.disabled = false; }
   });
   dialog.addEventListener('close', () => {
@@ -1312,16 +1401,16 @@ async function moveToGroup(id, category) {
   const cluster = S.clusters.get(id);
   if (!cluster || (cluster.category ?? '') === category) return;
   try { await api('PATCH', `/api/clusters/${encodeURIComponent(id)}`, { category }); }
-  catch (error) { await noticeDialog(error.message, '移动失败'); }
+  catch (error) { await noticeDialog(error.message, t('移动失败')); }
 }
 
 /** A group name dialog; `save(name)` runs on submit and the dialog stays open, with the Hub's answer, if it throws. */
 function groupNameDialog(title, initial, save, note = '') {
   sidebarNameDialog({
-    title, label: '分组名', initial, save, note, maxLength: 80,
+    title, label: t('分组名'), initial, save, note, maxLength: 80,
     validate: (value) => {
       const { category, error } = categoryInput(value);
-      return { name: category, error: error || (!category && '分组名不能为空') };
+      return { name: category, error: error || (!category && t('分组名不能为空')) };
     },
   });
 }
@@ -1332,7 +1421,7 @@ async function groupAction(name, action) {
   if (trigger?.isConnected) trigger.focus({ preventScroll: true });   // dialogs opened below return focus here
   const groups = groupList();
   try {
-    if (action === 'rename') return groupNameDialog('分组改名', name, (to) => renameGroupKeepingView(name, to));
+    if (action === 'rename') return groupNameDialog(t('分组改名'), name, (to) => renameGroupKeepingView(name, to));
     if (action === 'up' || action === 'down') {
       const next = moveGroup(groups, name, action === 'up' ? -1 : 1);
       if (next) await api('PUT', '/api/cluster-groups', { groups: next });
@@ -1340,15 +1429,15 @@ async function groupAction(name, action) {
     }
     if (action === 'delete') {
       const count = [...S.clusters.values()].filter((c) => (c.category ?? '').trim() === name).length;
-      const ok = await confirmDialog({ title: '删除分组？', message: count
-        ? `“${name}”里的 ${count} 个群聊会移到“${UNGROUPED}”，群聊本身不变。`
-        : `“${name}”是空分组。`, confirmText: '删除分组', danger: true });
+      const ok = await confirmDialog({ title: t('删除分组？'), message: count
+        ? t('“{name}”里的 {count} 个群聊会移到“{UNGROUPED}”，群聊本身不变。', { name: name, count: count, UNGROUPED: t(UNGROUPED) })
+        : t('“{name}”是空分组。', { name: name }), confirmText: t('删除分组'), danger: true });
       if (!ok) return;
       await api('DELETE', '/api/cluster-groups', { name });
       // Its clusters are drawn under 未分组 by the events; the name's collapse must not carry over to a new group of that name.
       if (collapsedGroups.delete(name)) { writeCollapsedGroups(); render(); }
     }
-  } catch (error) { await noticeDialog(error.message, '分组操作失败'); }
+  } catch (error) { await noticeDialog(error.message, t('分组操作失败')); }
 }
 
 /**
@@ -1385,15 +1474,15 @@ async function renameGroupKeepingView(from, to) {
 function openGroupMenu(name, trigger) {
   const groups = groupList();
   const at = groups.indexOf(name);
-  const items = [{ key: 'rename', label: '改名' }, { key: 'up', label: '上移', off: at <= 0 },
-    { key: 'down', label: '下移', off: at < 0 || at >= groups.length - 1 }, { key: 'delete', label: '删除分组' }];
-  const menu = h('div', { class: 'cluster-menu', role: 'menu', 'aria-label': `分组操作：${name}` },
+  const items = [{ key: 'rename', label: t('改名') }, { key: 'up', label: t('上移'), off: at <= 0 },
+    { key: 'down', label: t('下移'), off: at < 0 || at >= groups.length - 1 }, { key: 'delete', label: t('删除分组') }];
+  const menu = h('div', { class: 'cluster-menu', role: 'menu', 'aria-label': t('分组操作：{name}', { name: name }) },
     items.map((i) => h('button', { type: 'button', role: 'menuitem', disabled: i.off, onclick: () => { void groupAction(name, i.key); } }, i.label)));
   showClusterMenu(`group:${name}`, trigger, menu);
 }
 
-$('new-group').addEventListener('click', () => groupNameDialog('新建分组', '', (name) => api('POST', '/api/cluster-groups', { name }),
-  '可以先建空分组，再把群聊拖进来，或用群聊菜单里的“移到分组”。'));
+$('new-group').addEventListener('click', () => groupNameDialog(t('新建分组'), '', (name) => api('POST', '/api/cluster-groups', { name }),
+  t('可以先建空分组，再把群聊拖进来，或用群聊菜单里的“移到分组”。')));
 
 // Dragging a cluster onto a group moves it there. The cluster menu's "移到分组…" does the same without a pointer.
 const CLUSTER_DRAG = 'application/x-orrery-cluster';
@@ -1423,7 +1512,7 @@ function clusterItem(c) {
   const stalledHere = stalled.forCluster(c.id);
   const stalledLook = stalledBadge(stalledHere, true);
   const stalledTitle = stalledLook.title;
-  const trigger = h('button', { type: 'button', class: 'cluster-menu-trigger', 'aria-label': `群聊操作：${c.name}`,
+  const trigger = h('button', { type: 'button', class: 'cluster-menu-trigger', 'aria-label': t('群聊操作：{name}', { name: c.name }),
     'aria-haspopup': 'menu', 'aria-expanded': String(clusterMenu?.id === c.id), 'data-cluster-menu': c.id,
     onclick: () => clusterMenu?.id === c.id ? closeClusterMenu(true) : openClusterMenu(c.id, trigger),
     onkeydown: (event) => { if (event.key === 'ArrowDown') { event.preventDefault(); openClusterMenu(c.id, trigger); } } }, icon('more'));
@@ -1435,8 +1524,8 @@ function clusterItem(c) {
   },
   h('span', { class: 'cluster-title' }, h('span', { class: 'name' }, c.name),
     stalledHere.length ? h('span', { class: 'stalled-badge', title: stalledTitle, 'aria-label': stalledTitle }, stalledLook.text) : null,
-    unread ? h('span', { class: 'unread-badge', 'aria-label': `${unread} 条未读` }, unreadLabel(unread)) : null),
-  h('span', { class: 'sub muted' }, h('span', { class: 'sub-text' }, `${ms.length} 个群员`, activity ? ` · ${activity}` : ''),
+    unread ? h('span', { class: 'unread-badge', 'aria-label': t('{unread} 条未读', { unread: unread }) }, unreadLabel(unread)) : null),
+  h('span', { class: 'sub muted' }, h('span', { class: 'sub-text' }, t('{count} 个群员', { count: ms.length }), activity ? ` · ${activity}` : ''),
     c.lastMessageAt ? relativeTimeEl(c.lastMessageAt, 'rel-time cluster-time') : null)), trigger);
 }
 
@@ -1445,44 +1534,44 @@ function drawClusterList(clusters) {
   const list = $('cluster-list');
   const sections = sidebarSections(clusters, groupList());
   if (!sections.pinned.length && !sections.groups.length && !sections.archived.length) {
-    list.replaceChildren(emptyState('还没有集群。', { compact: true }));
+    list.replaceChildren(emptyState(t('还没有集群。'), { compact: true }));
     return;
   }
   const groups = sections.groups.map((g) => {
     const open = !collapsedGroups.has(g.name);
-    const label = g.name || UNGROUPED;
+    const label = g.name || t(UNGROUPED);
     const activity = open ? '' : activityOf(g.clusters.flatMap((c) => membersOf(c.id)));
     const unread = open ? 0 : g.clusters.reduce((sum, c) => sum + unreadOf(c), 0);
     const menuId = `group:${g.name}`;
-    const trigger = g.name ? h('button', { type: 'button', class: 'cluster-menu-trigger group-menu-trigger', 'aria-label': `分组操作：${label}`,
+    const trigger = g.name ? h('button', { type: 'button', class: 'cluster-menu-trigger group-menu-trigger', 'aria-label': t('分组操作：{label}', { label: label }),
       'aria-haspopup': 'menu', 'aria-expanded': String(clusterMenu?.id === menuId), 'data-cluster-menu': menuId,
       onclick: () => clusterMenu?.id === menuId ? closeClusterMenu(true) : openGroupMenu(g.name, trigger),
       onkeydown: (event) => { if (event.key === 'ArrowDown') { event.preventDefault(); openGroupMenu(g.name, trigger); } } }, icon('more')) : null;
     return h('div', { class: 'group', role: 'group', 'aria-label': label, ...dropTarget(g.name) },
       h('div', { class: 'group-row', oncontextmenu: trigger ? (event) => { event.preventDefault(); openGroupMenu(g.name, trigger); } : null },
         h('button', {
-          type: 'button', class: 'group-head', 'aria-expanded': String(open), title: open ? `折叠「${label}」` : `展开「${label}」`,
+          type: 'button', class: 'group-head', 'aria-expanded': String(open), title: open ? t('折叠「{label}」', { label: label }) : t('展开「{label}」', { label: label }),
           onclick: () => toggleGroup(g.name),
         },
         icon('chevron-down', 'caret'), h('span', { class: 'group-name' }, label),
         activity ? h('span', { class: 'busy' }, activity) : null,
-        unread ? h('span', { class: 'unread-badge', 'aria-label': `${unread} 条未读` }, unreadLabel(unread)) : null,
+        unread ? h('span', { class: 'unread-badge', 'aria-label': t('{unread} 条未读', { unread: unread }) }, unreadLabel(unread)) : null,
         h('span', { class: 'count' }, String(g.clusters.length))), trigger),
-      open ? g.clusters.length ? g.clusters.map(clusterItem) : emptyState('空分组：把群聊拖到这里，或用群聊菜单的“移到分组”', { compact: true }) : null);
+      open ? g.clusters.length ? g.clusters.map(clusterItem) : emptyState(t('空分组：把群聊拖到这里，或用群聊菜单的“移到分组”'), { compact: true }) : null);
   });
   const archivedUnread = sections.archived.reduce((sum, c) => sum + unreadOf(c), 0);
   list.replaceChildren(...[
-    sections.pinned.length ? h('section', { class: 'sidebar-section', 'aria-label': '置顶' },
-      h('div', { class: 'sidebar-section-title' }, '置顶'), sections.pinned.map(clusterItem)) : null,
+    sections.pinned.length ? h('section', { class: 'sidebar-section', 'aria-label': t('置顶') },
+      h('div', { class: 'sidebar-section-title' }, t('置顶')), sections.pinned.map(clusterItem)) : null,
     ...groups,
-    sections.archived.length ? h('section', { class: 'sidebar-section', 'aria-label': '已归档' },
+    sections.archived.length ? h('section', { class: 'sidebar-section', 'data-archive-group': '', 'aria-label': t('已归档') },
       h('button', { type: 'button', class: 'group-head', 'aria-expanded': String(archiveOpen), onclick: () => {
         archiveOpen = !archiveOpen;
         try { localStorage.setItem(ARCHIVE_OPEN_KEY, archiveOpen ? '1' : '0'); } catch { /* keep the in-memory choice */ }
         render();
       } },
-        icon('chevron-down', 'caret'), h('span', { class: 'group-name' }, '已归档'),
-        !archiveOpen && archivedUnread ? h('span', { class: 'unread-badge', 'aria-label': `${archivedUnread} 条未读` }, unreadLabel(archivedUnread)) : null,
+        icon('chevron-down', 'caret'), h('span', { class: 'group-name' }, t('已归档')),
+        !archiveOpen && archivedUnread ? h('span', { class: 'unread-badge', 'aria-label': t('{archivedUnread} 条未读', { archivedUnread: archivedUnread }) }, unreadLabel(archivedUnread)) : null,
         h('span', { class: 'count' }, String(sections.archived.length))), archiveOpen ? sections.archived.map(clusterItem) : null) : null,
   ].filter(Boolean));
 }
@@ -1519,7 +1608,7 @@ function renderSidebar(clusters) {
     syncClusterMenuAnchor();
     if (focusedId) {
       const target = [...$('cluster-list').querySelectorAll('[data-cluster-menu]')].find((item) => item.dataset.clusterMenu === focusedId);
-      (target ?? $('cluster-list').querySelector('[aria-label="已归档"] .group-head'))?.focus({ preventScroll: true });
+      (target ?? $('cluster-list').querySelector('[data-archive-group] .group-head'))?.focus({ preventScroll: true });
     }
   });
   $('open-conversations').classList.toggle('active', S.sel.overview);
@@ -1527,13 +1616,13 @@ function renderSidebar(clusters) {
   else $('open-conversations').removeAttribute('aria-current');
   const btn = $('pause');
   btn.setAttribute('aria-pressed', String(S.paused));
-  setText($('pause-label'), S.paused ? '投递已暂停' : '投递进行中');
-  btn.title = S.paused ? '点击恢复投递' : '点击暂停全部投递';
+  setText($('pause-label'), S.paused ? t('投递已暂停') : t('投递进行中'));
+  btn.title = S.paused ? t('点击恢复投递') : t('点击暂停全部投递');
   $('paused-banner').hidden = !S.paused || !S.sel.cluster;
   $('cluster-paused-banner').hidden = !pausedClusters.has(S.sel.cluster);
   $('settings-pause').textContent = S.paused
-    ? '已暂停：不会开始新的轮次，正在跑的轮次会跑完。用左栏底部的开关恢复。'
-    : '投递进行中。左栏底部的开关可以随时暂停全部投递。';
+    ? t('已暂停：不会开始新的轮次，正在跑的轮次会跑完。用左栏底部的开关恢复。')
+    : t('投递进行中。左栏底部的开关可以随时暂停全部投递。');
   renderLimits();
 }
 
@@ -1585,7 +1674,7 @@ function renderMemberToggle(cluster) {
   btn.hidden = !cluster;
   const open = Boolean(panelView());
   btn.setAttribute('aria-expanded', String(open));
-  btn.title = open ? '收起群员面板' : '打开群员面板：成员页、改名和头像、移出、添加成员';
+  btn.title = open ? t('收起群员面板') : t('打开群员面板：成员页、改名和头像、移出、添加成员');
   const members = cluster ? membersOf(cluster.id) : [];
   const sig = [S.identity, ...members.map((m) => [m.id, statusOf(m)].join('|'))].join('\n');
   if (sig === toggleSig) return;
@@ -1612,7 +1701,7 @@ function renderChat() {
   const unsynced = [...messageMetadata.values()].filter((item) => item.clusterId === cid && item.reportedFailure);
   $('message-sync-banner').hidden = !unsynced.length;
   $('message-sync-retry').disabled = !unsynced.some((item) => item.failed && !item.inFlight);
-  $('message-sync-retry').textContent = $('message-sync-retry').disabled ? '正在重试…' : '重试同步';
+  $('message-sync-retry').textContent = $('message-sync-retry').disabled ? t('正在重试…') : t('重试同步');
   const box = $('messages');
   box.hidden = S.sel.overview;
   $('conversations-view').hidden = !S.sel.overview;
@@ -1622,11 +1711,13 @@ function renderChat() {
   const problemCount = cluster && problems.cid === cid ? problems.count : 0;
   $('delivery-problems').hidden = !problemCount;
   $('delivery-problems').dataset.count = problemCount > 99 ? '99+' : problemCount;
-  iconLabel($('delivery-problems'), `有问题的投递 ${problemCount}`);
+  iconLabel($('delivery-problems'), t('有问题的投递 {problemCount}', { problemCount: problemCount }));
   const noMembers = Boolean(cluster && !membersOf(cid).length);
   $('empty-members').hidden = !noMembers;
-  setText($('chat-title'), S.sel.overview ? '全部对话' : cluster ? cluster.name : 'orrery');
+  setText($('chat-title'), S.sel.overview ? t('全部对话') : cluster ? cluster.name : 'orrery');
   if (cluster && usageFor !== cid) { usageFor = cid; S.usage = null; loadUsageSoon(0); }
+  renderCommandRuns(cluster && !S.sel.overview ? cid : null);
+  pluginUi.showCluster(cluster && !S.sel.overview ? cid : null);
   setText($('chat-usage'), cluster && S.usage?.clusterId === cid ? clusterUsageText(S.usage) : '');
   renderMemberToggle(cluster);
   renderWindowBar(cluster);
@@ -1643,9 +1734,9 @@ function renderChat() {
   if (!cluster) {
     box.dataset.cluster = '';
     box.replaceChildren(S.clusters.size
-      ? emptyState('从左侧选择一个集群。')
-      : emptyState('集群是一个群聊：成员是各家 coding agent 的对话。',
-        { action: h('button', { type: 'button', class: 'primary', onclick: openCreate }, '新建第一个集群') }));
+      ? emptyState(t('从左侧选择一个集群。'))
+      : emptyState(t('集群是一个群聊：成员是各家 coding agent 的对话。'),
+        { action: h('button', { type: 'button', class: 'primary', onclick: openCreate }, t('新建第一个集群')) }));
     return;
   }
   renderComposer(chat, `c:${cid}`);
@@ -1664,13 +1755,13 @@ function renderChat() {
   const anchor = w?.anchor && !switched ? chatAnchor(box, ids) : null;
   if (w) w.anchor = false;
   if (!ids.length) {
-    const placeholder = !w || w.loading === 'latest' ? '正在读取消息…'
-      : w.failed ? '读取消息失败。可以切到别的群再回来重试。'
-        : loaded.length ? '已加载的消息里没有符合筛选的。可以在“筛选”里放宽条件。' : '还没有消息。用 @名字 或 @all 选择接收成员。';
+    const placeholder = !w || w.loading === 'latest' ? t('正在读取消息…')
+      : w.failed ? t('读取消息失败。可以切到别的群再回来重试。')
+        : loaded.length ? t('已加载的消息里没有符合筛选的。可以在“筛选”里放宽条件。') : t('还没有消息。用 @名字 或 @all 选择接收成员。');
     // Everything loaded is filtered out: the same criteria can still be looked for in the whole history.
     const filtered = !w?.failed && w?.loading !== 'latest' && loaded.length > 0;
     if (box.firstElementChild?.dataset.placeholder !== placeholder) {
-      const el = emptyState(placeholder, { action: filtered ? h('button', { type: 'button', class: 'small search-history', onclick: () => chatSearch.open(cid, criteriaFromFilter(chatFilter, cid)) }, '在全部历史里搜索') : null });
+      const el = emptyState(placeholder, { action: filtered ? h('button', { type: 'button', class: 'small search-history', onclick: () => chatSearch.open(cid, criteriaFromFilter(chatFilter, cid)) }, t('在全部历史里搜索')) : null });
       el.dataset.placeholder = placeholder;
       box.replaceChildren(el);
     }
@@ -1695,7 +1786,7 @@ function renderChat() {
     if (c && c.sig === sig && c.titles !== titles) {
       c.el.querySelectorAll('.message-task-list > button').forEach((button, k) => {
         const taskId = msg.taskIds[k];
-        if (taskId) button.textContent = taskTitles[k] ?? `任务 ${taskId.slice(0, 8)}`;
+        if (taskId) button.textContent = taskTitles[k] ?? t('任务 {value}', { value: taskId.slice(0, 8) });
       });
       c.titles = titles;
     }
@@ -1724,7 +1815,11 @@ function renderChat() {
       msgEls.set(id, c);
     }
     // In window order: older messages put in front, a replaced window's messages moved; the leftovers are cut below.
-    if (box.children[i] !== c.el) box.insertBefore(c.el, box.children[i] ?? null);
+    if (box.children[i] !== c.el) {
+      // A kept element coming back (a filter, a jump or another cluster took it out): plugin marks may have changed meanwhile.
+      if (!c.el.isConnected) pluginUi.refreshMarksIn(c.el);
+      box.insertBefore(c.el, box.children[i] ?? null);
+    }
   });
   while (ids.length && box.children.length > ids.length) box.lastChild.remove();
   const toBottom = Boolean(w?.toBottom && !w.loading && ids.length);   // "回到最新" (or the first open) has its window
@@ -1928,7 +2023,7 @@ async function openMessage(cid, id, { receipts = false } = {}) {
     const at = list.findIndex((m) => m.id === id);
     if (!jumpCurrent(jump, jumpToken)) return keep();   // cancelled meanwhile (filter, another jump): nothing more happens
     jump = nextJump(jump, { type: 'answer', token: jumpToken, found: at >= 0 });
-    if (at < 0) { keep(); noticeDialog('读不到这条消息：它不在这个群的记录里。', '无法跳转'); return; }
+    if (at < 0) { keep(); noticeDialog(t('读不到这条消息：它不在这个群的记录里。'), t('无法跳转')); return; }
     // Asked for PAGE / 2 older and PAGE - PAGE / 2 - 1 newer: fewer means that end of the cluster was reached.
     commitWindow(cid, fillMessages(list, seq), at >= PAGE / 2, list.length - at - 1 < PAGE - PAGE / 2 - 1, seq);
   } catch (e) {
@@ -1936,7 +2031,7 @@ async function openMessage(cid, id, { receipts = false } = {}) {
     const current = jumpCurrent(jump, jumpToken);
     jump = nextJump(jump, { type: 'failed', token: jumpToken });
     keep();
-    if (current) noticeDialog(`读不到这条消息：${e.message}`, '无法跳转');
+    if (current) noticeDialog(t('读不到这条消息：{message}', { message: e.message }), t('无法跳转'));
   } finally {
     render();
   }
@@ -1948,7 +2043,7 @@ function renderWindowBar(cluster) {
   const w = cluster && !S.sel.overview ? chatWindows.get(cluster.id) : null;
   const shown = Boolean(w && !w.live && (S.clusterMsgs.get(cluster.id) ?? []).length);
   if ($('message-window').hidden === shown) $('message-window').hidden = !shown;
-  if (shown) setText($('message-window-text'), w.newer ? '有新消息。' : '正在查看较早的消息。');
+  if (shown) setText($('message-window-text'), w.newer ? t('有新消息。') : t('正在查看较早的消息。'));
   const older = w?.loading === 'older';
   if ($('messages').classList.contains('loading-older') !== older) $('messages').classList.toggle('loading-older', older);
 }
@@ -2041,21 +2136,21 @@ function renderConversations() {
     const focusedMember = list.contains(active) ? active.closest('[data-conversation-member]')?.dataset.conversationMember : null;
     const items = cards.map(({ row, group, summary, lastAt }) => {
       const groups = row.memberships.map((m, i) => h('button', {
-        type: 'button', class: 'conversation-group', title: `打开 ${m.clusterName} 中的 ${m.memberName}`,
+        type: 'button', class: 'conversation-group', title: t('打开 {clusterName} 中的 {memberName}', { clusterName: m.clusterName, memberName: m.memberName }),
         'data-conversation-member': m.memberId,
         onclick: () => select(m.clusterId, m.memberId),
-      }, h('span', { class: 'conversation-group-name' }, m.clusterName), h('span', { class: 'muted' }, `群内名：${m.memberName}`),
+      }, h('span', { class: 'conversation-group-name' }, m.clusterName), h('span', { class: 'muted' }, t('群内名：{memberName}', { memberName: m.memberName })),
       lastAt[i] ? relativeTimeEl(lastAt[i]) : null));
       return h('li', { class: 'conversation-row' },
         h('div', { class: 'conversation-identity' },
           h('div', { class: 'conversation-kind' }, h('strong', {}, row.harness)),
-          h('span', { class: 'conversation-session' }, `会话 ID：${row.sessionId ?? '不可用'}`),
+          h('span', { class: 'conversation-session' }, t('会话 ID：{value}', { value: row.sessionId ?? t('不可用') })),
           activityEl(summary, group)),
         h('div', { class: 'conversation-groups' }, groups));
     });
     list.replaceChildren(rows.length
       ? h('ul', { class: 'conversation-list' }, items)
-      : emptyState('还没有加入集群的对话。可以新建集群或向已有集群添加成员。'));
+      : emptyState(t('还没有加入集群的对话。可以新建集群或向已有集群添加成员。')));
     if (focusedMember) {
       const replacement = [...list.querySelectorAll('[data-conversation-member]')].find((el) => el.dataset.conversationMember === focusedMember);
       (replacement ?? list).focus({ preventScroll: true });
@@ -2089,44 +2184,44 @@ function renderMatrix() {
     const focused = list.contains(document.activeElement) ? document.activeElement.dataset.matrixKey : null;
     if (!model.columns.length) {
       list.replaceChildren(emptyState(clusters.length
-        ? '没有可显示的群：已归档的群默认不显示，可以勾选上面的“显示已归档的群”。'
-        : '还没有集群。新建集群并添加群员后，这里会按对话和群列出每个对话在哪些群里。'));
+        ? t('没有可显示的群：已归档的群默认不显示，可以勾选上面的“显示已归档的群”。')
+        : t('还没有集群。新建集群并添加群员后，这里会按对话和群列出每个对话在哪些群里。')));
       return;
     }
     if (!model.rowCount) {
-      list.replaceChildren(emptyState('这些群里还没有群员。向群里添加成员后，这里会显示每个对话加入了哪些群。'));
+      list.replaceChildren(emptyState(t('这些群里还没有群员。向群里添加成员后，这里会显示每个对话加入了哪些群。')));
       return;
     }
     const span = model.columns.length + 1;
-    const groupRow = h('tr', { class: 'matrix-col-groups' }, h('th', { class: 'matrix-corner', scope: 'col', rowspan: '2' }, '对话 ＼ 群'),
+    const groupRow = h('tr', { class: 'matrix-col-groups' }, h('th', { class: 'matrix-corner', scope: 'col', rowspan: '2' }, t('对话 ＼ 群')),
       model.columnGroups.map((g) => h('th', { scope: 'colgroup', colspan: String(g.columns.length), class: 'matrix-col-group', title: g.name }, g.name)));
     const clusterRow = h('tr', { class: 'matrix-cols' }, model.columns.map((c) => h('th', { scope: 'col', class: 'matrix-col' },
-      h('button', { type: 'button', class: 'matrix-col-button', 'data-matrix-key': `col:${c.id}`, title: `打开群“${c.name}”`, onclick: () => select(c.id) },
-        h('span', { class: 'matrix-col-name' }, c.name, c.archived ? h('span', { class: 'muted' }, '（已归档）') : null),
-        h('span', { class: 'muted matrix-col-count' }, `${c.memberCount} 人 · ${c.onlineCount} 在线${c.hiddenCount ? ` · ${c.hiddenCount} 隐身` : ''}`)))));
+      h('button', { type: 'button', class: 'matrix-col-button', 'data-matrix-key': `col:${c.id}`, title: t('打开群“{name}”', { name: c.name }), onclick: () => select(c.id) },
+        h('span', { class: 'matrix-col-name' }, c.name, c.archived ? h('span', { class: 'muted' }, t('（已归档）')) : null),
+        h('span', { class: 'muted matrix-col-count' }, t('{memberCount} 人 · {onlineCount} 在线{value}', { memberCount: c.memberCount, onlineCount: c.onlineCount, value: c.hiddenCount ? t(' · {hiddenCount} 隐身', { hiddenCount: c.hiddenCount }) : '' }))))));
     const body = model.rowGroups.flatMap((g) => [
       h('tr', { class: 'matrix-row-group' }, h('th', { scope: 'rowgroup', colspan: String(span) },
         h('span', { class: 'matrix-row-group-name' }, appIcon(g), g.label, h('span', { class: 'muted' }, ` ${g.rows.length}`)))),
       ...g.rows.map((r) => h('tr', {},
-        h('th', { scope: 'row', class: 'matrix-row-head', title: r.sessionId ? `会话 ID：${r.sessionId}` : '' },
+        h('th', { scope: 'row', class: 'matrix-row-head', title: r.sessionId ? t('会话 ID：{sessionId}', { sessionId: r.sessionId }) : '' },
           h('span', { class: 'matrix-row-title' }, r.label),
-          r.cwd ? h('span', { class: 'matrix-row-project muted', title: `项目（工作目录）：${r.cwd}` }, projectName(r.cwd)) : null,
+          r.cwd ? h('span', { class: 'matrix-row-project muted', title: t('项目（工作目录）：{cwd}', { cwd: r.cwd }) }, projectName(r.cwd)) : null,
           h('span', { class: 'matrix-row-meta muted' }, harnessApp(r.harness).name,
             h('span', { class: `matrix-status ${r.status}` }, h('span', { class: `status-dot ${r.status}`, 'aria-hidden': 'true' }), STATUS_WORD[r.status]),
-            r.lastActivityAt ? relativeTimeEl(r.lastActivityAt) : h('span', {}, '暂无活动'))),
+            r.lastActivityAt ? relativeTimeEl(r.lastActivityAt) : h('span', {}, t('暂无活动')))),
         model.columns.map((c) => {
           const cell = r.cells[c.id];
           if (!cell) return h('td', { class: 'matrix-empty' });
           return h('td', {}, h('button', { type: 'button', class: `matrix-cell ${cell.status}`, 'data-matrix-key': `cell:${cell.memberId}`,
-            title: `打开 ${c.name} 中的 ${cell.name}（${STATUS_WORD[cell.status]}${cell.coordinator ? '，协调员' : ''}${cell.hidden ? '，隐身中' : ''}）`, onclick: () => select(c.id, cell.memberId) },
+            title: t('打开 {name} 中的 {name2}（{value}{value2}{value3}）', { name: c.name, name2: cell.name, value: STATUS_WORD[cell.status], value2: cell.coordinator ? t('，协调员') : '', value3: cell.hidden ? t('，隐身中') : '' }), onclick: () => select(c.id, cell.memberId) },
           h('span', { class: 'matrix-cell-name' }, cell.name),
           h('span', { class: 'matrix-cell-status' }, h('span', { class: `status-dot ${cell.status}`, 'aria-hidden': 'true' }), STATUS_WORD[cell.status]),
-          cell.coordinator ? h('span', { class: 'matrix-coordinator' }, '协调员') : null,
+          cell.coordinator ? h('span', { class: 'matrix-coordinator' }, t('协调员')) : null,
           cell.hidden ? hiddenMark() : null));
         }))),
     ]);
     // The same scroll box across redraws, so a live update keeps where the user scrolled to.
-    mountKeepingScroll(list, () => h('div', { class: 'matrix-scroll', tabindex: '0', role: 'region', 'aria-label': '对话与群的矩阵' }),
+    mountKeepingScroll(list, () => h('div', { class: 'matrix-scroll', tabindex: '0', role: 'region', 'aria-label': t('对话与群的矩阵') }),
       h('table', { class: 'matrix' }, h('thead', {}, groupRow, clusterRow), h('tbody', {}, body)));
     if (focused) list.querySelector(`[data-matrix-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
   });
@@ -2137,9 +2232,9 @@ function buildMessage(msg, receiptsOpen = false, slotState = []) {
   const plugin = msg.kind === 'plugin';
   const legacy = parseLegacyTaskNotice(msg);
   const failure = shipFailureNotice(msg);
-  const body = failure ?? (legacy ? legacy.action === 'task.create' ? `任务【${legacy.taskTitle}】已创建，事件 ${legacy.eventId}。`
-    : legacy.action === 'task.edit' ? `任务【${legacy.taskTitle}】已更新，事件 ${legacy.eventId}。`
-      : `${legacy.actionLabel}：任务【${legacy.taskTitle}】，事件 ${legacy.eventId}。` : msg.body);
+  const body = failure ?? (legacy ? legacy.action === 'task.create' ? t('任务【{taskTitle}】已创建，事件 {eventId}。', { taskTitle: legacy.taskTitle, eventId: legacy.eventId })
+    : legacy.action === 'task.edit' ? t('任务【{taskTitle}】已更新，事件 {eventId}。', { taskTitle: legacy.taskTitle, eventId: legacy.eventId })
+      : t('{actionLabel}：任务【{taskTitle}】，事件 {eventId}。', { actionLabel: legacy.actionLabel, taskTitle: legacy.taskTitle, eventId: legacy.eventId }) : msg.body);
   const from = msg.from === 'user' || system || plugin ? null : S.members.get(msg.from);
   const reply = msg.replyTo && messageRef(msg.clusterId, msg.replyTo);
   const deliveries = [...msg.deliveries.values()];
@@ -2149,18 +2244,19 @@ function buildMessage(msg, receiptsOpen = false, slotState = []) {
   const mark = systemMark(msg);
   const jumped = chatRowState(msg, chatFilter, jumpExceptionId(jump, msg.clusterId)) === 'jump';
   return h('article', { class: `msg ${system ? 'system' : plugin ? 'plugin-message' : from ? 'agent' : 'user'}${mark ? ` notice-${mark.level}` : ''}`, tabindex: '-1' },
-    system ? systemAvatar() : plugin ? h('span', { class: 'avatar plugin-avatar', 'aria-hidden': 'true' }, '插件') : from ? avatarEl(from) : userAvatar(),
+    system ? systemAvatar() : plugin ? h('span', { class: 'avatar plugin-avatar', 'aria-hidden': 'true' }, t('插件')) : from ? avatarEl(from) : userAvatar(),
     h('div', {},
       h('div', { class: 'msg-head' },
         h('span', { class: `who${from ? ' link' : ''}`, onclick: from ? () => select(msg.clusterId, from.id) : null }, messageName(msg)),
         // Not colour alone: an icon and a word say it is a warning, and which level.
-        mark ? h('span', { class: `notice-mark ${mark.level}` }, h('span', { class: 'notice-icon', role: 'img', 'aria-label': '警告' }, mark.level === 'problem' ? icon('ban', 'ico-sm') : icon('alert', 'ico-sm')), mark.label) : null,
+        mark ? h('span', { class: `notice-mark ${mark.level}` }, h('span', { class: 'notice-icon', role: 'img', 'aria-label': t('警告') }, mark.level === 'problem' ? icon('ban', 'ico-sm') : icon('alert', 'ico-sm')), mark.label) : null,
         h('span', { class: 'time', title: msg.createdAt }, fmtTime(msg.createdAt)),
-        reply ? h('span', { class: 'reply', title: reply.body }, icon('reply', 'ico-sm'), ` 回复 ${messageName(reply)}：${snippet(reply.body, 24)}`) : null),
+        reply ? h('span', { class: 'reply', title: reply.body }, icon('reply', 'ico-sm'), t(' 回复 {value}：{value2}', { value: messageName(reply), value2: snippet(reply.body, 24) })) : null),
       recipients.length ? h('div', { class: 'msg-recipients' }, recipients.map((id) =>
-        h('span', { class: 'mention link', title: `查看 ${nameOf(id)}`, onclick: () => select(msg.clusterId, id) }, `@${nameOf(id)}`))) : null,
-      body ? h('div', { class: 'msg-body' }, legacy || failure ? body : mdBlocks(markdownBlocks(body), msg)) : null,
-      jumped ? h('div', { class: 'jump-shown' }, '因跳转显示：当前的“筛选”会隐藏这条消息，改动筛选或切换群后不再显示。') : null,
+        h('span', { class: 'mention link', title: t('查看 {value}', { value: nameOf(id) }), onclick: () => select(msg.clusterId, id) }, `@${nameOf(id)}`))) : null,
+      body ? h('div', { class: 'msg-body' }, legacy || failure || plainTextRecord(msg) ? body : mdBlocks(markdownBlocks(body), msg)) : null,
+      pluginUi.marksSlot(msg.clusterId, 'message', msg.id, 2),
+      jumped ? h('div', { class: 'jump-shown' }, t('因跳转显示：当前的“筛选”会隐藏这条消息，改动筛选或切换群后不再显示。')) : null,
       messageTaskDiff(msg, legacy, failure),
       msg.attachments.length ? attachmentsEl(msg) : null,
       noticeLine ? h('div', { class: 'record-only' }, noticeLine) : null,
@@ -2190,16 +2286,16 @@ function renderChatFilter(cluster) {
   if (!panel.childElementCount) {
     const option = (key, label) => h('label', { class: 'chat-filter-option' },
       h('input', { type: 'checkbox', 'data-filter': key, onchange: (e) => setChatFilter(key, e.target.checked) }), label);
-    panel.append(option('warningsOnly', '只看警告（问题和提醒）'),
-      h('label', { class: 'chat-filter-sender' }, h('span', { class: 'chat-filter-group' }, '只看谁的发言'),
+    panel.append(option('warningsOnly', t('只看警告（问题和提醒）')),
+      h('label', { class: 'chat-filter-sender' }, h('span', { class: 'chat-filter-group' }, t('只看谁的发言')),
         h('select', { 'data-filter-sender': '', onchange: (e) => setChatSender(e.target.value) })),
-      h('div', { class: 'chat-filter-group' }, '显示的系统消息'),
-      ...SYSTEM_CATEGORIES.map((category) => option(category, SYSTEM_CATEGORY_LABELS[category])),
+      h('div', { class: 'chat-filter-group' }, t('显示的系统消息')),
+      ...SYSTEM_CATEGORIES.map((category) => option(category, t(SYSTEM_CATEGORY_LABELS[category]))),
       h('p', { class: 'chat-filter-hidden', hidden: true }),
       h('button', { type: 'button', class: 'small chat-filter-search', onclick: () => {
         $('chat-filter').open = false;
         chatSearch.open(S.sel.cluster, criteriaFromFilter(chatFilter, S.sel.cluster));
-      } }, '在全部历史里搜索'));
+      } }, t('在全部历史里搜索')));
   }
   if (!cluster) return;
   const cid = cluster.id;
@@ -2214,7 +2310,7 @@ function renderChatFilter(cluster) {
   const sig = `${cid}|${JSON.stringify(choices)}`;
   if (select.dataset.sig !== sig) {
     select.dataset.sig = sig;
-    select.replaceChildren(h('option', { value: '' }, '所有人'), ...FIXED_SENDERS.map((s) => h('option', { value: s.value }, s.label)),
+    select.replaceChildren(h('option', { value: '' }, t('所有人')), ...FIXED_SENDERS.map((s) => h('option', { value: s.value }, s.label)),
       ...choices.map((c) => h('option', { value: c.value }, c.label)));
   }
   const sender = chatFilter.senders[cid];
@@ -2262,7 +2358,7 @@ function hiddenWarningArrived(m) {
   if (!hiddenWarnings([m], chatFilter)) return;
   const count = (arrivedWarnings.get(m.clusterId) ?? 0) + 1;
   arrivedWarnings.set(m.clusterId, count);
-  if (m.clusterId === S.sel.cluster && !S.sel.overview) setText($('chat-filter-live'), `筛选隐藏了 ${count} 条新到的警告。`);
+  if (m.clusterId === S.sel.cluster && !S.sel.overview) setText($('chat-filter-live'), t('筛选隐藏了 {count} 条新到的警告。', { count: count }));
 }
 $('chat-filter').addEventListener('toggle', () => {
   // Closing the panel after it showed them: the arrivals are seen, no longer new.
@@ -2328,11 +2424,11 @@ function messageCollaboration(msg, slotState = []) {
       if (S.messages.get(msg.id) !== msg) return;
       if (event.target.open) openTaskLinks.add(msg.id); else openTaskLinks.delete(msg.id);
     } },
-  h('summary', {}, `关联任务 ${tasks.length}`),
+  h('summary', {}, t('关联任务 {count}', { count: tasks.length })),
   h('div', { class: 'message-task-list' }, tasks.map((id) => h('button', { type: 'button', class: 'small',
-    onclick: () => workbench.openTask(msg.clusterId, id) }, workbench.lookup(msg.clusterId, 'task', id) ?? `任务 ${id.slice(0, 8)}`)))) : null;
+    onclick: () => workbench.openTask(msg.clusterId, id) }, workbench.lookup(msg.clusterId, 'task', id) ?? t('任务 {value}', { value: id.slice(0, 8) }))))) : null;
   // The link/unlink entry stays outside the fold, so it is reachable while the row is collapsed.
-  const linkButton = workbench.tasksEnabled?.() === false ? null : h('button', { type: 'button', class: 'small', onclick: () => workbench.linkMessage(msg.clusterId, msg) }, '关联任务');
+  const linkButton = workbench.tasksEnabled?.() === false ? null : h('button', { type: 'button', class: 'small', onclick: () => workbench.linkMessage(msg.clusterId, msg) }, t('关联任务'));
   return h('div', { class: 'message-collaboration' }, entries, taskLinks, linkButton);
 }
 
@@ -2369,25 +2465,25 @@ function receiptsToggled(msg, open) {
   loadTimelines(msg);
 }
 
-function receiptDiagnosis(t) {
-  const advice = deliveryAdvice(t);
+function receiptDiagnosis(timeline) {
+  const advice = deliveryAdvice(timeline);
   return h('div', { class: 'receipt-diagnosis' },
-    h('div', {}, h('strong', {}, `当前阶段：${advice.stage}`)),
+    h('div', {}, h('strong', {}, t('当前阶段：{stage}', { stage: advice.stage }))),
     h('div', {}, advice.reason),
-    h('div', {}, `下一步：${advice.next}`),
-    h('ol', { class: 'receipt-timeline' }, t.stages.map((stage) => {
+    h('div', {}, t('下一步：{next}', { next: advice.next })),
+    h('ol', { class: 'receipt-timeline' }, timeline.stages.map((stage) => {
       const view = timelineStageView(stage);
       return h('li', { class: `stage-${stage.status}` }, h('span', {}, view.label), h('span', { title: stage.at ?? '' }, view.value),
-        stage.reason ? h('span', { class: 'receipt-error' }, `原因：${stage.reason}`) : null);
+        stage.reason ? h('span', { class: 'receipt-error' }, t('原因：{reason}', { reason: stage.reason })) : null);
     })),
-    t.batchId ? h('div', { class: 'muted' }, `批次 ${t.batchId.slice(0, 8)}`) : null);
+    timeline.batchId ? h('div', { class: 'muted' }, t('批次 {value}', { value: timeline.batchId.slice(0, 8) })) : null);
 }
 
-function resendAction(msg, d, t) {
-  if (!t?.resend) return null;
-  return [h('button', { type: 'button', class: 'receipt-action', 'data-receipt-delivery': `${d.id}:resend`, disabled: !t.resend.available,
-    onclick: () => openResend(msg, d, t) }, '重发给该成员'),
-  t.resend.available ? null : h('span', { class: 'receipt-blocked' }, resendBlockedText(t.resend.blockedBy))];
+function resendAction(msg, d, timeline) {
+  if (!timeline?.resend) return null;
+  return [h('button', { type: 'button', class: 'receipt-action', 'data-receipt-delivery': `${d.id}:resend`, disabled: !timeline.resend.available,
+    onclick: () => openResend(msg, d, timeline) }, t('重发给该成员')),
+  timeline.resend.available ? null : h('span', { class: 'receipt-blocked' }, resendBlockedText(timeline.resend.blockedBy))];
 }
 
 function receiptsEl(msg, groups, open) {
@@ -2400,42 +2496,42 @@ function receiptsEl(msg, groups, open) {
   const receiptRow = (r, isRecipient) => {
     const d = r.delivery;
     const look = d && deliveryView(d);
-    const t = d && timelines?.items.get(d.id);
+    const timeline = d && timelines?.items.get(d.id);
     const handoff = d?.handoffMessageId && messageRef(msg.clusterId, d.handoffMessageId);
     const target = handoff?.mentions?.[0];
     const fyiStatus = isRecipient && !d
-      ? h('span', { class: 'receipt-fyi' }, r.read || r.acknowledgement ? '仅知会，已读' : '仅知会，未读') : null;
+      ? h('span', { class: 'receipt-fyi' }, r.read || r.acknowledgement ? t('仅知会，已读') : t('仅知会，未读')) : null;
     const ackNode = (!isRecipient || d || r.read || r.acknowledgement)
       ? (r.acknowledgement
-        ? h('span', { title: r.acknowledgement.at }, icon('thumb', 'ico-sm'), ` 主动确认 ${new Date(r.acknowledgement.at).toLocaleString('zh-CN')}`)
-        : h('span', {}, '尚未主动确认'))
+        ? h('span', { title: r.acknowledgement.at }, icon('thumb', 'ico-sm'), t(' 主动确认 {value}', { value: new Date(r.acknowledgement.at).toLocaleString(language() === 'en' ? 'en-US' : 'zh-CN') }))
+        : h('span', {}, t('尚未主动确认')))
       : null;
     return h('div', { class: 'receipt-row' },
       h('span', { class: 'receipt-name' }, nameOf(r.memberId)),
       h('div', { class: 'receipt-status' },
         d ? h('span', { class: `receipt-delivery ${d.outcome ?? d.state}` }, icon(look.icon, 'ico-sm'), ` ${look.label}`) : fyiStatus,
-        r.read?.via === 'read_messages' ? h('span', {}, '已取回') : null,
-        r.read && !r.read.via ? h('span', {}, '读取记录（来源未知）') : null,
+        r.read?.via === 'read_messages' ? h('span', {}, t('已取回')) : null,
+        r.read && !r.read.via ? h('span', {}, t('读取记录（来源未知）')) : null,
         ackNode,
-        d?.error && !t ? h('span', { class: 'receipt-error' }, `原因：${d.error}`) : null,
+        d?.error && !timeline ? h('span', { class: 'receipt-error' }, t('原因：{error}', { error: d.error })) : null,
         d?.handoffMessageId
           ? h('button', { type: 'button', class: 'receipt-action', 'data-receipt-delivery': d.id, disabled: !handoff,
-            onclick: () => openMessage(msg.clusterId, d.handoffMessageId) }, handoff ? `${target === d.memberId ? '已重发' : `已交接给 ${target ? nameOf(target) : '接手成员'}`} · 查看消息` : '已交接 · 消息同步中')
+            onclick: () => openMessage(msg.clusterId, d.handoffMessageId) }, handoff ? t('{value} · 查看消息', { value: target === d.memberId ? t('已重发') : t('已交接给 {value}', { value: target ? nameOf(target) : t('接手成员') }) }) : t('已交接 · 消息同步中'))
           : d && canHandoff(d) ? h('button', { type: 'button', class: 'receipt-action', 'data-receipt-delivery': d.id,
-            onclick: () => openHandoff(msg, d) }, '指定接手') : null,
-        d ? resendAction(msg, d, t) : null,
-        t ? receiptDiagnosis(t) : null));
+            onclick: () => openHandoff(msg, d) }, t('指定接手')) : null,
+        d ? resendAction(msg, d, timeline) : null,
+        timeline ? receiptDiagnosis(timeline) : null));
   };
   return h('details', { class: 'receipts', open, ontoggle: (e) => receiptsToggled(msg, e.target.open) },
     h('summary', {},
-      h('span', { class: 'receipt-counts' }, `回执 ${all.length} 人 · 取回 ${retrieved} · `,
-        h('span', { role: 'img', 'aria-label': `主动确认 ${acknowledged}` }, icon('thumb', 'ico-sm'), ` ${acknowledged}`)),
-      problems ? h('span', { class: 'receipt-warning' }, icon('alert', 'ico-sm'), ` 异常 ${problems}`) : null),
-    timelines?.failed ? h('p', { class: 'receipt-error' }, '读不到投递诊断，收起再展开可以重试。') : null,
-    h('div', { class: 'receipt-list', tabindex: '0', 'aria-label': '成员回执明细' },
-      recipients.length ? h('div', { class: 'receipt-group' }, '投递对象') : null,
+      h('span', { class: 'receipt-counts' }, t('回执 {count} 人 · 取回 {retrieved} · ', { count: all.length, retrieved: retrieved }),
+        h('span', { role: 'img', 'aria-label': t('主动确认 {acknowledged}', { acknowledged: acknowledged }) }, icon('thumb', 'ico-sm'), ` ${acknowledged}`)),
+      problems ? h('span', { class: 'receipt-warning' }, icon('alert', 'ico-sm'), t(' 异常 {problems}', { problems: problems })) : null),
+    timelines?.failed ? h('p', { class: 'receipt-error' }, t('读不到投递诊断，收起再展开可以重试。')) : null,
+    h('div', { class: 'receipt-list', tabindex: '0', 'aria-label': t('成员回执明细') },
+      recipients.length ? h('div', { class: 'receipt-group' }, t('投递对象')) : null,
       recipients.map((r) => receiptRow(r, true)),
-      readOnly.length ? h('div', { class: 'receipt-group' }, '读过的人') : null,
+      readOnly.length ? h('div', { class: 'receipt-group' }, t('读过的人')) : null,
       readOnly.map((r) => receiptRow(r, false))));
 }
 
@@ -2463,14 +2559,14 @@ async function openDeliveryProblems() {
   try {
     data = await api('GET', path);
   } catch (e) {
-    return noticeDialog(`读不到有问题的投递：${e.message}`, '有问题的投递');
+    return noticeDialog(t('读不到有问题的投递：{message}', { message: e.message }), t('有问题的投递'));
   }
   const title = h('h2', { id: 'problems-title' });
   const description = h('p', { id: 'problems-description', class: 'muted' });
   const list = h('ul', { class: 'problem-list' });
   const error = h('p', { class: 'form-error', role: 'alert', hidden: true });
-  const dismissAll = h('button', { type: 'button' }, '全部标为已知');
-  const close = h('button', { type: 'button' }, '关闭');
+  const dismissAll = h('button', { type: 'button' }, t('全部标为已知'));
+  const close = h('button', { type: 'button' }, t('关闭'));
   const dialog = h('dialog', { class: 'handoff-dialog', 'aria-labelledby': 'problems-title', 'aria-describedby': 'problems-description' },
     h('form', {}, title, description, list, error, h('div', { class: 'row end' }, dismissAll, close)));
   let busy = false;
@@ -2479,7 +2575,7 @@ async function openDeliveryProblems() {
   const draw = (focusAt) => {
     Object.assign(problems, { cid, count: data.count });
     render();
-    title.textContent = `有问题的投递（${data.count}）`;
+    title.textContent = t('有问题的投递（{count}）', { count: data.count });
     description.textContent = problemsDescription(data.count, data.items.length);
     dismissAll.hidden = !data.count;
     list.hidden = !data.items.length;
@@ -2492,9 +2588,9 @@ async function openDeliveryProblems() {
       h('span', { class: 'muted' }, ` ${fmtTime(delivery.updatedAt)}`),
       h('div', {}, snippet(msg.body, 60)),
       delivery.error ? h('div', { class: 'receipt-error' }, delivery.error) : null),
-      h('button', { type: 'button', class: 'small problem-dismiss', 'aria-label': `标为已知：${nameOf(delivery.memberId)} 的「${snippet(msg.body, 30)}」`,
+      h('button', { type: 'button', class: 'small problem-dismiss', 'aria-label': t('标为已知：{value} 的「{value2}」', { value: nameOf(delivery.memberId), value2: snippet(msg.body, 30) }),
         onclick: () => exclusive(() => write(`/api/clusters/${encodeURIComponent(cid)}/deliveries/${encodeURIComponent(delivery.id)}/dismiss`, {}, i)) },
-      '标为已知'))));
+      t('标为已知')))));
     if (focusAt === undefined) return;
     const marks = list.querySelectorAll('.problem-dismiss');
     (marks[Math.min(focusAt, marks.length - 1)] ?? close).focus();
@@ -2511,13 +2607,13 @@ async function openDeliveryProblems() {
     try {
       await api('POST', url, body);
     } catch (e) {
-      showError(`没能标为已知：${e.message}`);   // e.g. it stopped being a problem meanwhile: the list read below shows that
+      showError(t('没能标为已知：{message}', { message: e.message }));   // e.g. it stopped being a problem meanwhile: the list read below shows that
     }
     try {
       data = await api('GET', path);
       if (dialog.open) draw(focusAt);
     } catch (e) {
-      showError(`读不到有问题的投递：${e.message}`);
+      showError(t('读不到有问题的投递：{message}', { message: e.message }));
     } finally {
       dismissAll.disabled = false;
       if (dialog.open && !dialog.contains(document.activeElement)) close.focus();
@@ -2539,13 +2635,13 @@ async function openDeliveryProblems() {
 function openResend(msg, delivery, timeline) {
   const confirmation = timeline.resend.needsConfirmation ? h('input', { type: 'checkbox', required: true }) : null;
   const error = h('p', { class: 'form-error', role: 'alert', hidden: true });
-  const cancel = h('button', { type: 'button' }, '取消');
-  const submit = h('button', { type: 'submit', class: 'primary' }, '重发');
+  const cancel = h('button', { type: 'button' }, t('取消'));
+  const submit = h('button', { type: 'submit', class: 'primary' }, t('重发'));
   const dialog = h('dialog', { class: 'handoff-dialog', 'aria-labelledby': 'resend-title', 'aria-describedby': 'resend-description' },
     h('form', {},
-      h('h2', { id: 'resend-title' }, `重发给 ${nameOf(delivery.memberId)}`),
-      h('p', { id: 'resend-description', class: 'muted' }, '会给这个成员发一条引用原文和附件的新消息，原投递记录不变。发送前 Hub 会再确认一次成员在线，不在线就不发，也不会唤醒应用。'),
-      confirmation ? h('label', { class: 'handoff-confirm' }, confirmation, '我知道原消息可能已经执行过，这次重发可能重复执行') : null,
+      h('h2', { id: 'resend-title' }, t('重发给 {value}', { value: nameOf(delivery.memberId) })),
+      h('p', { id: 'resend-description', class: 'muted' }, t('会给这个成员发一条引用原文和附件的新消息，原投递记录不变。发送前 Hub 会再确认一次成员在线，不在线就不发，也不会唤醒应用。')),
+      confirmation ? h('label', { class: 'handoff-confirm' }, confirmation, t('我知道原消息可能已经执行过，这次重发可能重复执行')) : null,
       error,
       h('div', { class: 'row end' }, cancel, submit)));
   let pending = false;
@@ -2571,7 +2667,7 @@ function openResend(msg, delivery, timeline) {
       render();
       dialog.close();
     } catch (e) {
-      showError(e instanceof TypeError ? '未能确认是否已重发，请先查看群聊，再决定要不要重试。' : `没有重发。原因：${e.message}`);
+      showError(e instanceof TypeError ? t('未能确认是否已重发，请先查看群聊，再决定要不要重试。') : t('没有重发。原因：{message}', { message: e.message }));
       const entry = receiptTimelines.get(msg.id);
       if (entry) entry.key = null;   // the member may have gone offline: ask again
       loadTimelines(msg);
@@ -2588,18 +2684,18 @@ function openResend(msg, delivery, timeline) {
 
 function openHandoff(msg, delivery) {
   const target = h('select', { id: 'handoff-target', required: true });
-  const note = h('textarea', { id: 'handoff-note', rows: '4', maxlength: '4000', placeholder: '可填写已完成事项、证据和下一步' });
+  const note = h('textarea', { id: 'handoff-note', rows: '4', maxlength: '4000', placeholder: t('可填写已完成事项、证据和下一步') });
   const confirmation = handoffNeedsConfirmation(delivery) ? h('input', { type: 'checkbox', required: true }) : null;
   const error = h('p', { class: 'form-error', role: 'alert', hidden: true });
-  const cancel = h('button', { type: 'button' }, '取消');
-  const submit = h('button', { type: 'submit', class: 'primary' }, '发送交接');
+  const cancel = h('button', { type: 'button' }, t('取消'));
+  const submit = h('button', { type: 'submit', class: 'primary' }, t('发送交接'));
   const dialog = h('dialog', { class: 'handoff-dialog', 'aria-labelledby': 'handoff-title', 'aria-describedby': 'handoff-description' },
     h('form', {},
-      h('h2', { id: 'handoff-title' }, `指定成员接手 ${nameOf(delivery.memberId)} 的投递`),
-      h('p', { id: 'handoff-description', class: 'muted' }, '交接会发送新的群聊消息，包含原消息、附件、投递原因和你的补充说明。原生应用中的私有上下文不会自动带入，请补充已完成事项、证据和下一步。'),
-      h('label', { for: 'handoff-target' }, '接手成员', target),
-      h('label', { for: 'handoff-note' }, '补充说明（可选）', note),
-      confirmation ? h('label', { class: 'handoff-confirm' }, confirmation, '我已确认原执行已停止') : null,
+      h('h2', { id: 'handoff-title' }, t('指定成员接手 {value} 的投递', { value: nameOf(delivery.memberId) })),
+      h('p', { id: 'handoff-description', class: 'muted' }, t('交接会发送新的群聊消息，包含原消息、附件、投递原因和你的补充说明。原生应用中的私有上下文不会自动带入，请补充已完成事项、证据和下一步。')),
+      h('label', { for: 'handoff-target' }, t('接手成员'), target),
+      h('label', { for: 'handoff-note' }, t('补充说明（可选）'), note),
+      confirmation ? h('label', { class: 'handoff-confirm' }, confirmation, t('我已确认原执行已停止')) : null,
       error,
       h('div', { class: 'row end' }, cancel, submit)));
   let pending = false;
@@ -2607,10 +2703,10 @@ function openHandoff(msg, delivery) {
   refreshHandoffTargets = () => {
     const selected = target.value;
     const available = membersOf(msg.clusterId).filter((m) => m.id !== delivery.memberId);
-    target.replaceChildren(h('option', { value: '', disabled: true, selected: true }, available.length ? '请选择接手成员' : '没有其他可接手的成员'),
+    target.replaceChildren(h('option', { value: '', disabled: true, selected: true }, available.length ? t('请选择接手成员') : t('没有其他可接手的成员')),
       ...available.map((m) => h('option', { value: m.id }, m.name)));
     if (available.some((m) => m.id === selected)) target.value = selected;
-    else if (selected) showError('接手成员已移出，请重新选择。');
+    else if (selected) showError(t('接手成员已移出，请重新选择。'));
   };
   refreshHandoffTargets();
   cancel.addEventListener('click', () => dialog.close());
@@ -2640,9 +2736,9 @@ function openHandoff(msg, delivery) {
       dialog.close();
     } catch (e) {
       refreshHandoffTargets();
-      if (e instanceof TypeError) showError('未能确认交接是否成功；可能已发送，请查看群聊或对同一成员重试。');
-      else if (!target.value) showError('接手成员已移出，请先查看群聊确认是否已有交接，再重新选择。');
-      else showError(`未能确认交接是否成功，请查看群聊或对同一成员重试。原因：${e.message}`);
+      if (e instanceof TypeError) showError(t('未能确认交接是否成功；可能已发送，请查看群聊或对同一成员重试。'));
+      else if (!target.value) showError(t('接手成员已移出，请先查看群聊确认是否已有交接，再重新选择。'));
+      else showError(t('未能确认交接是否成功，请查看群聊或对同一成员重试。原因：{message}', { message: e.message }));
     } finally {
       pending = false;
       cancel.disabled = false;
@@ -2719,7 +2815,7 @@ function bodyNodes(body, msg, scope) {
     if (typeof seg === 'string') return seg;
     if (seg.task) {
       const ref = seg.task.number != null ? `#${seg.task.number}` : `#${seg.task.id.slice(0, 8)}`;
-      return h('a', { class: 'task-ref', href: '#', title: `任务 ${seg.task.number != null ? `#${seg.task.number} ` : ''}${seg.task.id}：${seg.task.title}`, onclick: (e) => {
+      return h('a', { class: 'task-ref', href: '#', title: t('任务 {value}{id}：{title}', { value: seg.task.number != null ? `#${seg.task.number} ` : '', id: seg.task.id, title: seg.task.title }), onclick: (e) => {
         e.preventDefault();
         workbench.openTask(msg.clusterId, seg.task.id);
       } }, `${ref} ${snippet(seg.task.title, 40)}`);
@@ -2733,7 +2829,7 @@ function bodyNodes(body, msg, scope) {
     if (seg.mention) {
       return h('span', {
         class: 'mention link',
-        title: `查看 ${nameOf(seg.mention)}`,
+        title: t('查看 {value}', { value: nameOf(seg.mention) }),
         onclick: msg?.clusterId ? () => select(msg.clusterId, seg.mention) : null,
       }, seg.text);
     }
@@ -2774,17 +2870,17 @@ let panelIdentity = -1;
 let panelCount = 0;    // member events already rendered
 
 const GUARD = {
-  hidden_work: (p) => `隐身中：任务的工作落到它身上（${p.kind}），它收不到，没有人会处理`,
-  max_hops: (p) => `防循环：跳数超过上限 ${p.maxHops}，这条发言被拒收`,
-  max_turns_per_chain: (p) => `防循环：消息链轮次超过上限 ${p.maxTurnsPerChain}，不再开始`,
-  max_turns_per_hour: (p) => `防循环：每小时轮次超过上限 ${p.maxTurnsPerHour}，暂缓开始新轮次`,
-  max_notice_batches_per_hour: (p) => `防循环：每小时系统通知批次超过上限 ${p.maxNoticeBatchesPerHour}，系统通知暂缓投递（留在队列里等待）`,
-  zcode_arm_rate: (p) => `防循环：这个 ZCode 对话 ${p.windowMinutes} 分钟内挂起等待超过 ${p.maxArms} 次，之后挂的等待只挂着、不再使用（已暂停）`,
-  zcode_extra_wait: (p) => `这个 ZCode 对话同时挂了 ${p.waits} 条等待：多出的先挂在一边，可以在 ZCode 里停掉多余的后台任务`,
-  qoder_arm_rate: (p) => `防循环：这个 Qoder 对话 ${p.windowMinutes} 分钟内挂起等待超过 ${p.maxArms} 次，之后挂的等待只挂着、不再使用（已暂停）`,
-  qoder_extra_wait: (p) => `这个 Qoder 对话同时挂了 ${p.waits} 条等待：多出的先挂在一边，可以在 Qoder 的后台进程面板里停掉多余的`,
-  workbuddy_arm_rate: (p) => `防循环：这个 WorkBuddy 对话 ${p.windowMinutes} 分钟内挂起等待超过 ${p.maxArms} 次，之后挂的等待只挂着、不再使用（已暂停）`,
-  workbuddy_extra_wait: (p) => `这个 WorkBuddy 对话同时挂了 ${p.waits} 条等待：多出的先挂在一边，可以在 WorkBuddy 里停掉多余的后台任务`,
+  hidden_work: (p) => t('隐身中：任务的工作落到它身上（{kind}），它收不到，没有人会处理', { kind: p.kind }),
+  max_hops: (p) => t('防循环：跳数超过上限 {maxHops}，这条发言被拒收', { maxHops: p.maxHops }),
+  max_turns_per_chain: (p) => t('防循环：消息链轮次超过上限 {maxTurnsPerChain}，不再开始', { maxTurnsPerChain: p.maxTurnsPerChain }),
+  max_turns_per_hour: (p) => t('防循环：每小时轮次超过上限 {maxTurnsPerHour}，暂缓开始新轮次', { maxTurnsPerHour: p.maxTurnsPerHour }),
+  max_notice_batches_per_hour: (p) => t('防循环：每小时系统通知批次超过上限 {maxNoticeBatchesPerHour}，系统通知暂缓投递（留在队列里等待）', { maxNoticeBatchesPerHour: p.maxNoticeBatchesPerHour }),
+  zcode_arm_rate: (p) => t('防循环：这个 ZCode 对话 {windowMinutes} 分钟内挂起等待超过 {maxArms} 次，之后挂的等待只挂着、不再使用（已暂停）', { windowMinutes: p.windowMinutes, maxArms: p.maxArms }),
+  zcode_extra_wait: (p) => t('这个 ZCode 对话同时挂了 {waits} 条等待：多出的先挂在一边，可以在 ZCode 里停掉多余的后台任务', { waits: p.waits }),
+  qoder_arm_rate: (p) => t('防循环：这个 Qoder 对话 {windowMinutes} 分钟内挂起等待超过 {maxArms} 次，之后挂的等待只挂着、不再使用（已暂停）', { windowMinutes: p.windowMinutes, maxArms: p.maxArms }),
+  qoder_extra_wait: (p) => t('这个 Qoder 对话同时挂了 {waits} 条等待：多出的先挂在一边，可以在 Qoder 的后台进程面板里停掉多余的', { waits: p.waits }),
+  workbuddy_arm_rate: (p) => t('防循环：这个 WorkBuddy 对话 {windowMinutes} 分钟内挂起等待超过 {maxArms} 次，之后挂的等待只挂着、不再使用（已暂停）', { windowMinutes: p.windowMinutes, maxArms: p.maxArms }),
+  workbuddy_extra_wait: (p) => t('这个 WorkBuddy 对话同时挂了 {waits} 条等待：多出的先挂在一边，可以在 WorkBuddy 里停掉多余的后台任务', { waits: p.waits }),
 };
 
 function buildEvent(e) {
@@ -2795,7 +2891,7 @@ function buildEvent(e) {
     const d = e.payload.delivery;
     // Which message: carried by the line (REST pages and 'message' events), loaded, or read by id and filled in.
     const about = h('span', {});
-    const fill = (msg) => { if (msg) about.textContent = `「${snippet(msg.body)}」（来自 ${nameOf(msg.from)}）`; };
+    const fill = (msg) => { if (msg) about.textContent = t('「{value}」（来自 {value2}）', { value: snippet(msg.body), value2: nameOf(msg.from) }); };
     const known = e.payload.message ?? S.messages.get(d.messageId);
     if (known) fill(known);
     else if (e.clusterId) void loadMessageRef(e.clusterId, d.messageId).then(fill);
@@ -2804,16 +2900,16 @@ function buildEvent(e) {
     what = [icon(look.icon, 'ico-sm'), ` ${look.label} `, about, d.error ? `：${d.error}` : ''];
     if (d.state === 'failed') cls = 'error';
   } else if (e.kind === 'guard') {
-    what = (GUARD[e.payload.reason] ?? (() => `防循环：${e.payload.reason}`))(e.payload);
+    what = (GUARD[e.payload.reason] ?? (() => t('防循环：{reason}', { reason: e.payload.reason })))(e.payload);
   } else if (e.kind === 'unread_hint') {
-    what = `向这个对话插入了一行未读提示：${e.payload.count} 条未读`;
+    what = t('向这个对话插入了一行未读提示：{count} 条未读', { count: e.payload.count });
   } else {
     const ev = e.payload.event;
     cls = ev.type;
     if (ev.type === 'text') what = ev.text;
-    else if (ev.type === 'error') what = `错误：${ev.message}`;
+    else if (ev.type === 'error') what = t('错误：{message}', { message: ev.message });
     else {
-      what = [ev.phase === 'start' ? '调用工具 ' : '工具返回 ', h('b', {}, ev.name),
+      what = [ev.phase === 'start' ? t('调用工具 ') : t('工具返回 '), h('b', {}, ev.name),
         ev.detail ? h('span', { class: 'detail' }, ev.detail) : null];
     }
   }
@@ -2832,52 +2928,52 @@ function renderMemberPanel() {
   const status = statusOf(m);
   $('member-avatar').replaceChildren(avatarEl(m, 'lg', { presence: removed ? null : presenceOf(m) }));
   $('member-name').textContent = m.name;
-  $('member-meta').textContent = `${m.harness}${m.model ? ` · ${m.model}` : ''} · ${removed ? '已移出集群' : memberStatusLabel(m, status)}${!removed && m.hiddenAt ? ` · ${HIDDEN_MARK}` : ''}`;
+  $('member-meta').textContent = `${m.harness}${m.model ? ` · ${m.model}` : ''} · ${removed ? t('已移出集群') : memberStatusLabel(m, status)}${!removed && m.hiddenAt ? ` · ${t(HIDDEN_MARK)}` : ''}`;
   const hiddenNow = !removed && Boolean(m.hiddenAt);
-  $('hidden-banner').textContent = hiddenNow ? `${HIDDEN_MARK}：它收不到任何消息，其他成员看不到它，它的 orrery 工具什么也不执行。可以在群员面板或下面的按钮取消隐身。` : '';
+  $('hidden-banner').textContent = hiddenNow ? t('{HIDDEN_MARK}：它收不到任何消息，其他成员看不到它，它的 orrery 工具什么也不执行。可以在群员面板或下面的按钮取消隐身。', { HIDDEN_MARK: t(HIDDEN_MARK) }) : '';
   $('hidden-banner').hidden = !hiddenNow;
   $('member-hidden-row').hidden = removed;
-  $('member-hidden').textContent = hiddenNow ? '取消隐身…' : '设为隐身…';
+  $('member-hidden').textContent = hiddenNow ? t('取消隐身…') : t('设为隐身…');
   $('member-hidden').disabled = hiding.has(m.id);
-  $('member-hidden-note').textContent = hiddenNow ? '取消后从那一刻起照常收消息。' : '隐身期间不收消息，除你和协调员外没人看得到它。';
+  $('member-hidden-note').textContent = hiddenNow ? t('取消后从那一刻起照常收消息。') : t('隐身期间不收消息，除你和协调员外没人看得到它。');
   const hint = offlineHint(m, status, S.harnesses.includes(m.harness));
   $('offline-banner').textContent = hint ?? '';
   $('offline-banner').hidden = !hint;
   const waiting = longWaitingHint(m);
   $('waiting-banner').textContent = waiting ?? '';
   $('waiting-banner').hidden = !waiting;
-  const unset = '由应用决定';
+  const unset = t('由应用决定');
   const pageUsage = S.usage?.clusterId === m.clusterId ? S.usage : null;
   const details = memberDetails(m, pageUsage?.members.find((r) => r.memberId === m.id), null, { usageLoaded: false });
   $('member-info').replaceChildren(...[
-    ['模型', details.model],
-    ['思考强度', m.effort ?? unset],
-    ['来源', m.origin === 'attached' ? '接入的已有对话' : 'orrery 新建的对话'],
-    ['对话标题', details.conversation],
-    ['工作目录', m.cwd],
-    ['会话 ID', m.workerSessionId],
+    [t('模型'), details.model],
+    [t('思考强度'), m.effort ?? unset],
+    [t('来源'), m.origin === 'attached' ? t('接入的已有对话') : t('orrery 新建的对话')],
+    [t('对话标题'), details.conversation],
+    [t('工作目录'), m.cwd],
+    [t('会话 ID'), m.workerSessionId],
   ].flatMap(([k, v]) => [h('dt', {}, k), typeof v === 'string' ? h('dd', {}, v) : h('dd', { title: v.title }, v.text)]));
   const rebinds = S.rebinds.get(m.id) ?? [];
   if (panelFor !== m.id) $('member-rebind').open = rebinds.length > 0;
-  $('member-rebind-title').textContent = rebinds.length ? `换对话（已换 ${rebinds.length} 次）` : '换对话';
+  $('member-rebind-title').textContent = rebinds.length ? t('换对话（已换 {count} 次）', { count: rebinds.length }) : t('换对话');
   $('member-rebind-open').hidden = removed;
   $('member-rebind-list').replaceChildren(...(rebinds.length ? [...rebinds].reverse().map((r) => h('li', {},
-    h('div', { class: 'muted' }, `${fmtTime(r.at)} · 用户已确认原对话停止`),
-    h('div', {}, `原对话 ${r.fromSessionId}`), h('div', {}, `新对话 ${r.toSessionId}`),
-    r.fromCwd === r.toCwd ? null : h('div', { class: 'muted' }, `工作目录 ${r.fromCwd} → ${r.toCwd}`)))
-    : [h('li', {}, emptyState('还没有换过对话。', { compact: true }))]));
+    h('div', { class: 'muted' }, t('{value} · 用户已确认原对话停止', { value: fmtTime(r.at) })),
+    h('div', {}, t('原对话 {fromSessionId}', { fromSessionId: r.fromSessionId })), h('div', {}, t('新对话 {toSessionId}', { toSessionId: r.toSessionId })),
+    r.fromCwd === r.toCwd ? null : h('div', { class: 'muted' }, t('工作目录 {fromCwd} → {toCwd}', { fromCwd: r.fromCwd, toCwd: r.toCwd }))))
+    : [h('li', {}, emptyState(t('还没有换过对话。'), { compact: true }))]));
   $('member-activity').hidden = removed;
   $('member-activity').replaceChildren(activityEl(activitySummary(S.activity.get(m.id), S.activityFailed)));
   const versions = toolVersionView(S.toolVersions, m.id, m.harness);
   const health = memberHealth(S.toolVersions, m);
-  usageRenderer.draw('member-tool-versions', [m.id, versions, health], () => h('details', {}, h('summary', {}, '工具版本'),
-    h('div', {}, `连接状态：${health.connection.label} · 依据：${health.connection.basis}${health.connection.observed ? ` · 观测时间：${health.connection.observed}` : ''}`),
+  usageRenderer.draw('member-tool-versions', [m.id, versions, health], () => h('details', {}, h('summary', {}, t('工具版本')),
+    h('div', {}, t('连接状态：{label} · 依据：{basis}{value}', { label: health.connection.label, basis: health.connection.basis, value: health.connection.observed ? t(' · 观测时间：{observed}', { observed: health.connection.observed }) : '' })),
     h('div', {}, health.problem.known
-      ? (health.problem.text ? `最近投递问题：${health.problem.text}` : '最近投递问题：没有失败或离线记录')
-      : `最近投递问题：未知（${health.problem.text}）`),
-    h('div', {}, `Hub：${versions.hub}`), h('div', {}, `对话最近调用声明：${versions.client.text}`),
-    h('div', {}, `桥 / 插件声明：${versions.bridge.text}`),
-    h('div', { class: 'muted' }, versions.lastCall ? `最近调用：${fmtTime(versions.lastCall)}。桥 / 插件声明不代表对话已刷新。` : '尚无调用记录；客户端未声明时显示未知。'),
+      ? (health.problem.text ? t('最近投递问题：{text}', { text: health.problem.text }) : t('最近投递问题：没有失败或离线记录'))
+      : t('最近投递问题：未知（{text}）', { text: health.problem.text })),
+    h('div', {}, `Hub：${versions.hub}`), h('div', {}, t('对话最近调用声明：{text}', { text: versions.client.text })),
+    h('div', {}, t('桥 / 插件声明：{text}', { text: versions.bridge.text })),
+    h('div', { class: 'muted' }, versions.lastCall ? t('最近调用：{value}。桥 / 插件声明不代表对话已刷新。', { value: fmtTime(versions.lastCall) }) : t('尚无调用记录；客户端未声明时显示未知。')),
     versions.advice ? h('div', { class: 'muted' }, versions.advice) : null), { perMinute: false, preserveOpen: true });
   const usage = S.usage?.clusterId === m.clusterId ? S.usage : null;
   const alert = usageAlertText(usage?.members.find((r) => r.memberId === m.id));
@@ -2901,13 +2997,13 @@ function renderMemberPanel() {
   panelFor = m.id;
   const note = $('member-composer-note');
   note.textContent = native
-    ? `原样投进这个对话，不加 orrery 的信封，和你在应用里自己输入一样。${m.harness === 'claude' ? 'Claude Desktop 里它显示为一张「来自另一个会话」（Message from another session）的消息卡片。' : ''}${m.harness === 'antigravity' ? 'Antigravity 里它显示为一条高优先级的系统消息，并马上开始一轮。' : ''}${m.harness === 'kimi' ? 'Kimi Code 会把它显示成你自己发的消息，所以开头会多一行 [orrery · 来自 user]。' : ''}${m.harness === 'cursor' ? 'Cursor 会把它显示成你自己发的消息，所以开头会多一行 [orrery · 来自 user · #交接号]（交接号用来确认 Cursor 真的提交了）。' : ''}`
+    ? t('原样投进这个对话，不加 orrery 的信封，和你在应用里自己输入一样。{value}{value2}{value3}{value4}', { value: m.harness === 'claude' ? t('Claude Desktop 里它显示为一张「来自另一个会话」（Message from another session）的消息卡片。') : '', value2: m.harness === 'antigravity' ? t('Antigravity 里它显示为一条高优先级的系统消息，并马上开始一轮。') : '', value3: m.harness === 'kimi' ? t('Kimi Code 会把它显示成你自己发的消息，所以开头会多一行 [orrery · 来自 user]。') : '', value4: m.harness === 'cursor' ? t('Cursor 会把它显示成你自己发的消息，所以开头会多一行 [orrery · 来自 user · #交接号]（交接号用来确认 Cursor 真的提交了）。') : '' })
     : '';
   note.hidden = !native;
-  direct.input.placeholder = native ? '直接发给这个对话' : '单独发给这个群员（等同于在群里 @它）';
+  direct.input.placeholder = native ? t('直接发给这个对话') : t('单独发给这个群员（等同于在群里 @它）');
   renderComposer(direct, `m:${m.id}`);
   if (!events.length) {
-    const empty = log.loading ? '正在读取…' : log.error ? '读取失败。关掉这一页再打开可以重试。' : '这个群员还没有收到过消息。';
+    const empty = log.loading ? t('正在读取…') : log.error ? t('读取失败。关掉这一页再打开可以重试。') : t('这个群员还没有收到过消息。');
     if (box.firstElementChild?.textContent !== empty) box.replaceChildren(emptyState(empty));
   } else if (panelCount === 0) box.replaceChildren();
   if (log.prepended && panelCount) {
@@ -3030,14 +3126,14 @@ function renderComposer(c, target) {
     autogrow(c.input);
   }
   const err = sendErrors.get(target);
-  showError(c.errorId, err ? `发送失败：${err}` : null);
+  showError(c.errorId, err ? t('发送失败：{err}', { err: err }) : null);
   c.button.disabled = sending.has(target) || (target.startsWith('m:') && Boolean(S.members.get(target.slice(2))?.removedAt));
   if (c === chat) {
     renderUploads();
     const count = taskDrafts.get(target)?.length ?? 0;
     $('composer-task-count').textContent = count ? String(count) : '';
     $('composer-add').dataset.count = count || '';   // the same count on the "+" itself, seen while the menu is closed
-    $('composer-add').setAttribute('aria-label', count ? `添加（已关联 ${count} 个任务）` : '添加');
+    $('composer-add').setAttribute('aria-label', count ? t('添加（已关联 {count} 个任务）', { count: count }) : t('添加'));
     const refused = attachErrors.text(target);
     $('attach-error').textContent = refused;
     $('attach-error').hidden = !refused;
@@ -3072,7 +3168,7 @@ function changeUploads(target, fn) {
   uploadsVersion++;
   render();
 }
-// shortcut: a removed upload stays on the Hub's disk unsent (docs/security.md); delete it there if that matters.
+// shortcut: a removed upload stays on the Hub's disk unsent (docs/backlog.md); delete it there if that matters.
 const removeUpload = (target, key) => changeUploads(target, (list) => list.filter((u) => u.key !== key));
 
 // Files refused when picked (too big, too many), shown under the target they were added to (ui.js noticeBoard).
@@ -3105,14 +3201,14 @@ async function toggleHidden(memberId) {
     } catch { tasks = null; }   // the dialog then says it could not read them
   }
   const held = tasks ? heldTasks(tasks, memberId) : { executing: [], reviewing: [] };
-  const text = hiddenConfirmText(m, held, hide) + (tasks === null ? '\n（没有读到任务列表，请在任务工作台确认它手上的任务。）' : '');
-  if (!await confirmDialog({ title: hide ? '设为隐身' : '取消隐身', message: text, confirmText: hide ? '设为隐身' : '取消隐身', danger: hide })) return;
+  const text = hiddenConfirmText(m, held, hide) + (tasks === null ? t('\n（没有读到任务列表，请在任务工作台确认它手上的任务。）') : '');
+  if (!await confirmDialog({ title: hide ? t('设为隐身') : t('取消隐身'), message: text, confirmText: hide ? t('设为隐身') : t('取消隐身'), danger: hide })) return;
   hiding.add(memberId);
   render();
   try {
     upsertMember((await api('POST', `/api/members/${encodeURIComponent(memberId)}/hidden`, { hidden: hide })).member);
   } catch (e) {
-    await noticeDialog(`没有${hide ? '设为隐身' : '取消隐身'}：${e.message ?? e}`);
+    await noticeDialog(t('没有{value}：{value2}', { value: hide ? t('设为隐身') : t('取消隐身'), value2: e.message ?? e }));
   } finally {
     hiding.delete(memberId);
     render();
@@ -3196,7 +3292,7 @@ async function send(c, clusterId, payload, onSuccess = null) {
   const files = uploads.get(target) ?? [];
   if (sending.has(target)) return;
   if (files.some((u) => u.state === 'uploading')) {
-    sendErrors.set(target, '还有附件在上传，等上传完再发');
+    sendErrors.set(target, t('还有附件在上传，等上传完再发'));
     return render();
   }
   const ready = files.filter((u) => u.state === 'done');
@@ -3222,15 +3318,107 @@ async function send(c, clusterId, payload, onSuccess = null) {
   }
 }
 
+// ---- plugin commands: "/" at the start of the group chat composer (docs/external-plugins.md「命令」) ----
+// Never a message: choosing a command clears the "/…" text and opens its form (or runs it at once when it has no
+// parameters); the run shows as a chip in the cluster header and ends in a notice on this page only. A "/" that matches
+// no command stays text and is sent as usual.
+
+const runState = createCommandState({ onChange: () => render() });
+const commandLists = new Map();   // clusterId -> { commands, at }: the cluster's "/" list (GET …/plugin-commands)
+const commandLoads = new Map();   // clusterId -> that listing's request in flight
+let commandsFor = null;           // the cluster whose list was last asked for on a switch
+let openForm = null;              // { clusterId, form } while a parameter form is open
+let drawnRuns = '';               // what the chip and the notices last drew (redrawn only when it changes)
+
+function loadCommands(cid) {
+  if (commandLoads.has(cid)) return commandLoads.get(cid);
+  const since = runState.mark();   // runs heard of after this are newer than the listing and stay
+  const load = api('GET', `/api/clusters/${encodeURIComponent(cid)}/plugin-commands`).then((listing) => {
+    commandLists.set(cid, { commands: listing.commands, at: Date.now() });
+    runState.replace(cid, listing.runs, since);
+    commandKeys.refresh();
+    render();
+  }).finally(() => commandLoads.delete(cid));
+  commandLoads.set(cid, load);
+  return load;
+}
+/** The "/" list of the composer's cluster; a list older than 30 s is read again (the menu redraws when it arrives). */
+function commandCandidates() {
+  const cid = chat.target?.slice(2);
+  if (!cid) return [];
+  const list = commandLists.get(cid);
+  if (!list || Date.now() - list.at > 30_000) loadCommands(cid).catch(() => {});
+  return list?.commands ?? [];
+}
+function closeCommandForm(focus = true) {
+  unmountCommandForm($('command-form-slot'));
+  openForm = null;
+  if (focus) chat.input.focus();
+}
+function chooseCommand(c) {
+  const cid = chat.target?.slice(2);
+  if (!cid) return;
+  closeCommandForm(false);
+  if (!c.params.length) { void startCommand(cid, c, {}, null); return; }
+  const form = commandForm(c, {
+    members: membersOf(cid).map((m) => ({ id: m.id, name: m.name })),
+    onRun: (values) => startCommand(cid, c, values, form),
+    onCancel: () => closeCommandForm(),
+  });
+  openForm = { clusterId: cid, form };
+  // Directly above the composer but outside its <form>: nothing typed in the command form can submit the chat message.
+  mountCommandForm($('command-form-slot'), form.el);
+  form.focus();
+}
+async function startCommand(cid, c, values, form) {
+  const since = runState.mark();
+  try {
+    const { run } = await api('POST', `/api/clusters/${encodeURIComponent(cid)}/plugin-commands/run`, { pluginId: c.pluginId, command: c.id, arguments: values });
+    if (form && openForm?.form === form) closeCommandForm();
+    runState.apply(run, false, since);
+  } catch (e) {
+    const message = e.message ?? String(e);
+    if (form && openForm?.form === form) {
+      if (e.data?.field) form.showErrors({ [e.data.field]: message });
+      else form.setError(message);
+    } else runState.local(cid, 'failed', t('「{title}」没有运行', { title: c.title }), message);
+  }
+  render();
+}
+async function cancelCommandRun(run) {
+  const since = runState.mark();
+  try {
+    runState.apply((await api('POST', `/api/clusters/${encodeURIComponent(run.clusterId)}/plugin-runs/${encodeURIComponent(run.runId)}/cancel`, {})).run, false, since);
+  } catch (e) {
+    runState.local(run.clusterId, 'failed', t('「{title}」没有取消', { title: run.title }), e.message ?? String(e));
+  }
+  render();
+}
+/** The header chip and the notices of the shown cluster only (`cid` null: none); a form of another cluster closes. */
+function renderCommandRuns(cid) {
+  if (cid && commandsFor !== cid) { commandsFor = cid; loadCommands(cid).catch(() => {}); }
+  if (openForm && openForm.clusterId !== cid) closeCommandForm(false);
+  const runs = cid ? runState.active(cid) : [];
+  const notices = cid ? runState.notices(cid) : [];
+  const drawn = JSON.stringify([cid, runs, notices.map((n) => n.key)]);
+  if (drawn === drawnRuns) return;
+  drawnRuns = drawn;
+  drawRuns({ details: $('plugin-runs'), summary: $('plugin-run-chip'), panel: $('plugin-run-panel') }, runs, { onCancel: cancelCommandRun });
+  drawNotices($('run-notices'), notices, (key) => { runState.dismiss(key); render(); });
+}
+const commandKeys = attachCommands(chat.input, $('command-menu'), commandCandidates, chooseCommand);
+
 const mentionKeys = attachMentions(chat.input, $('mention-menu'), () => [
   ...membersOf(S.sel.cluster).map((m) => ({ name: m.name, member: m })),
   { name: 'all', member: null },
 ]);
 const skillKeys = attachSkills(chat.input, $('skill-menu'), () => S.skills);
 const taskKeys = attachTaskRefs(chat.input, $('task-menu'), (query) => taskCandidates(chat.target?.slice(2), query));
-submitOnEnter(chat.input, chat.form, (e) => mentionKeys(e) || skillKeys(e) || taskKeys(e));
+submitOnEnter(chat.input, chat.form, (e) => commandKeys(e) || mentionKeys(e) || skillKeys(e) || taskKeys(e));
 chat.form.addEventListener('submit', (e) => {
   e.preventDefault();
+  // A second guard besides the form living outside: while focus is in an open command form, no chat message goes.
+  if (!chatSubmitAllowed(openForm?.form.el, document.activeElement)) return;
   // The target comes from the binding, not S.sel: right after a switch the textarea still shows the old target.
   if (chat.target) {
     const target = chat.target;
@@ -3265,32 +3453,64 @@ $('scrim').addEventListener('click', () => {
 // ---- settings dialog (anti-loop limits; the pause switch stays in the sidebar, the dialog shows its state) ----
 
 const settingsDialog = $('settings-dialog');
-const pluginSettings = createPluginSettings(api, $('plugin-list'));
-const settingsFrame = initSettings(settingsDialog);
+const pluginConfig = createPluginConfig(api);
+const pluginSettings = createPluginSettings(api, $('plugin-list'), pluginConfig.openPlugin);
+let installPanel = null;
+function disposeInstallPanel() {
+  const panel = installPanel;
+  installPanel = null;
+  // If a request is still running, its old panel cleans up only its own preview when it finishes.
+  void panel?.dispose().catch(() => {});
+}
+
+function mountUpdatePanel() {
+  mountUpdates($('updates-settings'), { api: featureApi, onState: (state) => {
+    const button = $('open-settings');
+    button.toggleAttribute('data-update-available', state.status === 'available');
+    const label = state.status === 'available' ? t('设置 · 新版本 {version}', { version: state.latestVersion }) : t('设置');
+    button.title = label;
+    button.setAttribute('aria-label', label);
+  } });
+}
+
+async function confirmLanguageReload() {
+  if (!reloadWouldLose(unsaved({ fromSettings: true }))) return true;
+  return confirmDialog({
+    title: t('切换语言并刷新页面？'),
+    message: t('切换语言会刷新页面，未发送的草稿、附件和没保存的编辑会丢失。请先发送或复制，再切换语言。'),
+    confirmText: t('切换并刷新'), danger: true,
+  });
+}
+const settingsFrame = initSettings(settingsDialog, undefined, { beforeLanguageChange: confirmLanguageReload });
 $('open-settings').addEventListener('click', () => {
   render();
   settingsFrame.opened();
   settingsDialog.showModal();
   pluginSettings.load();
+  disposeInstallPanel();
+  installPanel = mountPluginInstall($('plugin-install-settings'), { api: featureApi, onInstalled: () => pluginSettings.load() });
 });
 $('settings-close').addEventListener('click', () => settingsDialog.close());
-settingsDialog.addEventListener('close', () => $('open-settings').focus());
+settingsDialog.addEventListener('close', () => {
+  disposeInstallPanel();
+  $('open-settings').focus();
+});
 $('usage-alert-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const turnTokens = Number($('usage-alert-turn').value), conversationTokens = Number($('usage-alert-conversation').value);
   if (!Number.isSafeInteger(turnTokens) || turnTokens < 0 || !Number.isSafeInteger(conversationTokens) || conversationTokens < 0) {
-    return showError('usage-alert-error', '请输入非负整数。');
+    return showError('usage-alert-error', t('请输入非负整数。'));
   }
   $('usage-alert-save').disabled = true;
   showError('usage-alert-error', null);
   try { await api('PATCH', '/api/settings', { usageAlert: { turnTokens, conversationTokens } }); }
-  catch (error) { showError('usage-alert-error', `保存失败：${error.message}`); }
+  catch (error) { showError('usage-alert-error', t('保存失败：{message}', { message: error.message })); }
   finally { $('usage-alert-save').disabled = false; }
 });
 
 $('quit').addEventListener('click', async () => {
   const ok = await confirmDialog({
-    title: '退出 orrery？', message: '退出后 Hub 停止，群员收不到新消息，直到你再次打开 orrery。', confirmText: '退出', danger: true,
+    title: t('退出 orrery？'), message: t('退出后 Hub 停止，群员收不到新消息，直到你再次打开 orrery。'), confirmText: t('退出'), danger: true,
   });
   if (!ok) return;   // cancelled: nothing is sent
   quitting = true;   // before the request: the Hub drops this page's stream while it closes
@@ -3301,7 +3521,7 @@ $('quit').addEventListener('click', async () => {
   } catch (e) {
     quitting = false;
     if (stream?.readyState === EventSource.CLOSED) connect(S.lastSeq, true);
-    noticeDialog(`退出失败：${e.message}`);
+    noticeDialog(t('退出失败：{message}', { message: e.message }));
   }
 });
 
@@ -3310,7 +3530,7 @@ $('pause').addEventListener('click', async () => {
     // The resulting 'pause' event updates S.paused; the response could be older than a newer event.
     await api('POST', '/api/pause', { paused: !S.paused });
   } catch (e) {
-    noticeDialog(`切换暂停失败：${e.message}`);
+    noticeDialog(t('切换暂停失败：{message}', { message: e.message }));
   }
 });
 
@@ -3332,7 +3552,7 @@ for (const f of NOTIFY_FORMS) {
       await api('PATCH', '/api/settings', sub.body);
       f.stale = true;
     } catch (e) {
-      err.textContent = `保存失败：${e.message}`;
+      err.textContent = t('保存失败：{message}', { message: e.message });
       err.hidden = false;
       try { setSettings(await api('GET', '/api/settings')); } catch { /* keep what we have */ }
       f.stale = true;
@@ -3367,7 +3587,7 @@ for (const f of LIMIT_FORMS) {
       await api('PATCH', '/api/settings', sub.body);
       f.stale = true;
     } catch (e) {
-      err.textContent = `保存失败：${e.message}`;
+      err.textContent = t('保存失败：{message}', { message: e.message });
       err.hidden = false;
       try { setSettings(await api('GET', '/api/settings')); } catch { /* keep what we have */ }
       f.stale = true;
@@ -3396,7 +3616,7 @@ function presetPicker(onPick = () => {}, container = null) {
   const render = () => {
     el.replaceChildren(...S.avatars.map((name) => h('button', {
       type: 'button', class: `preset-avatar${selected === name ? ' selected' : ''}`, 'aria-pressed': String(selected === name),
-      title: `使用预设头像 ${name}`,
+      title: t('使用预设头像 {name}', { name: name }),
       onclick: () => {
         selected = selected === name ? null : name;
         onPick(selected);
@@ -3444,7 +3664,7 @@ function memberEditor(member, onSaved = () => {}) {
       dirty = false;
       onSaved();
     } catch (e) {
-      setError(`保存失败：${e.message}`);
+      setError(t('保存失败：{message}', { message: e.message }));
     } finally {
       part('save').disabled = false;
     }
@@ -3502,19 +3722,19 @@ const dialog = $('create-dialog');
 let addToCluster = null;
 let harnessForms = [];   // [{ harness, check, pick, row, body, setShown(on), revealProblem(), refreshPresets(), choice() }] — async choice() returns the input of harnessSpecs (ui.js)
 
-const NAME_HINT = '只允许字母、数字、汉字、_ . -，不含空格；不填按模型命名';
-const CLAUDE_HINT = '原生 Claude 只能接入已有会话：先在 Claude Desktop 里新建一个本地会话并发一句话（会话要能加载 orrery 桥，见 README「原生模式：Claude」），再点「刷新」，选它的项目并勾选它。会话在 Desktop 里开着时显示在线。';
-const ANTIGRAVITY_HINT = '原生 Antigravity 只能接入 Antigravity 2.0 里已有、并且打开过工作区的对话：先按 README「原生模式：Antigravity」装好并启用 orrery sidecar、hook 和 MCP 条目，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。应用开着、sidecar 已启用时显示在线。';
-const ZCODE_HINT = '原生 ZCode 只能接入 ZCode 里已有的本地工作区对话：先按 README「原生模式：ZCode」在 ZCode 里加好 orrery 的 MCP 条目，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；ZCode 每次重启后要再说一次。';
-const WORKBUDDY_HINT = '原生 WorkBuddy 只能接入 WorkBuddy 里已有的本地对话：先按 README「原生模式：WorkBuddy」在 WorkBuddy 里添加并信任 orrery 的 stdio MCP 服务器，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；对话进程被回收后要再说一次。';
-const QODER_HINT = '原生 Qoder 只能接入 Qoder 里已有的对话：先按 README「原生模式：Qoder」装好 orrery 的 Qoder 插件，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；Qoder 每次重启后要再说一次。「每次询问」审批模式下等待命令每次都要你点允许，不承诺无人值守。';
-const CURSOR_HINT = '原生 Cursor 只能接入 Cursor 里已有、跑过至少一轮的 agent 对话：先按 README「原生模式：Cursor」装好 orrery 的 Cursor 插件（hook 和 MCP），在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。每轮结束后对话挂着等待时显示在线；离线时在 Cursor 里对它说一句话，这一轮结束后重新上线。投进来的消息显示成你自己发的、首行带 [orrery · 来自 …]。';
+const NAME_HINT = t('只允许字母、数字、汉字、_ . -，不含空格；不填按模型命名');
+const CLAUDE_HINT = t('原生 Claude 只能接入已有会话：先在 Claude Desktop 里新建一个本地会话并发一句话（会话要能加载 orrery 桥，见 README「原生模式：Claude」），再点「刷新」，选它的项目并勾选它。会话在 Desktop 里开着时显示在线。');
+const ANTIGRAVITY_HINT = t('原生 Antigravity 只能接入 Antigravity 2.0 里已有、并且打开过工作区的对话：先按 README「原生模式：Antigravity」装好并启用 orrery sidecar、hook 和 MCP 条目，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。应用开着、sidecar 已启用时显示在线。');
+const ZCODE_HINT = t('原生 ZCode 只能接入 ZCode 里已有的本地工作区对话：先按 README「原生模式：ZCode」在 ZCode 里加好 orrery 的 MCP 条目，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；ZCode 每次重启后要再说一次。');
+const WORKBUDDY_HINT = t('原生 WorkBuddy 只能接入 WorkBuddy 里已有的本地对话：先按 README「原生模式：WorkBuddy」在 WorkBuddy 里添加并信任 orrery 的 stdio MCP 服务器，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；对话进程被回收后要再说一次。');
+const QODER_HINT = t('原生 Qoder 只能接入 Qoder 里已有的对话：先按 README「原生模式：Qoder」装好 orrery 的 Qoder 插件，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；Qoder 每次重启后要再说一次。「每次询问」审批模式下等待命令每次都要你点允许，不承诺无人值守。');
+const CURSOR_HINT = t('原生 Cursor 只能接入 Cursor 里已有、跑过至少一轮的 agent 对话：先按 README「原生模式：Cursor」装好 orrery 的 Cursor 插件（hook 和 MCP），在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。每轮结束后对话挂着等待时显示在线；离线时在 Cursor 里对它说一句话，这一轮结束后重新上线。投进来的消息显示成你自己发的、首行带 [orrery · 来自 …]。');
 /** The Antigravity hint, plus the language server version the connected sidecar reported (read when the form opens). */
 function antigravityHint() {
   const version = h('span');
   api('GET', '/api/harness-modes').then((modes) => {
     const v = modes.find((m) => m.harness === 'antigravity')?.bridgeVersion;
-    version.textContent = v ? ` 当前连着的 Antigravity 语言服务器版本：${v}。` : ' 现在没有 sidecar 连着 Hub。';
+    version.textContent = v ? t(' 当前连着的 Antigravity 语言服务器版本：{v}。', { v: v }) : t(' 现在没有 sidecar 连着 Hub。');
   }, () => {});
   return h('p', { class: 'hint' }, ANTIGRAVITY_HINT, version);
 }
@@ -3563,7 +3783,7 @@ const takenNames = () => new Set(addToCluster ? membersOf(addToCluster).map((m) 
  * adds -2 when two members of one submission would share it); emptied, the Hub names the member itself.
  */
 function nameField(auto) {
-  const input = h('input', { placeholder: '不填按模型命名', title: NAME_HINT });
+  const input = h('input', { placeholder: t('不填按模型命名'), title: NAME_HINT });
   let edited = false;
   input.addEventListener('input', () => { edited = Boolean(input.value.trim()); });
   const update = () => { if (!edited) input.value = auto(); };
@@ -3579,7 +3799,7 @@ function nameField(auto) {
  * that is sent ('' for none) with the editors' precedence (editFields: upload, then emoji, then preset).
  */
 function avatarFields(harness) {
-  const emoji = h('input', { placeholder: '例如 🦊', maxlength: 16 });
+  const emoji = h('input', { placeholder: t('例如 🦊'), maxlength: 16 });
   const fileInput = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/gif,image/webp', hidden: true });
   const fileName = h('span', { class: 'muted' });
   const presets = presetPicker((p) => { if (p) emoji.value = ''; });
@@ -3591,14 +3811,14 @@ function avatarFields(harness) {
   const reset = h('button', {
     type: 'button', class: 'small with-avatar',
     onclick: () => { presets.set(null); emoji.value = ''; fileInput.value = ''; fileName.textContent = ''; },
-  }, harnessApp(harness).icon ? avatarEl({ name: '', harness, avatar: null }, 'xs') : null, '清除头像');   // the default it returns to
+  }, harnessApp(harness).icon ? avatarEl({ name: '', harness, avatar: null }, 'xs') : null, t('清除头像'));   // the default it returns to
   return {
     el: h('div', { class: 'avatar-fields' },
-      h('label', {}, '头像 emoji', emoji),
-      h('div', {}, h('span', { class: 'muted' }, '或选一个预设头像'), presets.el),
+      h('label', {}, t('头像 emoji'), emoji),
+      h('div', {}, h('span', { class: 'muted' }, t('或选一个预设头像')), presets.el),
       h('div', {},
-        h('span', { class: 'muted' }, '或上传图片（PNG/JPEG/GIF/WebP，≤256 KB）'),
-        h('div', { class: 'row' }, h('label', { class: 'button small' }, '选择图片…', fileInput), fileName, reset))),
+        h('span', { class: 'muted' }, t('或上传图片（PNG/JPEG/GIF/WebP，≤256 KB）')),
+        h('div', { class: 'row' }, h('label', { class: 'button small' }, t('选择图片…'), fileInput), fileName, reset))),
     refreshPresets: presets.refresh,
     async value() {
       const { fields, error } = await editFields({ name: '', avatar: null },
@@ -3611,10 +3831,10 @@ function avatarFields(harness) {
 
 /** Name / avatar / model / effort for one new member. Model and effort are selects from the models endpoint, free text when it lists none. */
 function newMemberFields(harness) {
-  const model = h('select', {}, h('option', { value: '' }, '默认'));
-  const effort = h('select', {}, h('option', { value: '' }, '默认'));
-  const modelText = h('input', { placeholder: '默认（可填模型名）', hidden: true });
-  const effortText = h('input', { placeholder: '默认', hidden: true });
+  const model = h('select', {}, h('option', { value: '' }, t('默认')));
+  const effort = h('select', {}, h('option', { value: '' }, t('默认')));
+  const modelText = h('input', { placeholder: t('默认（可填模型名）'), hidden: true });
+  const effortText = h('input', { placeholder: t('默认'), hidden: true });
   const note = h('p', { class: 'muted', hidden: true });
   let models = [];
   let loaded = false;
@@ -3625,7 +3845,7 @@ function newMemberFields(harness) {
   const fillEfforts = () => {
     const keep = effort.value;
     const list = effortChoices(models, model.value);
-    effort.replaceChildren(h('option', { value: '' }, '默认'), ...list.map((e) => h('option', { value: e }, e)));
+    effort.replaceChildren(h('option', { value: '' }, t('默认')), ...list.map((e) => h('option', { value: e }, e)));
     effort.value = list.includes(keep) ? keep : '';
     effort.disabled = list.length === 0;
   };
@@ -3633,7 +3853,7 @@ function newMemberFields(harness) {
   modelText.addEventListener('input', name.update);
   return {
     el: h('div', { class: 'fields' },
-      h('label', {}, '名字', name.input), h('label', {}, '模型', model, modelText), h('label', {}, '思考强度', effort, effortText),
+      h('label', {}, t('名字'), name.input), h('label', {}, t('模型'), model, modelText), h('label', {}, t('思考强度'), effort, effortText),
       avatar.el, note),
     refreshPresets: avatar.refreshPresets,
     name: name.value,
@@ -3644,11 +3864,11 @@ function newMemberFields(harness) {
         models = await api('GET', harnessPath(harness, 'models'));
       } catch (e) {
         models = [];
-        note.textContent = `模型列表加载失败（${e.message}），可以手填。`;
+        note.textContent = t('模型列表加载失败（{message}），可以手填。', { message: e.message });
         note.hidden = false;
       }
       if (models.length) {
-        model.append(...models.map((m) => h('option', { value: m.id, title: m.id }, `${m.label || m.id}${m.isDefault ? '（默认）' : ''}`)));
+        model.append(...models.map((m) => h('option', { value: m.id, title: m.id }, `${m.label || m.id}${m.isDefault ? t('（默认）') : ''}`)));
         fillEfforts();
       } else {
         model.hidden = effort.hidden = true;
@@ -3671,7 +3891,7 @@ function attachEditor(s, harness) {
   const avatar = avatarFields(harness);
   return {
     el: h('div', { class: 'attach-member' }, h('b', { class: 't', title: s.id }, s.title || s.id),
-      h('div', { class: 'fields' }, h('label', {}, '名字', name.input), avatar.el)),
+      h('div', { class: 'fields' }, h('label', {}, t('名字'), name.input), avatar.el)),
     refreshPresets: avatar.refreshPresets,
     name: name.value,
     async value() { return { sessionId: s.id, name: name.value(), avatar: await avatar.value() }; },
@@ -3681,8 +3901,8 @@ function attachEditor(s, harness) {
 /** A listed conversation's availability to `clusterId`, and the line under its title (why not, where it is, or model · time). */
 function sessionInfo(s, clusterId) {
   const { disabled, reason, memberships } = sessionAvailability(s, clusterId);
-  const groups = memberships.map((m) => `${m.clusterName}（群内名：${m.memberName}${m.hidden ? `，${HIDDEN_MARK}` : ''}）`).join('、');
-  const description = [reason, groups ? `已在：${groups}` : '', !groups && !reason ? [s.model, s.updatedAt && fmtTime(s.updatedAt)].filter(Boolean).join(' · ') : ''].filter(Boolean).join(' · ');
+  const groups = memberships.map((m) => t('{clusterName}（群内名：{memberName}{value}）', { clusterName: m.clusterName, memberName: m.memberName, value: m.hidden ? `，${t(HIDDEN_MARK)}` : '' })).join('、');
+  const description = [reason, groups ? t('已在：{groups}', { groups: groups }) : '', !groups && !reason ? [s.model, s.updatedAt && fmtTime(s.updatedAt)].filter(Boolean).join(' · ') : ''].filter(Boolean).join(' · ');
   return { disabled, reason, description };
 }
 
@@ -3696,7 +3916,7 @@ function sessionRow(s, picked, toggle, { clusterId = addToCluster, type = 'check
     }),
     h('span', { class: 'session-details' }, h('span', { class: 't' }, s.title || s.id),
       description ? h('span', { class: 'muted session-groups' }, description) : null),
-    typeof s.online === 'boolean' ? h('span', { class: `online ${s.online ? 'on' : 'off'}` }, s.online ? '在线' : '离线') : null);
+    typeof s.online === 'boolean' ? h('span', { class: `online ${s.online ? 'on' : 'off'}` }, s.online ? t('在线') : t('离线')) : null);
 }
 
 // The create dialog is two panes (docs/cluster-members.md「添加成员」): the app list on the left, the one app in
@@ -3710,16 +3930,16 @@ function focusApp(harness, { open = false } = {}) {
 }
 
 /**
- * The member entries of one app in the create dialog (its listed conversations and a new conversation) and one
- * editor area for the entry in focus: only that entry's name / avatar inputs are shown, so picking
+ * The member entries of one app in the create dialog (its listed conversations and a new conversation) and one editor
+ * area for the entry in focus: only that entry's name / avatar inputs are shown, so picking
  * many conversations does not lengthen the pane. Rows work like the app list: a click shows the entry, ticking shows
  * it too, unticking keeps the editor where it is. An entry: { key, title, details, online?, check, picked(),
  * editor() → { el } (null: it cannot be added, `reason` says why), reason, name() }.
  */
 function entryList({ label, hint, onOpen, onBack, onEdit }) {
   const list = h('div', { class: 'entry-list', role: 'group', 'aria-label': label });
-  const editor = h('section', { class: 'entry-editor', 'aria-label': `${label}：成员信息` });
-  const back = h('button', { type: 'button', class: 'small entry-back' }, icon('chevron-left', 'ico-sm'), '对话列表');
+  const editor = h('section', { class: 'entry-editor', 'aria-label': t('{label}：成员信息', { label: label }) });
+  const back = h('button', { type: 'button', class: 'small entry-back' }, icon('chevron-left', 'ico-sm'), t('对话列表'));
   const area = h('div', { class: 'entry-area' }, list, h('div', { class: 'entry-editor-wrap' }, back, editor));
   let rows = [];        // [{ entry, row, pick, nameEl, problemEl }]
   let focused = null;   // key of the entry the editor shows
@@ -3732,7 +3952,7 @@ function entryList({ label, hint, onOpen, onBack, onEdit }) {
       r.pick.setAttribute('aria-current', r === shown ? 'true' : 'false');
       r.entry.check.tabIndex = r.pick.tabIndex = i === at ? 0 : -1;
     });
-    const content = shown ? shown.entry.editor()?.el ?? h('p', { class: 'muted' }, `这个对话不能加入：${shown.entry.reason}`) : h('p', { class: 'muted' }, hint);
+    const content = shown ? shown.entry.editor()?.el ?? h('p', { class: 'muted' }, t('这个对话不能加入：{reason}', { reason: shown.entry.reason })) : h('p', { class: 'muted' }, hint);
     if (editor.firstChild !== content) editor.replaceChildren(content);   // the same editor stays put: no lost focus or input
     if (open && shown) onOpen();
   };
@@ -3742,7 +3962,7 @@ function entryList({ label, hint, onOpen, onBack, onEdit }) {
     const pick = h('button', { type: 'button', class: 'entry-main' }, h('span', { class: 't' }, entry.title),
       entry.details ? h('span', { class: 'muted session-groups' }, entry.details) : null, nameEl, problemEl);
     const row = h('div', { class: `entry-row${entry.reason ? ' taken' : ''}`, title: entry.reason || '' }, entry.check, pick,
-      typeof entry.online === 'boolean' ? h('span', { class: `online ${entry.online ? 'on' : 'off'}` }, entry.online ? '在线' : '离线') : null);
+      typeof entry.online === 'boolean' ? h('span', { class: `online ${entry.online ? 'on' : 'off'}` }, entry.online ? t('在线') : t('离线')) : null);
     pick.addEventListener('click', () => show(entry.key, { open: true }));
     // Arrow keys, Home and End move between the rows and show the row they reach; Tab goes on to the editor.
     row.addEventListener('keydown', (e) => {
@@ -3771,7 +3991,7 @@ function entryList({ label, hint, onOpen, onBack, onEdit }) {
     /** Each row's member name, and the marker of `problems` (key → text) on a picked row. */
     sync(problems) {
       for (const r of rows) {
-        r.nameEl.textContent = `成员名：${r.entry.name() || '由 Hub 起名'}`;
+        r.nameEl.textContent = t('成员名：{value}', { value: r.entry.name() || t('由 Hub 起名') });
         const p = r.entry.picked() ? problems.get(r.entry.key) : null;
         r.problemEl.replaceChildren(...(p ? [icon('alert', 'ico-sm'), ` ${p}`] : []));
         r.problemEl.hidden = !p;
@@ -3780,36 +4000,36 @@ function entryList({ label, hint, onOpen, onBack, onEdit }) {
   };
 }
 
-/** One app in the create dialog: existing conversations and optional native session creation. */
+/** One harness in the create dialog: its list row, and its settings (its conversations; docs/native-mode.md「网页（单元 4）」). */
 function harnessForm({ harness, nativeCreate }) {
   let shown = false;
   const app = harnessApp(harness);
   const appLogo = () => appIcon({ icon: app.icon, label: app.name });   // the app's logo; icon stays the sprite helper
-  const check = h('input', { type: 'checkbox', 'aria-label': `添加 ${app.name}` });
+  const check = h('input', { type: 'checkbox', 'aria-label': t('添加 {name}', { name: app.name }) });
   const summary = h('span', { class: 'app-row-summary' });
   const problem = h('span', { class: 'app-row-problem', hidden: true });
   const pick = h('button', { type: 'button', class: 'app-row-main', 'aria-controls': 'create-detail' },
     appLogo(), h('span', { class: 'app-row-text' }, h('span', { class: 'app-row-name' }, app.name), summary, problem));
   const row = h('li', { class: 'app-row' }, check, pick);
   const error = h('p', { class: 'form-error', hidden: true });
-  const fail = (what) => (e) => { error.textContent = `${what}失败：${e.message}`; error.hidden = false; sync(); };
+  const fail = (what) => (e) => { error.textContent = t('{what}失败：{message}', { what: what, message: e.message }); error.hidden = false; sync(); };
   const note = (text) => h('p', { class: 'muted' }, text);
   const lists = { onOpen: () => body.classList.add('show-entry'), onBack: () => body.classList.remove('show-entry'), onEdit: () => sync() };
 
   // Attach existing conversations, and create one when the harness supports it.
-  const nProject = h('select', {}, h('option', { value: '' }, '选择项目…'));
-  const refresh = h('button', { type: 'button', class: 'small refresh', title: '重新读取项目和对话列表' }, '刷新');
-  const nCreate = nativeCreate ? h('input', { type: 'checkbox', 'aria-label': '另外新建一个对话' }) : null;
+  const nProject = h('select', {}, h('option', { value: '' }, t('选择项目…')));
+  const refresh = h('button', { type: 'button', class: 'small refresh', title: t('重新读取项目和对话列表') }, t('刷新'));
+  const nCreate = nativeCreate ? h('input', { type: 'checkbox', 'aria-label': t('另外新建一个对话') }) : null;
   const nFields = nativeCreate ? newMemberFields(harness) : null;
-  const nList = entryList({ label: '已有对话', hint: '点一个对话，在这里设置它加入后的名字和头像。', ...lists });
-  const nSec = h('div', { class: 'session-body' },
-    h('div', { class: 'project-row' }, h('label', {}, '项目', nProject), refresh),
-    h('span', { class: 'muted' }, '已有对话（可多选；接入后你照常在应用里用它）。点一个对话设置它的名字和头像。'),
+  const nList = entryList({ label: t('已有对话'), hint: t('点一个对话，在这里设置它加入后的名字和头像。'), ...lists });
+  const nSec = h('div', { class: 'mode-body' },
+    h('div', { class: 'project-row' }, h('label', {}, t('项目'), nProject), refresh),
+    h('span', { class: 'muted' }, t('已有对话（可多选；接入后你照常在应用里用它）。点一个对话设置它的名字和头像。')),
     nList.area,
     nativeCreate
-      ? h('p', { class: 'muted' }, '新建对话前请选择项目，并勾选「另外新建一个对话」。')
+      ? h('p', { class: 'muted' }, t('新建对话前请选择项目，并勾选「另外新建一个对话」。'))
       : harness === 'antigravity' ? antigravityHint()
-        : h('p', { class: 'hint' }, harness === 'claude' ? CLAUDE_HINT : harness === 'zcode' ? ZCODE_HINT : harness === 'workbuddy' ? WORKBUDDY_HINT : harness === 'qoder' ? QODER_HINT : harness === 'cursor' ? CURSOR_HINT : `${harness} 的原生群员只能接入已有会话：先在应用里新建会话，再点「刷新」勾选它。`));
+        : h('p', { class: 'hint' }, harness === 'claude' ? CLAUDE_HINT : harness === 'zcode' ? ZCODE_HINT : harness === 'workbuddy' ? WORKBUDDY_HINT : harness === 'qoder' ? QODER_HINT : harness === 'cursor' ? CURSOR_HINT : t('{harness} 的原生群员只能接入已有会话：先在应用里新建会话，再点「刷新」勾选它。', { harness: harness })));
 
   // Picked conversations of the shown project, in the order they were picked, and the name / avatar editor of each
   // conversation shown or picked so far (an unticked one keeps what was typed until the dialog closes). Kept apart
@@ -3823,15 +4043,15 @@ function harnessForm({ harness, nativeCreate }) {
     sync();
   };
   const newEntry = nativeCreate && {
-    key: 'new', title: '另外新建一个对话', details: '在应用里新建，可选模型和思考强度', check: nCreate, reason: '',
+    key: 'new', title: t('另外新建一个对话'), details: t('在应用里新建，可选模型和思考强度'), check: nCreate, reason: '',
     picked: () => nCreate.checked, editor: () => { nFields.load(); return nFields; }, name: () => nFields.name(),
   };
   const sessionEntry = (s) => {
     const { disabled, reason, description } = sessionInfo(s, addToCluster);
-    const c = h('input', { type: 'checkbox', disabled, checked: picked.has(s.id) && !disabled, 'aria-label': `选择 ${s.title || s.id}` });
+    const c = h('input', { type: 'checkbox', disabled, checked: picked.has(s.id) && !disabled, 'aria-label': t('选择 {value}', { value: s.title || s.id }) });
     c.addEventListener('change', () => toggle(s, c.checked));
     return {
-      key: s.id, title: s.title || s.id, details: description, online: s.online, check: c, reason: disabled ? reason || '已是群员' : '',
+      key: s.id, title: s.title || s.id, details: description, online: s.online, check: c, reason: disabled ? reason || t('已是群员') : '',
       picked: () => picked.has(s.id), editor: () => (disabled ? null : editorFor(s)),
       name: () => editors.get(s.id)?.name() ?? memberDefaultName({ harness, model: s.model ?? '', taken: takenNames() }),
     };
@@ -3844,10 +4064,10 @@ function harnessForm({ harness, nativeCreate }) {
     if (!path) {
       picked.clear();
       editors.clear();
-      setSessions([], note('选一个项目以列出它的已有对话。'));
+      setSessions([], note(t('选一个项目以列出它的已有对话。')));
       return;
     }
-    setSessions([], note('加载中…'));
+    setSessions([], note(t('加载中…')));
     trackLoad(showSessions(path, mine));
   };
   const showSessions = async (path, mine) => {
@@ -3857,19 +4077,19 @@ function harnessForm({ harness, nativeCreate }) {
       // Drop a picked conversation if it disappeared or became unavailable to this cluster.
       for (const id of picked) if (!list.some((s) => s.id === id && !sessionAvailability(s, addToCluster).disabled)) picked.delete(id);
       setSessions(list.map(sessionEntry), list.length ? null
-        : note(nativeCreate ? '这个项目里没有已有对话。' : '这个项目里还没有会话：在桌面应用里新建并发一句话，再点「刷新」。'));
+        : note(nativeCreate ? t('这个项目里没有已有对话。') : t('这个项目里还没有会话：在桌面应用里新建并发一句话，再点「刷新」。')));
     } catch (e) {
       if (mine !== request) return;
-      setSessions([], h('p', { class: 'form-error' }, `对话加载失败：${e.message}`));
+      setSessions([], h('p', { class: 'form-error' }, t('对话加载失败：{message}', { message: e.message })));
     }
   };
   let projectsLoaded = false;
   const projectsOnce = () => {
     if (projectsLoaded) return;
     projectsLoaded = true;
-    loadProjects(nProject, harness).catch(fail('项目加载'));
+    loadProjects(nProject, harness).catch(fail(t('项目加载')));
   };
-  // The picked entries and any name problems (key → text).
+  // The picked entries with the names they send, and what is wrong with those names (key → text).
   const pickedNames = () => [...[...picked].map((id) => ({ key: id, name: editors.get(id).name() })),
     ...(nCreate?.checked ? [{ key: 'new', name: nFields.name() }] : [])];
   const problems = () => {
@@ -3881,8 +4101,8 @@ function harnessForm({ harness, nativeCreate }) {
     const found = problems();
     nList.sync(found);
     const s = appRowSummary({
-      harness, nativeCreate, project: nProject.value, checked: check.checked, create: Boolean(nCreate?.checked),
-      sessions: [...picked].map((sessionId) => ({ sessionId })),
+      harness, nativeCreate, checked: check.checked, create: Boolean(nCreate?.checked),
+      project: nProject.value, sessions: [...picked].map((sessionId) => ({ sessionId })),
       loadFailed: !error.hidden || Boolean(nList.list.querySelector('.form-error')),
       memberProblem: found.size > 0,
     });
@@ -3901,10 +4121,10 @@ function harnessForm({ harness, nativeCreate }) {
   };
 
   const tick = () => { check.checked = true; check.dispatchEvent(new Event('change')); };
-  const notTicked = h('p', { class: 'hint not-ticked' }, `未勾选：这里填的内容会保留，但不会提交。`,
-    h('button', { type: 'button', class: 'small', onclick: tick }, `勾选 ${app.name}`));
-  const back = h('button', { type: 'button', class: 'small app-back', onclick: () => { $('create-harnesses').classList.remove('show-detail'); pick.focus(); } }, icon('chevron-left', 'ico-sm'), '应用列表');
-  const body = h('section', { class: 'harness-body', hidden: true, 'aria-label': `${app.name} 的设置` },
+  const notTicked = h('p', { class: 'hint not-ticked' }, t('未勾选：这里填的内容会保留，但不会提交。'),
+    h('button', { type: 'button', class: 'small', onclick: tick }, t('勾选 {name}', { name: app.name })));
+  const back = h('button', { type: 'button', class: 'small app-back', onclick: () => { $('create-harnesses').classList.remove('show-detail'); pick.focus(); } }, icon('chevron-left', 'ico-sm'), t('应用列表'));
+  const body = h('section', { class: 'harness-body', hidden: true, 'aria-label': t('{name} 的设置', { name: app.name }) },
     h('div', { class: 'app-detail-head' }, back, appLogo(), h('h3', {}, app.name)), notTicked, nSec, error);
 
   check.addEventListener('change', () => { update(); focusApp(focusAfterTick(createFocus, harness, check.checked)); });
@@ -3916,7 +4136,7 @@ function harnessForm({ harness, nativeCreate }) {
   nProject.addEventListener('change', () => { picked.clear(); editors.clear(); loadSessions(); });
   refresh.addEventListener('click', () => {
     error.hidden = true;
-    loadProjects(nProject, harness).then((fresh) => { if (fresh) loadSessions(); }, (e) => { fail('项目加载')(e); loadSessions(); });
+    loadProjects(nProject, harness).then((fresh) => { if (fresh) loadSessions(); }, (e) => { fail(t('项目加载'))(e); loadSessions(); });
   });
   // Arrow keys, Home and End move between the rows (only the shown row is in the Tab order) and show the row they reach.
   row.addEventListener('keydown', (e) => {
@@ -3928,7 +4148,7 @@ function harnessForm({ harness, nativeCreate }) {
     (e.target === check ? target.check : target.pick).focus();
   });
   pick.addEventListener('click', () => focusApp(harness, { open: true }));
-  setSessions([], note('选一个项目以列出它的已有对话。'));
+  setSessions([], note(t('选一个项目以列出它的已有对话。')));
   update();
 
   // Shows the app and one of its entries, wide or narrow (a submit error about that entry).
@@ -3970,10 +4190,10 @@ function harnessForm({ harness, nativeCreate }) {
 function openCreate(clusterId = null) {
   if (creating) return;
   addToCluster = typeof clusterId === 'string' ? clusterId : null;
-  $('create-title').textContent = addToCluster ? '添加成员' : '新建集群';
+  $('create-title').textContent = addToCluster ? t('添加成员') : t('新建集群');
   $('create-name-row').hidden = Boolean(addToCluster);
   $('create-name').required = !addToCluster;
-  $('create-submit').textContent = addToCluster ? '添加' : '创建';
+  $('create-submit').textContent = addToCluster ? t('添加') : t('创建');
   $('create-form').reset();
   harnessForms = [];
   const usable = S.modes.filter((m) => S.harnesses.includes(m.harness) && m.native);
@@ -3999,7 +4219,7 @@ $('create-form').addEventListener('submit', async (e) => {
   creating = true;
   syncCreateButtons();
   const clusterId = addToCluster;
-  btn.textContent = clusterId ? '添加中…' : '创建中…';
+  btn.textContent = clusterId ? t('添加中…') : t('创建中…');
   showError('create-error', null);
   try {
     const choices = [];
@@ -4016,11 +4236,11 @@ $('create-form').addEventListener('submit', async (e) => {
   } catch (err) {
     // Show the entry the error is about: an avatar that did not read, else (a Hub refusal) the first marked name.
     if (err.reveal) err.reveal(); else harnessForms.some((f) => f.revealProblem());
-    showError('create-error', `${clusterId ? '添加' : '创建'}失败：${err.message}`);
+    showError('create-error', t('{value}失败：{message}', { value: clusterId ? t('添加') : t('创建'), message: err.message }));
   } finally {
     creating = false;
     syncCreateButtons();
-    btn.textContent = clusterId ? '添加' : '创建';
+    btn.textContent = clusterId ? t('添加') : t('创建');
   }
 });
 
@@ -4041,11 +4261,11 @@ const closeEditor = () => {
   if (restoreFocus) focusRow(id, 'edit');
 };
 const manageEditor = memberEditor(() => activeMember([...S.members.values()], managedCluster, editingId), () => {
-  manageNotice = '已保存。';
+  manageNotice = t('已保存。');
   closeEditor();
 });
 manageEditor.form.classList.add('manage-edit');
-manageEditor.actions.append(h('button', { type: 'button', class: 'small', onclick: closeEditor }, '取消'));
+manageEditor.actions.append(h('button', { type: 'button', class: 'small', onclick: closeEditor }, t('取消')));
 const drawMemberList = stableList($('manage-list'));
 
 /** Focuses a row's member button ('open') or one of its action buttons (memberRowActions key) after a redraw. */
@@ -4080,7 +4300,7 @@ function renderManage() {
   const members = membersOf(managedCluster);
   if (!members.some((m) => m.id === editingId)) editingId = null;   // removed meanwhile: its editor closes
   const counts = memberCounts(members, statusOf);
-  $('members-title').textContent = `群员 · ${S.clusters.get(managedCluster)?.name ?? ''}`;
+  $('members-title').textContent = t('群员 · {value}', { value: S.clusters.get(managedCluster)?.name ?? '' });
   // Each count stays whole when the header is narrow ("1 隐身", never "1" / "隐身").
   $('members-meta').replaceChildren(...memberSummary(counts.total, counts.online, counts.hidden).split(' · ')
     .flatMap((part, i) => [i ? ' · ' : '', h('span', { class: 'nowrap' }, part)]));
@@ -4101,7 +4321,7 @@ function renderManage() {
     remove: (m) => void removeMember(m),
   };
   const appText = (m) => memberAppText(harnessApp(m.harness).name);
-  // When the avatar already is the app's icon it is not repeated here.
+  // When the avatar already is the app's icon it is not repeated here; the words stay.
   const appBadge = (m) => {
     const app = harnessApp(m.harness);
     return h('span', { class: 'member-app', role: 'img', 'aria-label': appText(m), title: appText(m) },
@@ -4122,19 +4342,19 @@ function renderManage() {
     $('manage-list').replaceChildren(...(members.length ? members.map((m) => h('div', {
       class: `manage-row${m.id === recentMember ? ' recent' : ''}${editingId === m.id ? ' editing' : ''}`, 'data-member': m.id },
       h('div', { class: 'manage-head' },
-        h('button', { type: 'button', class: 'member-open', title: `打开 ${m.name} 的成员页`, onclick: () => select(managedCluster, m.id) },
+        h('button', { type: 'button', class: 'member-open', title: t('打开 {name} 的成员页', { name: m.name }), onclick: () => select(managedCluster, m.id) },
           rowAvatar(m),
           h('span', { class: 'manage-person' },
-            h('span', { class: 'member-name-line' }, h('b', {}, m.name), appBadge(m)),
+            h('span', { class: 'member-name-line' }, h('b', {}, m.name), appBadge(m), pluginUi.marksSlot(m.clusterId, 'member', m.id, 1)),
             h('span', { class: `member-state ${statusOf(m)}` },
               memberStatusLabel(m, statusOf(m)), m.hiddenAt ? hiddenMark() : null))),
-        h('div', { class: 'member-actions', role: 'group', 'aria-label': `${m.name} 的操作` },
+        h('div', { class: 'member-actions', role: 'group', 'aria-label': t('{name} 的操作', { name: m.name }) },
           memberRowActions(m).map((a) => h('button', { type: 'button', class: `icon-button ghost member-action${a.danger ? ' danger' : ''}`,
             'aria-label': a.name, 'data-tip': a.label, 'data-action': a.key, 'aria-expanded': a.key === 'edit' ? String(editingId === m.id) : null,
             disabled: removing || (a.key === 'hide' && hiding.has(m.id)), onclick: () => act[a.key](m) }, icon(a.icon))))),
       memberDetailsView(details.get(m.id), { tokens: tokensOf(m), alert: alertOf(m) }),
       editingId === m.id ? manageEditor.form : null))
-      : [emptyState('集群暂无成员，可以添加成员继续协作。')]));
+      : [emptyState(t('集群暂无成员，可以添加成员继续协作。'))]));
     if (focused?.isConnected) focused.focus();
   });
   if (refocusRecent) {   // back from a member page: to its row, unless focus already went somewhere on purpose
@@ -4167,16 +4387,16 @@ async function removeMember(m) {
   const at = ids.indexOf(m.id);
   const next = ids[at + 1] ?? ids[at - 1] ?? null;
   removing = true;
-  manageNotice = `正在移出“${m.name}”…`;
+  manageNotice = t('正在移出“{name}”…', { name: m.name });
   renderManage();
   let restoreFocus;
   try {
     const { member } = await api('DELETE', `/api/clusters/${encodeURIComponent(m.clusterId)}/members/${encodeURIComponent(m.id)}`, {});
     upsertMember(member);
-    manageNotice = `已将“${member.name}”移出集群，历史已保留。`;
+    manageNotice = t('已将“{name}”移出集群，历史已保留。', { name: member.name });
   } catch (e) {
     manageNotice = '';
-    manageError = `移出失败：${e.message}`;
+    manageError = t('移出失败：{message}', { message: e.message });
   } finally {
     restoreFocus = canRestoreMemberFocus(m.clusterId, origin);
     removing = false;
@@ -4202,23 +4422,23 @@ function canRestoreMemberFocus(clusterId, origin) {
 function openRebind(memberId) {
   const member = S.members.get(memberId);
   if (!member || member.removedAt) return;
-  const project = h('select', { id: 'rebind-project' }, h('option', { value: '' }, '选择项目…'));
-  const refresh = h('button', { type: 'button', class: 'small refresh', title: '重新读取项目和对话列表' }, '刷新');
-  const list = h('div', { class: 'sessions' }, h('p', { class: 'muted' }, '选一个项目以列出它的已有对话。'));
+  const project = h('select', { id: 'rebind-project' }, h('option', { value: '' }, t('选择项目…')));
+  const refresh = h('button', { type: 'button', class: 'small refresh', title: t('重新读取项目和对话列表') }, t('刷新'));
+  const list = h('div', { class: 'sessions' }, h('p', { class: 'muted' }, t('选一个项目以列出它的已有对话。')));
   const warnings = h('div', { class: 'rebind-warnings' });
   const stopped = h('input', { type: 'checkbox', required: true });
   const error = h('p', { class: 'form-error', role: 'alert', hidden: true });
-  const cancel = h('button', { type: 'button' }, '取消');
-  const submit = h('button', { type: 'submit', class: 'primary', disabled: true }, '确认换对话');
+  const cancel = h('button', { type: 'button' }, t('取消'));
+  const submit = h('button', { type: 'submit', class: 'primary', disabled: true }, t('确认换对话'));
   const dialog = h('dialog', { class: 'handoff-dialog', 'aria-labelledby': 'rebind-title', 'aria-describedby': 'rebind-description' },
     h('form', {},
-      h('h2', { id: 'rebind-title' }, `给 ${member.name} 换对话`),
-      h('p', { id: 'rebind-description', class: 'muted' }, `只能换成 ${member.harness} 里已有的对话。成员身份、角色、未读和任务都保留，新旧两个对话都不能验收这个成员的任务。换完会叫醒这个成员和协调员，把手上的任务发给它们，并在群里留记录。`),
-      h('p', { class: 'muted' }, `当前对话：${member.workerSessionId}`),
-      h('div', { class: 'project-row' }, h('label', { for: 'rebind-project' }, '项目', project), refresh),
-      h('div', {}, h('span', { class: 'muted' }, '目标对话'), list),
+      h('h2', { id: 'rebind-title' }, t('给 {name} 换对话', { name: member.name })),
+      h('p', { id: 'rebind-description', class: 'muted' }, t('只能换成 {harness} 里已有的对话。成员身份、角色、未读和任务都保留，新旧两个对话都不能验收这个成员的任务。换完会叫醒这个成员和协调员，把手上的任务发给它们，并在群里留记录。', { harness: member.harness })),
+      h('p', { class: 'muted' }, t('当前对话：{workerSessionId}', { workerSessionId: member.workerSessionId })),
+      h('div', { class: 'project-row' }, h('label', { for: 'rebind-project' }, t('项目'), project), refresh),
+      h('div', {}, h('span', { class: 'muted' }, t('目标对话')), list),
       warnings,
-      h('label', { class: 'handoff-confirm' }, stopped, '已确认原对话停止'),
+      h('label', { class: 'handoff-confirm' }, stopped, t('已确认原对话停止')),
       error,
       h('div', { class: 'row end' }, cancel, submit)));
   let chosen = null;
@@ -4243,25 +4463,25 @@ function openRebind(memberId) {
   };
   const loadSessions = async () => {
     const path = project.value;
-    if (!path) { resetList('选一个项目以列出它的已有对话。'); return; }
-    const mine = resetList('加载中…');
+    if (!path) { resetList(t('选一个项目以列出它的已有对话。')); return; }
+    const mine = resetList(t('加载中…'));
     try {
       const sessions = await api('GET', harnessPath(member.harness, `sessions?project=${encodeURIComponent(path)}`));
       if (mine !== request) return;   // the user picked another project (or refreshed) meanwhile
       list.replaceChildren(...(sessions.length
         ? sessions.map((s) => sessionRow(s, picked, choose, { clusterId: member.clusterId, type: 'radio', name: 'rebind-session' }))
-        : [emptyState('这个项目里没有已有对话：先在应用里新建对话并发一句话，再点「刷新」。', { compact: true })]));
+        : [emptyState(t('这个项目里没有已有对话：先在应用里新建对话并发一句话，再点「刷新」。'), { compact: true })]));
     } catch (e) {
-      if (mine === request) list.replaceChildren(h('p', { class: 'form-error' }, `对话加载失败：${e.message}`));
+      if (mine === request) list.replaceChildren(h('p', { class: 'form-error' }, t('对话加载失败：{message}', { message: e.message })));
     }
   };
   const loadAll = async (first) => {
-    resetList('加载中…');
+    resetList(t('加载中…'));
     try {
       const fresh = await loadProjects(project, member.harness);
       if (fresh && first && [...project.options].some((o) => o.value === member.cwd)) project.value = member.cwd;
     } catch (e) {
-      error.textContent = `项目加载失败：${e.message}`;
+      error.textContent = t('项目加载失败：{message}', { message: e.message });
       error.hidden = false;
     }
     await loadSessions();
@@ -4284,12 +4504,12 @@ function openRebind(memberId) {
         { harness: member.harness, sessionId: chosen.id, confirmStopped: true });
       upsertMember(moved);
       manageNotice = moved.status === 'offline'
-        ? `已把“${moved.name}”换到新对话。新对话离线：排队的消息记为离线，不会重发，它上线后自己读未读。`
-        : `已把“${moved.name}”换到新对话，并通知了它和协调员。`;
+        ? t('已把“{name}”换到新对话。新对话离线：排队的消息记为离线，不会重发，它上线后自己读未读。', { name: moved.name })
+        : t('已把“{name}”换到新对话，并通知了它和协调员。', { name: moved.name });
       dialog.close();
       render();
     } catch (err) {
-      error.textContent = err instanceof TypeError ? '未能确认是否换成功，请先看成员页的换对话记录。' : `换对话失败：${err.message}`;
+      error.textContent = err instanceof TypeError ? t('未能确认是否换成功，请先看成员页的换对话记录。') : t('换对话失败：{message}', { message: err.message });
       error.hidden = false;
     } finally {
       pending = false;
@@ -4319,29 +4539,29 @@ async function openHandover(memberId) {
     data = await api('GET', `/api/members/${encodeURIComponent(member.id)}/handover`);
   } catch (e) {
     handoverOpening = false;
-    noticeDialog(`交接包生成失败：${e.message}`, '交接包');
+    noticeDialog(t('交接包生成失败：{message}', { message: e.message }), t('交接包'));
     return;
   }
   handoverOpening = false;   // from here on the dialog itself blocks a second open
-  const text = h('textarea', { id: 'handover-text', rows: 18, spellcheck: 'false', 'aria-label': '交接包内容' });
+  const text = h('textarea', { id: 'handover-text', rows: 18, spellcheck: 'false', 'aria-label': t('交接包内容') });
   text.value = handoverText(data);
   const recipients = membersOf(member.clusterId);
-  const target = h('select', { id: 'handover-target', 'aria-label': '交接包收件人' },
-    h('option', { value: '', disabled: true, selected: true }, recipients.length ? '发送给…' : '没有可发的群员'),
+  const target = h('select', { id: 'handover-target', 'aria-label': t('交接包收件人') },
+    h('option', { value: '', disabled: true, selected: true }, recipients.length ? t('发送给…') : t('没有可发的群员')),
     ...recipients.map((m) => h('option', { value: m.id }, m.name)));
   const error = h('p', { class: 'form-error', role: 'alert', hidden: true });
   const status = h('p', { class: 'muted', role: 'status', hidden: true });
-  const copy = h('button', { type: 'button' }, '复制');
-  const send = h('button', { type: 'button', class: 'primary', disabled: true }, '发送');
-  const close = h('button', { type: 'button' }, '关闭');
+  const copy = h('button', { type: 'button' }, t('复制'));
+  const send = h('button', { type: 'button', class: 'primary', disabled: true }, t('发送'));
+  const close = h('button', { type: 'button' }, t('关闭'));
   const showError = (message) => { error.textContent = message; error.hidden = !message; };
   const say = (message) => { status.textContent = message; status.hidden = !message; };
   let pending = false;
   const sync = () => { send.disabled = pending || !target.value; };
   const dialog = h('dialog', { class: 'handoff-dialog handover-dialog', 'aria-labelledby': 'handover-title' },
     h('form', { autocomplete: 'off' },
-      h('h2', { id: 'handover-title' }, `给 ${member.name} 的交接包`),
-      h('p', { class: 'muted' }, '内容只来自 Hub 已有的记录：不调用模型，也不读对话在本地的文件；没有记录的写“未知”。改完可以复制，或发给一个群员。不会自动发送，也不会自动换对话。'),
+      h('h2', { id: 'handover-title' }, t('给 {name} 的交接包', { name: member.name })),
+      h('p', { class: 'muted' }, t('内容只来自 Hub 已有的记录：不调用模型，也不读对话在本地的文件；没有记录的写“未知”。改完可以复制，或发给一个群员。不会自动发送，也不会自动换对话。')),
       text, error, status,
       h('div', { class: 'row end' }, copy, target, send, close)));
   target.addEventListener('change', sync);
@@ -4353,18 +4573,18 @@ async function openHandover(memberId) {
     say('');
     try {
       await navigator.clipboard.writeText(text.value);
-      say('已复制。');
+      say(t('已复制。'));
     } catch {
       text.focus();
       text.select();
-      say('浏览器不允许直接写入剪贴板：已全选，按 Ctrl+C 复制。');
+      say(t('浏览器不允许直接写入剪贴板：已全选，按 Ctrl+C 复制。'));
     }
   });
   send.addEventListener('click', async () => {
     const body = text.value.trim();
     if (pending) return;
-    if (!body) { showError('交接包是空的。'); return; }
-    if (!target.value) { showError('先选择发给谁。'); return; }
+    if (!body) { showError(t('交接包是空的。')); return; }
+    if (!target.value) { showError(t('先选择发给谁。')); return; }
     pending = true;
     sync();
     copy.disabled = true;
@@ -4374,9 +4594,9 @@ async function openHandover(memberId) {
       await api('POST', `/api/clusters/${encodeURIComponent(member.clusterId)}/messages`, { body, to: [target.value], handover: true });
       const to = target.value;
       dialog.close();
-      noticeDialog(`已把交接包发给 ${nameOf(to)}。`, '已发送');
+      noticeDialog(t('已把交接包发给 {value}。', { value: nameOf(to) }), t('已发送'));
     } catch (e) {
-      showError(e instanceof TypeError ? '未能确认是否发送成功，请到群聊里核对后再决定是否重发。' : `发送失败：${e.message}`);
+      showError(e instanceof TypeError ? t('未能确认是否发送成功，请到群聊里核对后再决定是否重发。') : t('发送失败：{message}', { message: e.message }));
     } finally {
       pending = false;
       copy.disabled = false;
@@ -4409,7 +4629,9 @@ function drawStalledOverview() {
   badge.title = title;
   badge.setAttribute('aria-label', title);
 }
-const workbench = createWorkbench({ api, stalled, getMembers: (id) => membersOf(id),
+// Plugins' own UIs (docs/external-plugins.md「网页界面」): title bar chips here, workbench tabs through the workbench.
+const pluginUi = createPluginUi({ api, chipsHost: $('plugin-ui-chips'), itemsChanged: (clusterId) => workbench.pluginTabsChanged(clusterId) });
+const workbench = createWorkbench({ api, stalled, pluginUi, getMembers: (id) => membersOf(id),
   getHistoryMembers: (id) => [...S.members.values()].filter((member) => member.clusterId === id),
   getClusters: () => [...S.clusters.values()], selectCluster: select, nameOf, messageName, openImage: openViewer, uploadFile,
   renderMarkdown: (body, clusterId) => mdBlocks(markdownBlocks(body), { clusterId, mentions: [] }),
@@ -4421,13 +4643,40 @@ $('message-sync-retry').addEventListener('click', () => { retryMessageMetadata(S
 $('open-task-overview').addEventListener('click', () => { $('app').classList.remove('sidebar-open'); workbench.openAll(); });
 async function deleteCluster(cluster) {
   if (!cluster) return;
-  const ok = await confirmDialog({ title: '删除群聊？', message: `“${cluster.name}”会进入回收站，可随时恢复。原生对话、消息和文件保留；未开始的投递取消，已开始的执行可能继续。恢复后旧投递不会自动重发。`, confirmText: '移入回收站', danger: true });
+  const ok = await confirmDialog({ title: t('删除群聊？'), message: t('“{name}”会进入回收站，可随时恢复。原生对话、消息和文件保留；未开始的投递取消，已开始的执行可能继续。恢复后旧投递不会自动重发。', { name: cluster.name }), confirmText: t('移入回收站'), danger: true });
   if (!ok) return;
   try { await api('DELETE', `/api/clusters/${encodeURIComponent(cluster.id)}`, {}); await syncPaused().catch(() => {}); }
-  catch (e) { await noticeDialog(`${e.message}。请查看回收站确认结果。`, '删除未确认'); }
+  catch (e) { await noticeDialog(t('{message}。请查看回收站确认结果。', { message: e.message }), t('删除未确认')); }
 }
 $('open-trash').addEventListener('click', () => {
   trashRemoved = openTrash({ api, restored: syncPaused, noticeDialog, closed: () => { trashRemoved = null; } });
+});
+
+/** POST a ZIP's bytes to the skill installer (docs/files.md「安装 skill」); throws like api(). */
+async function uploadSkillZip(file, overwrite) {
+  if (file.size > MAX_SKILL_ZIP) throw Object.assign(new Error('too large'), { data: { code: 'too_large' } });
+  const res = await fetch(`/api/extensions/skills/install${overwrite ? '?overwrite=1' : ''}`, {
+    method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-orrery-filename': encodeURIComponent(file.name) }, body: file });
+  if (res.status === 401) unauthorized();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status, data });
+  return data;
+}
+const MAX_SKILL_ZIP = 20 * 1024 * 1024;
+/** The `$` list (GET /api/skills): read when the page loads and after each install. */
+let skillsRequest = 0;
+async function loadSkills() {
+  const request = ++skillsRequest;
+  const list = await api('GET', '/api/skills');
+  if (request !== skillsRequest) return;
+  S.skills = list;
+  S.skillNames = new Set(list.map((k) => k.name));
+  S.skillsVersion++;
+  render();
+}
+$('open-extensions').addEventListener('click', () => {
+  $('app').classList.remove('sidebar-open');
+  openExtensions({ api, uploadZip: uploadSkillZip, skillsChanged: loadSkills });
 });
 
 // "N 分钟前" in the sidebar and on 全部对话 moves on by itself: only those words are rewritten, nothing is redrawn.
@@ -4450,9 +4699,19 @@ try {
   let plugins;
   [S.harnesses, S.modes, S.avatars, plugins] = await Promise.all([
     api('GET', '/api/harnesses'), api('GET', '/api/harness-modes'), api('GET', '/api/avatars'),
-    api('GET', '/api/plugins').catch(() => null),
+    readPagePlugins().catch(() => null),
   ]);
-  pluginSlots = await loadPluginSlots(plugins, { api, nameOf, command: workbench.command });
+  // The shared page helpers reach every module through register's host (the supported way for a full-trust module).
+  pluginSlots = await loadPluginSlots(plugins, { api, nameOf, command: workbench.command,
+    ui: Object.freeze({ h, icon, emptyState, noticeDialog, confirmDialog, formDialog }) });
+  // A plugin released later (detached, or a slot of it found wrong): its workbench tab goes, and kept message elements
+  // are rebuilt without it before they are shown again.
+  pluginSlots.onRelease = (ids) => { workbench.detachPlugins(ids); render(); };
+  pagePlugins = plugins;
+  pluginsStart = typeof plugins?.instance === 'string' ? plugins.instance : null;   // the start this list came from
+  hubCheckPending = plugins === null;
+  for (const id of pluginSlots.tried) triedContinuouslyListed.add(id);
+  $('safe-mode-banner').hidden = plugins?.safeMode !== true;   // full-trust plugins skipped this start (docs/external-plugins.md)
   workbench.setPlugins(plugins, pluginSlots.workbench);
   chat.button.before(...pluginSlots.composer.map((renderSlot) => renderSlot({
     input: $('composer-input'), getClusterId: () => S.sel.cluster,
@@ -4464,15 +4723,12 @@ try {
   manageEditor.refreshPresets();
   for (const f of harnessForms) f.refreshPresets();   // so does a create dialog opened meanwhile
   await syncPaused();
+  mountUpdatePanel();
   checkHub();   // remembers which Hub process served this page
-  // shortcut: skills are read once per page load; a skill added later shows after a reload.
-  api('GET', '/api/skills').then((list) => {
-    S.skills = list;
-    S.skillNames = new Set(list.map((k) => k.name));
-    S.skillsVersion++;
-    render();
-  }, (e) => console.warn('skills not loaded', e));
+  // shortcut: skills are read once per page load and after an install on 技能与 MCP; one added elsewhere shows after a reload.
+  loadSkills().catch((e) => console.warn('skills not loaded', e));
 } catch (e) {
+  hubCheckPending = true;
   setConn(false);
   console.warn('initial load failed', e);
 }

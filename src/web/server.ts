@@ -1,20 +1,34 @@
-// HTTP API + SSE + static files for the web UI. See the HTTP API table in docs/architecture.md.
+// HTTP API + SSE + static files for the web UI. The endpoints are listed in docs/collaboration-api.md.
 import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import type { AppExtensions } from '../core/app-extensions.ts';
+import { PRESET_SOURCE } from '../core/avatars.ts';
 import { MAX_FILE_BYTES, sniffImage } from '../core/files.ts';
+import { INSTALL_LIMITS, InstallRefused } from '../core/skill-install.ts';
+import { ZipRefused } from '../core/zip.ts';
 import { extname, join, normalize, sep } from 'node:path';
 import { PurgeRefused, type Hub } from '../core/hub.ts';
-import type { ExternalPlugins } from '../core/external-plugins.ts';
+import { LifecycleRefusal, type ExternalPlugins } from '../core/external-plugins.ts';
+import { CommandRefusal } from '../core/external-plugin-commands.ts';
+import { PluginConfigProblem } from '../core/external-plugin-values.ts';
+import { uiFramePolicy, UiRefusal } from '../core/external-plugin-ui.ts';
 import { isLimitSetting } from '../core/limits.ts';
 import { isNotifySetting, NOTIFY_SETTINGS } from '../core/notify-settings.ts';
 import type { PluginSettings } from '../core/plugin-settings.ts';
+import { TrustRefusal, type TrustedPlugins } from '../core/trusted-plugins.ts';
 import type { HubEvent, ToolFingerprints } from '../core/types.ts';
 import { searchClusterMessages } from './message-search.ts';
 
 const PUBLIC_DIR = join(import.meta.dirname, 'public');
-// The one core module the page loads as it is: the system-kind table (public/system-kinds.js re-exports it).
-const CORE_FOR_PAGE: Record<string, string> = { '/core/system-kinds.js': join(import.meta.dirname, '..', 'core', 'system-kinds.js') };
+const I18N_DIR = join(import.meta.dirname, '..', '..', 'shared', 'i18n');
+const I18N_FILES = new Set(['index.js', 'catalog.js', 'en-app.js', 'en-ui.js', 'en-workbench.js', 'en-desktop.js', 'en-updates.js', 'en-install.js']);
+// The core modules the page loads as they are, pure and import-free: the system-kind table and the plugin command
+// argument rules (public/system-kinds.js and public/command-args.js re-export them).
+const CORE_FOR_PAGE: Record<string, string> = {
+  '/core/system-kinds.js': join(import.meta.dirname, '..', 'core', 'system-kinds.js'),
+  '/core/command-args.js': join(import.meta.dirname, '..', 'core', 'command-args.js'),
+};
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -31,12 +45,24 @@ const MAX_BODY = 1_000_000;
  * API token every /api/* request must carry (docs/security.md), with the name of the cookie the page keeps it in.
  */
 export interface WebControl {
-  health(): { app: 'orrery'; pid: number; state: 'running' | 'stopping'; home: string; db: string };
+  health(): { app: 'orrery'; pid: number; instance: string; state: 'running' | 'stopping'; home: string; db: string; executable: string };
   shutdown?: () => void;
   auth: { token: string; cookie: string };
   toolFingerprints?: () => Promise<ToolFingerprints>;
   plugins: PluginSettings;
   externalPlugins?: ExternalPlugins;
+  avatarDir?: string;
+  updates?: { snapshot(): unknown; setAutoCheck(value: unknown): unknown; check(): Promise<unknown> };
+  pluginInstaller?: {
+    maxArchiveBytes: number;
+    prepare(input: { source: string; manifestPath?: string } | { bytes: Uint8Array; filename: string; manifestPath?: string }): Promise<unknown>;
+    confirm(id: string, grants: { permissions: string[]; events: string[]; clusterIds: string[]; writeClusterIds: string[]; tools?: string[]; ui?: string[] }): Promise<unknown>;
+    cancel(id: string): Promise<void>;
+  };
+  /** Full-trust plugins (docs/external-plugins.md「完全信任的插件」): their cards, the trust confirmation, their page modules. */
+  trusted?: TrustedPlugins;
+  /** The 技能与 MCP page (absent: its routes answer 404). Only here, behind the user's API token: no MCP tool or plugin reaches it. */
+  extensions?: AppExtensions;
 }
 
 /** Constant-time compare, as the bridge secret's. */
@@ -119,7 +145,8 @@ async function serveFile(hub: Hub, id: string, download: boolean, res: ServerRes
  * SVG opened on its own from running script or loading anything.
  */
 function servePluginIcon(control: WebControl, id: string, res: ServerResponse): void {
-  const icon = control.externalPlugins?.icon(id);
+  // A restricted plugin's or a full-trust plugin's: the same manifest field, checks and answer for both.
+  const icon = control.externalPlugins?.icon(id) ?? control.trusted?.icon(id);
   if (!icon || 'error' in icon) return json(res, 404, { error: icon ? icon.error : 'no icon' });
   res.writeHead(200, {
     'content-type': icon.type,
@@ -131,6 +158,35 @@ function servePluginIcon(control: WebControl, id: string, res: ServerResponse): 
   });
   res.end(icon.data);
 }
+
+/**
+ * GET /plugin-ui/<frameId>/<path>: a file of a plugin UI's open frame (docs/external-plugins.md「网页界面」). No login
+ * and no cookie are looked at: the unguessable frame id is the only key, and it stops working when the frame is closed
+ * or revoked. Every answer, a 404 included, carries the frame policy for this prefix (an opaque-origin sandbox that may
+ * load only from its own prefix and connect nowhere), nosniff and no referrer. The Host was checked by main.ts
+ * (127.0.0.1 or localhost on this port), so the prefix is this Hub's own origin.
+ */
+function servePluginUi(control: WebControl, req: IncomingMessage, path: string, res: ServerResponse): void {
+  const m = /^\/plugin-ui\/([A-Za-z0-9_-]{1,64})\/(.*)$/.exec(path);
+  const prefix = `http://${req.headers.host ?? ''}/plugin-ui/${m ? m[1] : '-'}/`;
+  const headers = { 'content-security-policy': uiFramePolicy(prefix), 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
+    'cache-control': 'no-store', 'cross-origin-resource-policy': 'cross-origin',
+    // The frame's origin is opaque: its module scripts and fonts are CORS requests with `Origin: null`, and only that
+    // origin may read them (main.ts lets only it past the Origin check). The id is the access key.
+    'access-control-allow-origin': 'null' };
+  const file = m && req.method === 'GET' ? control.externalPlugins?.uiFile(m[1], m[2]) : null;
+  if (!file) {
+    res.writeHead(404, { ...headers, 'content-type': 'text/plain; charset=utf-8' });
+    res.end('not found');
+    return;
+  }
+  res.writeHead(200, { ...headers, 'content-type': file.type, 'content-length': file.data.length });
+  res.end(file.data);
+}
+
+/** A refused plugin UI call's HTTP status: the request's fault, a frame gone, a size or rate limit, a timeout; else a conflict. */
+const UI_STATUS: Record<string, number> = { INVALID_REQUEST: 400, UNKNOWN_PLUGIN: 404, FRAME_CLOSED: 410, TOO_LARGE: 413, RATE_LIMITED: 429,
+  BUSY: 429, UI_TIMEOUT: 504 };
 
 /** POST /api/files?cluster=<id>, raw body, name in x-orrery-filename (URI-encoded). */
 async function upload(hub: Hub, url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -151,6 +207,44 @@ async function upload(hub: Hub, url: URL, req: IncomingMessage, res: ServerRespo
   return json(res, 201, await hub.uploadFile(cluster, name, req));
 }
 
+/**
+ * POST /api/extensions/skills/install (docs/files.md「安装 skill」). JSON { fromApp, skill, source?, overwrite? } or
+ * { fromPath, overwrite? }; or the raw bytes of a ZIP (application/octet-stream, its name in x-orrery-filename,
+ * ?overwrite=1), at most INSTALL_LIMITS.zipBytes. A refusal answers its code (409 for `exists`, else 400).
+ */
+async function installSkill(extensions: AppExtensions, url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    if ((req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase() === 'application/octet-stream') {
+      const raw = req.headers['x-orrery-filename'];
+      let name = '';
+      try { name = decodeURIComponent(typeof raw === 'string' ? raw : ''); } catch { /* no name: the archive's folder or SKILL.md names it */ }
+      const tooLarge = () => {
+        res.writeHead(413, { 'content-type': 'application/json', connection: 'close' });
+        res.end(JSON.stringify({ error: `the ZIP is larger than ${INSTALL_LIMITS.zipBytes / 1024 / 1024} MB`, code: 'too_large' }));
+      };
+      if (Number(req.headers['content-length']) > INSTALL_LIMITS.zipBytes) return tooLarge();
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const c of req) {
+        size += c.length;
+        if (size > INSTALL_LIMITS.zipBytes) return tooLarge();
+        chunks.push(c);
+      }
+      return json(res, 200, await extensions.installFromZip(Buffer.concat(chunks), name, url.searchParams.get('overwrite') === '1'));
+    }
+    const body = await readJson(req);
+    const keys = Object.keys(body).filter((k) => k !== 'overwrite').sort().join(',');
+    if (Array.isArray(body) || (body.overwrite !== undefined && typeof body.overwrite !== 'boolean')) throw new InstallRefused('bad_request', 'overwrite must be a boolean');
+    const overwrite = body.overwrite === true;
+    if (keys === 'fromApp,skill' || keys === 'fromApp,skill,source') return json(res, 200, await extensions.installFromApp(body.fromApp, body.skill, body.source, overwrite));
+    if (keys === 'fromPath') return json(res, 200, await extensions.installFromPath(body.fromPath, overwrite));
+    throw new InstallRefused('bad_request', 'body must be {"fromApp","skill","source"?,"overwrite"?} or {"fromPath","overwrite"?}, or a ZIP');
+  } catch (e) {
+    if (!(e instanceof InstallRefused || e instanceof ZipRefused)) throw e;
+    return json(res, e.code === 'exists' ? 409 : 400, { error: e.message, code: e.code, ...(e instanceof InstallRefused && e.skill ? { skill: e.skill } : {}) });
+  }
+}
+
 /** GET /api/settings, and `settings` in /api/state: the effective limit and notification settings and where each comes from. */
 function settingsOf(hub: Hub) {
   const hops = hub.getLimit('maxHops');
@@ -161,18 +255,69 @@ function settingsOf(hub: Hub) {
     clusterGroups: hub.clusterGroups() };
 }
 
-/** Running plugins, their trusted browser entries, and the full settings list. */
+/**
+ * GET /plugin-web/<id>/<path>: a loaded, enabled full-trust plugin's page module and the files of its folder
+ * (TrustedPlugins.webFile), '' being the module itself. Read-only and without login, like the page's own static files;
+ * anything else (another method, an unknown, unloaded or switched-off id, a refused path) answers exactly what an
+ * unknown path answers. The policy keeps a file opened on its own (an SVG, say) from running anything.
+ */
+function servePluginWeb(hub: Hub, control: WebControl, req: IncomingMessage, path: string, res: ServerResponse): void {
+  const m = /^\/plugin-web\/([a-z][a-z0-9-]{0,63})\/(.*)$/.exec(path);
+  const enabled = m && req.method === 'GET' && hub.store.plugins.enabled.some((p) => p.id === m[1]);
+  const file = m && enabled ? control.trusted?.webFile(m[1], m[2]) : null;
+  if (!file) return json(res, 404, { error: 'not found' });
+  res.writeHead(200, { 'content-type': file.type, 'content-length': file.data.length, 'x-content-type-options': 'nosniff', 'cache-control': 'no-store',
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox", 'cross-origin-resource-policy': 'same-origin' });
+  res.end(file.data);
+}
+
+/** A full-trust plugin's card row when it is not running this start (unconfirmed, revoked, failed, safe mode). */
+function idleTrustedRow(control: WebControl, id: string) {
+  const manifest = control.trusted!.manifests().find((m) => m.id === id)!;
+  return { id, version: manifest.version, requires: manifest.requires ?? [], name: manifest.name ?? id, description: manifest.description ?? '',
+    details: manifest.details ?? '', enabled: false, disabledByEnv: control.plugins.disabledByEnv(id),
+    pendingEnabled: control.plugins.pendingEnabled(id), origin: 'trusted', trust: control.trusted!.info(id), ...control.trusted!.iconInfo(id) };
+}
+
+/** Running plugins, official browser entries, and the settings cards and registration diagnostics. */
 function pluginsOf(hub: Hub, control: WebControl) {
   const external = control.externalPlugins;
+  const trusted = control.trusted;
+  const registration = external?.registrationFailures((id) => control.plugins.has(id));
+  const installed: Record<string, unknown>[] = [
+    // `faults` (only when there are any): this run's recorded failures of the plugin's service, hooks and tools
+    // (docs/plugins.md「故障隔离」).
+    ...control.plugins.list().map((p) => {
+      const faults = hub.pluginFaults(p.id);
+      const trust = trusted?.isLoaded(p.id) ? trusted.info(p.id) : undefined;
+      return { ...p, ...external?.info(p.id), ...(trust ? { origin: 'trusted', trust, ...trusted!.iconInfo(p.id) } : {}), ...(faults.length ? { faults } : {}) };
+    }),
+    ...(registration?.failed ?? []),
+  ];
+  for (const id of trusted?.ids() ?? []) {
+    if (!installed.some((row) => row.id === id)) installed.push(idleTrustedRow(control, id));
+    else if (!trusted!.isLoaded(id) && installed.find((row) => row.id === id)!.origin !== 'trusted') {
+      // Its id is another plugin's: that card says why this registration did not load.
+      const row = installed.find((r) => r.id === id)!;
+      row.trustConflict = trusted!.info(id)!.error ?? `另一个插件已经使用了 ID ${id}`;
+    }
+  }
+  for (const conflict of trusted?.conflicts ?? []) {
+    const row = installed.find((r) => r.id === conflict.id);
+    if (row) row.trustConflict = `${conflict.manifestPath}：${conflict.error}`;
+  }
   return {
-    plugins: hub.store.plugins.enabled.filter(({ id }) => !external?.has(id) || external.info(id).runtime?.state === 'ready').map(({ id, version }) => ({ id, version })),
+    // An official plugin when enabled at this start; a third-party one while ready (it may have been started since).
+    plugins: hub.store.plugins.installed.filter((p) => (external?.has(p.id) ? external.stateOf(p.id) === 'ready' : hub.store.plugins.enabled.includes(p)))
+      .map(({ id, version }) => ({ id, version: external?.manifestOf(id)?.version ?? version })),
     frontend: hub.store.plugins.enabled.flatMap(({ id, webModule }) => webModule && !external?.has(id) ? [webModule] : []),
-    installed: [
-      ...control.plugins.list().map((p) => ({ ...p, ...external?.info(p.id) })),
-      // Skipped at start-up, with a readable manifest: shown as failed so the user sees why it is not running. An id
-      // that a registered plugin already uses (an official one, say) keeps its own row; the skip stays in the log.
-      ...(external?.failedInstalled() ?? []).filter((p) => !control.plugins.has(p.id)),
-    ],
+    // The enabled full-trust plugins that loaded this start and have a page module: the page imports /plugin-web/<id>/.
+    trustedFrontend: hub.store.plugins.enabled.flatMap(({ id }) => (trusted?.hasWeb(id) ? [id] : [])),
+    safeMode: trusted?.safeMode ?? false,
+    // Which start of the Hub this list belongs to (the same as /api/health's): the page compares lists per start.
+    instance: control.health().instance,
+    installed,
+    skippedRegistrations: registration?.skippedRegistrations ?? [],
   };
 }
 
@@ -220,14 +365,24 @@ function intParam(url: URL, name: string, def: number, max: number): number {
 /** Events per replay page: a few milliseconds of Hub time, then other requests get their turn. */
 export const REPLAY_PAGE = 500;
 
-function stream(hub: Hub, req: IncomingMessage, res: ServerResponse, since: number): void {
+function stream(hub: Hub, req: IncomingMessage, res: ServerResponse, since: number, external?: ExternalPlugins): void {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   res.flushHeaders();   // otherwise clients wait for headers until the first event
   const frame = (seq: number, json: string) => `id: ${seq}\ndata: ${json}\n\n`;
   let replayed = 0;   // the highest seq the replay wrote to this connection
   let closed = false;
   let off = () => {};
-  req.on('close', () => { closed = true; off(); });
+  // Plugin command runs (docs/external-plugins.md「命令」): a named frame with no id, so it is neither a logged Hub event
+  // nor a resume point; this stream is the user's (API token) and nothing else hears about runs.
+  const offRuns = external?.onRun((run) => { if (!closed) res.write(`event: plugin-run\ndata: ${JSON.stringify(run)}\n\n`); }) ?? (() => {});
+  // A third-party plugin's state (docs/external-plugins.md「生命周期」): the same kind of named frame, sequenced by
+  // lifecycle.seq so the page keeps the newer of it and a GET /api/plugins answer.
+  const offStates = external?.onState((frame) => { if (!closed) res.write(`event: plugin-state\ndata: ${JSON.stringify(frame)}\n\n`); }) ?? (() => {});
+  const offConfig = external?.onConfig((notice) => { if (!closed) res.write(`event: plugin-config\ndata: ${JSON.stringify(notice)}\n\n`); }) ?? (() => {});
+  // Plugin UIs (docs/external-plugins.md「网页界面」): pushes for named frames, chips and revoked frames; the page routes
+  // each push only to the frames it names. A push's data is the plugin's (at most 16 KiB of JSON).
+  const offUi = external?.onUi((ui) => { if (!closed) res.write(`event: plugin-ui\ndata: ${JSON.stringify(ui)}\n\n`); }) ?? (() => {});
+  req.on('close', () => { closed = true; off(); offRuns(); offStates(); offConfig(); offUi(); });
   const live = (e: HubEvent) => {
     // An event stored before the last page was read, but announced only afterwards, was already sent.
     if (e.seq > replayed) res.write(frame(e.seq, JSON.stringify(e)));
@@ -254,13 +409,44 @@ function stream(hub: Hub, req: IncomingMessage, res: ServerResponse, since: numb
   replay(since);
 }
 
-async function serveStatic(pathname: string, res: ServerResponse): Promise<void> {
-  const file = Object.hasOwn(CORE_FOR_PAGE, pathname) ? CORE_FOR_PAGE[pathname]
-    : normalize(join(PUBLIC_DIR, pathname === '/' ? 'index.html' : decodeURIComponent(pathname)));
-  if (!file.startsWith(PUBLIC_DIR + sep) && !Object.hasOwn(CORE_FOR_PAGE, pathname)) return json(res, 404, { error: 'not found' });
+async function preparePluginInstall(installer: NonNullable<WebControl['pluginInstaller']>, url: URL,
+  req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if ((req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase() !== 'application/octet-stream') {
+    const data = await readJson(req);
+    return json(res, 200, await installer.prepare({ source: data.source, manifestPath: data.manifestPath }));
+  }
+  const raw = req.headers['x-file-name'];
+  if (typeof raw !== 'string' || !raw || raw.length > 2000) throw new Error('A plugin package filename is required.');
+  const filename = decodeURIComponent(raw);
+  const tooLarge = () => json(res, 413, { error: 'Plugin archive exceeds 32 MiB.', code: 'PACKAGE_TOO_LARGE' }, { connection: 'close' });
+  if (Number(req.headers['content-length']) > installer.maxArchiveBytes) return tooLarge();
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+    size += chunk.length;
+    if (size > installer.maxArchiveBytes) return tooLarge();
+    chunks.push(chunk);
+  }
+  const manifestPath = url.searchParams.get('manifestPath') ?? undefined;
+  return json(res, 200, await installer.prepare({ bytes: Buffer.concat(chunks), filename, manifestPath }));
+}
+
+async function serveStatic(pathname: string, host: string, res: ServerResponse, avatarDir?: string): Promise<void> {
+  const preset = avatarDir ? /^\/avatars\/([^/]+)\.png$/.exec(pathname)?.[1] : undefined;
+  const avatarFile = avatarDir && preset && PRESET_SOURCE.test(preset) ? join(avatarDir, preset + '.png') : null;
+  if (avatarDir && pathname.startsWith('/avatars/') && !avatarFile) return json(res, 404, { error: 'not found' });
+  const shared = pathname.startsWith('/shared/i18n/') ? pathname.slice('/shared/i18n/'.length) : null;
+  if (shared !== null && !I18N_FILES.has(shared)) return json(res, 404, { error: 'not found' });
+  const core = Object.hasOwn(CORE_FOR_PAGE, pathname);
+  const file = avatarFile ?? (shared ? join(I18N_DIR, shared) : core ? CORE_FOR_PAGE[pathname]
+    : normalize(join(PUBLIC_DIR, pathname === '/' ? 'index.html' : decodeURIComponent(pathname))));
+  if (!avatarFile && !shared && !core && !file.startsWith(PUBLIC_DIR + sep)) return json(res, 404, { error: 'not found' });
   try {
     const body = await readFile(file);
-    res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' });
+    const type = TYPES[extname(file)] ?? 'application/octet-stream';
+    // The page may hold frames from one place only: this Hub's plugin UI files. The policy also covers the frames' own
+    // navigations, so a plugin UI cannot take its frame to any other address (docs/external-plugins.md「网页界面」).
+    res.writeHead(200, { 'content-type': type, ...(type.startsWith('text/html') ? { 'content-security-policy': `frame-src http://${host}/plugin-ui/` } : {}) });
     res.end(body);
   } catch {
     json(res, 404, { error: 'not found' });
@@ -274,6 +460,8 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
   const route = (re: RegExp) => re.exec(path)?.slice(1).map(decodeURIComponent);
   let m: string[] | undefined;
   try {
+    if (path.startsWith('/plugin-ui/')) return servePluginUi(control, req, path, res);
+    if (path.startsWith('/plugin-web/')) return servePluginWeb(hub, control, req, path, res);
     if (path.startsWith('/api/')) {
       // The page's login: the token from its #token= fragment becomes a session cookie (HttpOnly: page scripts and
       // the URL never hold it after this). The only /api/* route without the token.
@@ -287,6 +475,33 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
     }
     // Never carries the bridge secret or the API token: the launcher and the page read it.
     if (method === 'GET' && path === '/api/health') return json(res, 200, control.health());
+    if (path === '/api/updates' || path === '/api/updates/check') {
+      const updates = control.updates;
+      if (updates && method === 'GET' && path === '/api/updates') return json(res, 200, updates.snapshot());
+      if (updates && method === 'POST' && path === '/api/updates/check') {
+        await readJson(req);
+        return json(res, 200, await updates.check());
+      }
+      if (updates && method === 'PATCH' && path === '/api/updates') {
+        const data = await readJson(req);
+        if (Object.keys(data).some((key) => key !== 'autoCheck')) throw new Error('Unsupported update setting.');
+        return json(res, 200, updates.setAutoCheck(data.autoCheck));
+      }
+      return json(res, 404, { error: 'not found' });
+    }
+    // The user API is the only entry for installing packages. Reserve the namespace before plugin routes.
+    if (path.startsWith('/api/plugin-installs/')) {
+      const installer = control.pluginInstaller;
+      if (installer && method === 'POST' && path === '/api/plugin-installs/prepare') return await preparePluginInstall(installer, url, req, res);
+      if (installer && method === 'POST' && (m = route(/^\/api\/plugin-installs\/([^/]+)\/confirm$/))) {
+        return json(res, 200, await installer.confirm(m[0], await readJson(req)));
+      }
+      if (installer && method === 'DELETE' && (m = route(/^\/api\/plugin-installs\/([^/]+)$/))) {
+        await installer.cancel(m[0]);
+        return json(res, 200, { cancelled: true });
+      }
+      return json(res, 404, { error: 'not found' });
+    }
     if (method === 'POST' && path === '/api/shutdown' && control.shutdown) {
       await readJson(req);
       const shutdown = control.shutdown;
@@ -300,15 +515,23 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
       const fingerprints = await control.toolFingerprints?.().catch(() => null);
       return json(res, 200, { hub: fingerprints ?? null, members: hub.toolVersionReport() });
     }
+    // `mode` is optional and may only be 'native' (an older page still sends it); isolated mode was removed.
+    const nativeOnly = () => {
+      const mode = url.searchParams.get('mode');
+      if (mode !== null && mode !== 'native') throw new Error(`invalid mode ${JSON.stringify(mode)}: every member is native`);
+    };
     if (method === 'GET' && (m = route(/^\/api\/harnesses\/([^/]+)\/projects$/))) {
+      nativeOnly();
       return json(res, 200, await hub.listProjects(m[0]));
     }
     if (method === 'GET' && (m = route(/^\/api\/harnesses\/([^/]+)\/sessions$/))) {
+      nativeOnly();
       const project = url.searchParams.get('project');
       if (!project) throw new Error('project is required');
       return json(res, 200, await hub.listSessions(m[0], project));
     }
     if (method === 'GET' && (m = route(/^\/api\/harnesses\/([^/]+)\/models$/))) {
+      nativeOnly();
       return json(res, 200, await hub.listModels(m[0]));
     }
     if (method === 'GET' && path === '/api/state') {
@@ -331,15 +554,73 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
     if (method === 'GET' && path === '/api/settings') return json(res, 200, settingsOf(hub));
     if (method === 'GET' && path === '/api/activity') return json(res, 200, hub.activityReport(url.searchParams.get('cluster') ?? undefined));
     if (method === 'GET' && path === '/api/skills') return json(res, 200, hub.listSkills());
+    // 技能与 MCP: user only (this API token), before the plugin routes so none can stand in for them.
+    if (path === '/api/extensions' || path === '/api/extensions/skills/install') {
+      if (!control.extensions) return json(res, 404, { error: 'not found' });
+      if (method === 'GET' && path === '/api/extensions') return json(res, 200, control.extensions.list());
+      if (method === 'POST' && path === '/api/extensions/skills/install') return await installSkill(control.extensions, url, req, res);
+      return json(res, 404, { error: 'not found' });
+    }
     if (method === 'GET' && path === '/api/avatars') return json(res, 200, hub.avatarPresets());
     if (method === 'GET' && path === '/api/plugins') return json(res, 200, pluginsOf(hub, control));
+    if ((method === 'GET' || method === 'PUT') && (m = route(/^\/api\/plugins\/([^/]+)\/config$/))) {
+      const external = control.externalPlugins;
+      if (!external) return json(res, 404, { code: 'CONFIG_NOT_FOUND', error: '没有可配置的插件。' });
+      try {
+        const clusterId = url.searchParams.get('clusterId');
+        let result;
+        if (method === 'GET') result = external.configView(m[0], clusterId);
+        else {
+          let body;
+          try { body = await readJson(req); } catch { throw new PluginConfigProblem('CONFIG_INVALID', '配置正文须是有效的 JSON 对象。'); }
+          result = external.setConfig(m[0], clusterId, body);
+        }
+        return json(res, 200, result, { 'cache-control': 'no-store' });
+      } catch (e) {
+        if (!(e instanceof PluginConfigProblem)) throw e;
+        const status = e.code === 'CONFIG_NOT_FOUND' ? 404 : e.code === 'CONFIG_CONFLICT' || e.code === 'HUB_CLOSING' ? 409 : 400;
+        return json(res, status, { code: e.code, error: e.message, ...(e.field ? { field: e.field } : {}) });
+      }
+    }
+    if (method === 'GET' && (m = route(/^\/api\/clusters\/([^/]+)\/plugin-configs$/))) {
+      const listing = control.externalPlugins ? control.externalPlugins.configsInCluster(m[0])
+        : hub.store.getCluster(m[0]) ? { plugins: [] } : null;
+      return listing ? json(res, 200, listing) : json(res, 404, { error: '没有这个群聊。' });
+    }
     if (method === 'GET' && (m = route(/^\/api\/plugins\/([^/]+)\/icon$/))) return servePluginIcon(control, m[0], res);
-    if (method === 'POST' && (m = route(/^\/api\/plugins\/([^/]+)\/(invoke|stop)$/))) {
-      if (!control.externalPlugins?.has(m[0])) return json(res, 404, { error: 'unknown external plugin' });
+    // A third-party plugin's lifecycle (docs/external-plugins.md「生命周期」): this API token only, like every /api/*
+    // route; no member, bridge secret or plugin reaches it. Checked in this order: the plugin, the body, the state.
+    if ((method === 'POST' && (m = route(/^\/api\/plugins\/([^/]+)\/(invoke|stop|start|restart)$/)))
+      || (method === 'PATCH' && (m = route(/^\/api\/plugins\/([^/]+)\/(lifecycle)$/)))) {
+      const external = control.externalPlugins;
+      if (!external?.has(m[0])) return json(res, 404, { error: 'unknown external plugin', code: 'UNKNOWN_PLUGIN' });
       const body = await readJson(req);
-      if (m[1] === 'invoke') return json(res, 200, { result: await control.externalPlugins.invoke(m[0], body) });
-      if (!body || Array.isArray(body) || Object.keys(body).length) throw new Error('stop body must be {}');
-      await control.externalPlugins.stop(m[0]);
+      try {
+        if (m[1] === 'invoke') return json(res, 200, { result: await external.invoke(m[0], body) });
+        if (m[1] === 'lifecycle') external.setLifecycle(m[0], body);
+        else {
+          if (Array.isArray(body) || Object.keys(body).length) throw new LifecycleRefusal('INVALID_REQUEST', '请求须是 {}。');
+          await (m[1] === 'stop' ? external.stop(m[0]) : m[1] === 'start' ? external.startPlugin(m[0]) : external.restartPlugin(m[0]));
+        }
+      } catch (e) {
+        if (!(e instanceof LifecycleRefusal)) throw e;
+        return json(res, e.code === 'UNKNOWN_PLUGIN' ? 404 : e.code === 'INVALID_REQUEST' ? 400 : 409, { error: e.message, code: e.code });
+      }
+      return json(res, 200, pluginsOf(hub, control));
+    }
+    // The user confirms or revokes a full-trust plugin (docs/external-plugins.md「完全信任的插件」): this API token only,
+    // like every /api/* route (no restricted plugin process, plugin frame or member reaches it); effective after a restart.
+    if (method === 'PUT' && (m = route(/^\/api\/plugins\/([^/]+)\/trust$/))) {
+      if (!control.trusted?.has(m[0])) return json(res, 404, { error: 'unknown full-trust plugin', code: 'UNKNOWN_PLUGIN' });
+      const body = await readJson(req);
+      const keys = Object.keys(body).sort().join(',');
+      if (Array.isArray(body) || !(keys === 'trusted' || keys === 'entry,trusted') || typeof body.trusted !== 'boolean' || (keys === 'entry,trusted') !== body.trusted) {
+        return json(res, 400, { error: '请求须是 {"trusted":true,"entry":"<入口文件路径>"} 或 {"trusted":false}。', code: 'INVALID_REQUEST' });
+      }
+      try { control.trusted.setTrust(m[0], body.trusted, body.entry); } catch (e) {
+        if (!(e instanceof TrustRefusal)) throw e;
+        return json(res, e.code === 'UNKNOWN_PLUGIN' ? 404 : 409, { error: e.message, code: e.code });
+      }
       return json(res, 200, pluginsOf(hub, control));
     }
     if (method === 'PATCH' && (m = route(/^\/api\/plugins\/([^/]+)\/write-settings$/))) {
@@ -420,7 +701,62 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
         return json(res, 200, await hub.purgeCluster(m[0], body.name, body.trashVersion));
       } catch (e) {
         if (!(e instanceof PurgeRefused)) throw e;
-        return json(res, e.code === 'NOT_FOUND' ? 404 : 409, { error: e.message, code: e.code, ...(e.member ? { member: e.member } : {}) });
+        return json(res, e.code === 'NOT_FOUND' ? 404 : 409, { error: e.message, code: e.code, ...(e.member ? { member: e.member } : {}),
+          ...(e.plugins.length ? { plugins: e.plugins } : {}) });
+      }
+    }
+    // Plugin commands the user runs from a cluster (docs/external-plugins.md「命令」): this API token only, before the
+    // official plugins' routes so none can stand in for them. No message, delivery or wake comes of them.
+    if ((m = route(/^\/api\/clusters\/([^/]+)\/plugin-(commands|commands\/run|runs\/[^/]+\/cancel)$/))) {
+      const external = control.externalPlugins;
+      try {
+        if (method === 'GET' && m[1] === 'commands') {
+          const listing = external?.commands(m[0]) ?? (hub.store.getCluster(m[0]) ? { commands: [], runs: [] } : null);
+          return listing ? json(res, 200, listing) : json(res, 404, { error: 'not found' });
+        }
+        if (method === 'POST' && m[1] === 'commands/run') {
+          if (!external) throw new CommandRefusal('UNKNOWN_PLUGIN', '没有这个插件。');
+          return json(res, 200, { run: await external.runCommand(m[0], await readJson(req)) });
+        }
+        if (method === 'POST' && m[1].endsWith('/cancel')) {
+          const body = await readJson(req);
+          if (Array.isArray(body) || Object.keys(body).length) throw new CommandRefusal('INVALID_REQUEST', '请求须是 {}。');
+          if (!external) throw new CommandRefusal('RUN_NOT_FOUND', '没有这个正在运行的命令。');
+          return json(res, 200, { run: external.cancelRun(m[0], m[1].slice('runs/'.length, -'/cancel'.length)) });
+        }
+      } catch (e) {
+        if (!(e instanceof CommandRefusal)) throw e;
+        return json(res, e.code === 'RUN_NOT_FOUND' ? 404 : 400, { error: e.message, code: e.code, ...(e.field ? { field: e.field } : {}) });
+      }
+    }
+    // Plugin UIs (docs/external-plugins.md「网页界面」): this API token only, before the official plugins' routes. The
+    // frame id names the plugin, cluster and position; nothing the frame says about itself is believed.
+    if ((m = route(/^\/api\/clusters\/([^/]+)\/plugin-ui((?:\/frames)?)$/)) || (m = route(/^\/api\/plugin-ui\/frames\/([A-Za-z0-9_-]{1,64})((?:\/request)?)$/))) {
+      const external = control.externalPlugins;
+      const frameRoute = path.startsWith('/api/plugin-ui/');
+      try {
+        if (!frameRoute && method === 'GET' && !m[1]) {
+          const listing = external?.uiItems(m[0]) ?? (hub.store.getCluster(m[0]) ? { items: [] } : null);
+          return listing ? json(res, 200, listing) : json(res, 404, { error: 'not found' });
+        }
+        if (!frameRoute && method === 'POST' && m[1]) {
+          if (!external) throw new UiRefusal('UNKNOWN_PLUGIN', '没有这个第三方插件。');
+          return json(res, 200, external.openUiFrame(m[0], await readJson(req)), { 'cache-control': 'no-store' });
+        }
+        if (frameRoute && method === 'DELETE' && !m[1]) {
+          await readJson(req);
+          external?.closeUiFrame(m[0]);
+          return json(res, 200, {});
+        }
+        if (frameRoute && method === 'POST' && m[1]) {
+          if (!external) throw new UiRefusal('FRAME_CLOSED', '这个界面已经关闭或失效，请重新打开。');
+          let body;
+          try { body = await readJson(req); } catch { throw new UiRefusal('INVALID_REQUEST', '请求须是 {data}。'); }
+          return json(res, 200, await external.uiRequest(m[0], body), { 'cache-control': 'no-store' });
+        }
+      } catch (e) {
+        if (!(e instanceof UiRefusal)) throw e;
+        return json(res, UI_STATUS[e.code] ?? 409, { error: e.message, code: e.code });
       }
     }
     for (const plugin of hub.store.plugins.routes) {
@@ -429,7 +765,8 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
       }
     }
     if (method === 'POST' && (m = route(/^\/api\/clusters\/([^/]+)\/collaboration$/))) {
-      return json(res, 200, hub.collaboration.command({ kind: 'user' }, m[0], await readJson(req)));
+      // The same entry as the members' tools: a plugin action's prepare step runs here too (docs/plugins.md「动作合同」).
+      return json(res, 200, await hub.collaboration.commandAsync({ kind: 'user' }, m[0], await readJson(req)));
     }
     if (method === 'PATCH' && (m = route(/^\/api\/clusters\/([^/]+)$/))) {
       // A non-empty subset of { category, name, pinned, archived }; Hub.updateCluster checks keys and values.
@@ -554,11 +891,12 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
       await readJson(req);
       return json(res, 200, { results: await hub.refreshUsage() });
     }
-    if (method === 'GET' && path === '/api/stream') return stream(hub, req, res, sinceParam(url, req));
-    if (method === 'GET' && !path.startsWith('/api/')) return serveStatic(path, res);
+    if (method === 'GET' && path === '/api/stream') return stream(hub, req, res, sinceParam(url, req), control.externalPlugins);
+    if (method === 'GET' && !path.startsWith('/api/')) return serveStatic(path, req.headers.host ?? '', res, control.avatarDir);
     json(res, 404, { error: 'not found' });
   } catch (e) {
     const code = e instanceof Error && 'code' in e && typeof e.code === 'string' ? e.code : undefined;
-    json(res, 400, { error: e instanceof Error ? e.message : String(e), ...(code ? { code } : {}) });
+    const paths = e instanceof Error && 'manifestPaths' in e && Array.isArray(e.manifestPaths) ? e.manifestPaths : undefined;
+    json(res, 400, { error: e instanceof Error ? e.message : String(e), ...(code ? { code } : {}), ...(paths ? { manifestPaths: paths } : {}) });
   }
 }

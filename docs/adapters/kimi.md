@@ -30,3 +30,11 @@ Kimi Code 适配器接入用户已经在运行的 Kimi Code 桌面应用或本�
 - **只读列表（`src/adapters/kimi/store.ts`）**：优先只读 `~/.kimi-code/projects.json`（排除归档与已删工作区），缺失或损坏回退 `workspaces.json`；严格按 `session_<UUID>` 校验会话 ID。
 - **队列提交与并发锁退让**：信封前置 `[orrery · 来自 <发送者>]`，请求体**仅**传 `content` 与 `prompt_id`（不覆盖用户模型或权限设置）；遇 `40931`（正被其他客户端如终端使用）每 2 秒重试最多 15 次后报错，**绝不调用会话锁接管（takeover）**；超时或尚未观测到 `running` 时被取消则尝试 `:abort` 并结合实际响应如实标注 `unknown`。
 - **用量**：按自动 5 分钟、手动 10 秒冷却读取 `/api/v1/oauth/usage`，以 `stepId` 去重累计当轮 `step.usage`，从 `wire.jsonl` 只读会话累计。Kimi Code 的基本收发与回复已在真实客户端跑通。
+
+## 读取对话正文（`transcript`）
+
+插件经 Hub 读取群员绑定的原生对话时（见[架构说明](../architecture.md#读取群员当前绑定的原生对话)），适配器定位绑定会话在 `sessions/` 目录内的 `agents/main/wire.jsonl`（先经同目录 `state.json` 核对会话 ID、拒绝链接与硬链接），按字节游标读较早记录与新增记录，不读取 `server.token` 也不连接本地服务：
+
+- 只读取主代理的规范循环事件（`turn.prompt`、用户发起的 `turn.steer`、`context.append_loop_event` 及中断/错误行），跳过子代理记录和冗余镜像流；`think` 块只输出占位，不暴露思考原文；非文本工具输出与不认识的记录分别占位并计数。
+- 投递通过 `promptId` 对回 Hub 投递批次；可选直连 MCP 模式下按同 `callId` 配对成功的 `send_message` 回执（含跨页配对）对回 `orrery_post`。默认回答即发言模式的回复在 `wire.jsonl` 中无 Hub 消息编号，保留为普通 `assistant`。
+- 已知对照基线：按 Kimi Code 1.3.4 的 `wire.jsonl`（`protocol_version: "1.5"`）结构以合成记录测试覆盖（`node --test test/kimi-transcript.test.ts`）。

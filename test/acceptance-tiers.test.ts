@@ -5,7 +5,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { Hub } from '../src/core/hub.ts';
 import { Store } from '../src/core/store.ts';
 import type { CollaborationActor, CollaborationCommand, Task, TaskResult } from '../src/core/collaboration-types.ts';
-import { nativeHeaders, holdScript, startTestHub, waitFor } from './helpers.ts';
+import { bearer, holdScript, startTestHub, waitFor, turnsOf, memberHeaders } from './helpers.ts';
 import { saveCollaborationTask } from '../src/plugins/tasks/store.ts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
@@ -20,7 +20,7 @@ function fixture(t: TestContext) {
   store.insertCluster({ id: 'c', name: 'c', category: '', createdAt: '2026-01-01' },
     ['a', 'b', 'c', 'd', 'coord'].map((id) => ({
       id, clusterId: 'c', name: id, avatar: null, harness: 'mock', model: null, effort: null,
-      mode: 'native' as const, workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null,
+      workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null,
     })));
   const hub = new Hub({ store, nativeAdapters: {} });
   t.after(async () => { await hub.close(); store.close(); });
@@ -238,9 +238,10 @@ test('MCP create_task and task_action edit accept self; get_task and the task su
   try {
     const { cluster, members: [a] } = await app.cluster('tiers-mcp', ['A']);
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@A hold' });
+    await waitFor(() => turnsOf(app, a.id) > 0, 'member turn');
     client = new Client({ name: 'test', version: '0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(app.url + '/mcp'), {
-      requestInit: { headers: nativeHeaders(app, a.id) },
+      requestInit: { headers: memberHeaders(app, a.id) },
     }));
     const call = async (name: string, args: Record<string, unknown>) => {
       const result = await client!.callTool({ name, arguments: args });

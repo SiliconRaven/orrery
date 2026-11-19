@@ -1,9 +1,15 @@
-// JSON-RPC framing shared by the native Codex adapter.
+// Codex protocol pieces without a real model: JSON-RPC framing, the approval answers and the model catalog the native
+// adapter uses (src/adapters/codex/rpc.ts, protocol.ts). The native adapter itself: test/codex-native.test.ts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough, Writable } from 'node:stream';
+import { decideServerRequest, fetchModels } from '../src/adapters/codex/protocol.ts';
 import { RpcPeer } from '../src/adapters/codex/rpc.ts';
+
 const tick = (ms = 0) => new Promise((ok) => setTimeout(ok, ms));
+
+// ---- JSON-RPC framing ----
+
 test('codex rpc: splits lines across chunks, matches responses, answers server requests', async () => {
   const out = new PassThrough();
   const input = new PassThrough();
@@ -68,4 +74,72 @@ test('codex rpc: an exception from a handler closes the peer instead of escaping
   assert.doesNotThrow(() => peer.feed('{"method":"n","params":{}}\n'));
   await assert.rejects(pending, /handling an app-server message failed: bad handler/);
   assert.match(closedWith, /bad handler/);
+});
+
+// ---- approvals and the model catalog ----
+
+test('codex: approvals — every request orrery answers is declined, an orrery tool prompt too', () => {
+  for (const serverName of ['orrery', 'other-server']) {
+    const prompt = decideServerRequest('mcpServer/elicitation/request', { serverName, mode: 'form', message: 'Allow run?' });
+    assert.equal((prompt.result as any).action, 'decline');
+    assert.match(prompt.declined, new RegExp(serverName));
+  }
+  assert.deepEqual(decideServerRequest('item/commandExecution/requestApproval', { command: 'rm -rf x' }).result, { decision: 'decline' });
+  assert.deepEqual(decideServerRequest('item/fileChange/requestApproval', {}).result, { decision: 'decline' });
+  assert.deepEqual(decideServerRequest('item/permissions/requestApproval', {}).result, { permissions: {}, scope: 'turn' });
+  assert.deepEqual(decideServerRequest('item/tool/requestUserInput', {}).result, { answers: {} });
+  assert.deepEqual(decideServerRequest('item/tool/call', { tool: 'x' }).result, { contentItems: [], success: false });
+  assert.deepEqual((decideServerRequest('execCommandApproval', { command: ['rm'] }).result as any).decision.denied.rejection, 'declined by orrery');
+  for (const m of ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'execCommandApproval', 'applyPatchApproval']) {
+    assert.ok(decideServerRequest(m, {}).declined, m);
+  }
+  assert.throws(() => decideServerRequest('account/chatgptAuthTokens/refresh', {}), /does not handle/);
+});
+
+/** One v2/Model entry as model/list sends it. */
+const catalogEntry = (model: string, displayName: string, efforts: string[], isDefault = false) => ({
+  id: `${model}-entry`, model, displayName, description: '', hidden: false, isDefault, defaultReasoningEffort: efforts[0] ?? 'medium',
+  supportedReasoningEfforts: efforts.map((reasoningEffort) => ({ reasoningEffort, description: '' })),
+});
+
+/** A model/list peer answering from `pages` by cursor, recording what it was asked. */
+function catalog(pages: Record<string, unknown>) {
+  const asked: unknown[] = [];
+  const rpc = { request: async (method: string, params: { cursor: string | null }) => {
+    assert.equal(method, 'model/list');
+    asked.push(params);
+    return pages[params.cursor ?? ''];
+  } } as unknown as RpcPeer;
+  return { rpc, asked };
+}
+
+test('codex: fetchModels pages through model/list, keeps one entry per model name with its efforts and the default', async () => {
+  const { rpc, asked } = catalog({
+    '': { data: [catalogEntry('gpt-a', 'GPT-A', ['low', 'high'], true), catalogEntry('gpt-b', 'GPT-B', [])], nextCursor: 'p2' },
+    p2: { data: [catalogEntry('gpt-a', 'GPT-A again', ['low']), catalogEntry('gpt-c', 'GPT-C', ['medium'])], nextCursor: null },
+  });
+  assert.deepEqual(await fetchModels(rpc), [
+    { id: 'gpt-a', label: 'GPT-A', efforts: ['low', 'high'], isDefault: true },
+    { id: 'gpt-b', label: 'GPT-B', efforts: [] },
+    { id: 'gpt-c', label: 'GPT-C', efforts: ['medium'] },
+  ]);
+  assert.deepEqual(asked, [{ cursor: null }, { cursor: 'p2' }]);
+});
+
+test('codex: fetchModels skips entries without a model name and drops efforts that are not strings', async () => {
+  const { rpc } = catalog({ '': {
+    data: [
+      { ...catalogEntry('x', 'No name', ['low']), model: undefined },
+      { ...catalogEntry('x', 'Empty', ['low']), model: '' },
+      { ...catalogEntry('x', 'Number', ['low']), model: 42 },
+      null,
+      { ...catalogEntry('gpt-a', 'GPT-A', []), supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 7 }, null, {}] },
+      { ...catalogEntry('gpt-b', '', []), supportedReasoningEfforts: 'high', isDefault: 'yes' },
+    ],
+    nextCursor: null,
+  } });
+  assert.deepEqual(await fetchModels(rpc), [
+    { id: 'gpt-a', label: 'GPT-A', efforts: ['low'] },
+    { id: 'gpt-b', efforts: [] },
+  ]);
 });

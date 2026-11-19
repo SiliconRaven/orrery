@@ -26,17 +26,27 @@
         "plugins/unread-hint/hook.mjs!",
         "examples/hub-plugins/message-counter/main.mjs!",
         "examples/hub-plugins/review-reminder/main.mjs!",
+        "examples/hub-plugins/ui-demo/main.mjs!",
+        "examples/hub-plugins/trusted-demo/hub/index.mjs!",
+        "examples/hub-plugins/trusted-demo/web/index.js!",
         "test/*.test.ts",
         "test/live/claude-native.ts",
         "test/live/claude-usage.ts",
-        "test/fixtures/antigravity/fake-agentapi.mjs"
+        "test/fixtures/antigravity/fake-agentapi.mjs",
+        "test/fixtures/reply-once-gate/main.mjs",
+        "test/fixtures/command-demo/main.mjs",
+        "test/fixtures/tool-demo/main.mjs",
+        "test/fixtures/ui-probe/main.mjs",
+        "test/fixtures/ui-probe/ui/probe.js",
+        "test/fixtures/ui-probe/ui/mod.js"
       ],
       "project": [
         "src/**/*.{ts,js}",
         "scripts/*.{ts,mjs}",
         "plugins/**/*.{js,mjs,cjs}",
         "examples/hub-plugins/**/*.mjs",
-        "test/**/*.{ts,js,mjs,cjs}"
+        "test/**/*.{ts,js,mjs,cjs}",
+        "shared/**/*.js"
       ]
     },
     "desktop": {

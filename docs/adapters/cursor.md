@@ -32,6 +32,7 @@ orrery 不替用户安装、启用或修改 Cursor 配置：
 ## 对话枚举与状态判断
 
 - **只读枚举**：读取 `%APPDATA%\Cursor\User\workspaceStorage\*\workspace.json` 获取工作区目录，读取 `~/.cursor/projects/<编码路径>/agent-transcripts/<id>/<id>.jsonl` 列出对话；提取 `<user_query>` 作为标题并跳过 `[orrery` 开头投递条目。**绝不触碰任何包含登录令牌的 `state.vscdb` 数据库**。新对话须至少跑过一轮后才会生成 transcript 并出现在列表中。
+- **只读读取对话正文**：通过 `Hub.memberTranscript` 按页只读 `<cursorHome>/projects/*/agent-transcripts/<id>/<id>.jsonl`（严格校验路径与链接、不读任何 `state.vscdb`、有界扫描），剥离 `<timestamp>` 与 `<user_query>` 包装、占位脱敏 `thinking` 并规范化 `CallDynamicTool`；仅当首行匹配 `[orrery · … · #<8位交接号>]` 时交给 Hub 核实是否属于当前成员的真实投递（未命中保持原 `user`），因日志无 `tool_result` 而不猜测 `orrery_post`。
 - **在线判断**：存在有效停靠的 `stop` hook、正在运行通过确认的一轮、或轮次刚结束 10 秒重停靠宽限期内，且 `tasklist` 中存在当前用户的 `Cursor.exe` 时判为在线。Cursor 退出后 `stop` hook 通过探测父进程退出自动结束，没有残留驻留进程。
 - **连续多轮**：插件配置 `"loop_limit": null`（突破 Cursor 默认 5 轮 followup 限制），改由 Hub 的跳数、单链轮次、每小时上限与总暂停开关统一约束。
 

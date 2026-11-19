@@ -1,6 +1,6 @@
 {
   "name": "orrery-desktop",
-  "version": "0.10.0-beta.1",
+  "version": "0.10.0-beta.2",
   "private": true,
   "description": "Beta release. orrery desktop shell: the collaboration page plus one tab per running app window, docked next to it, never embedded.",
   "license": "MIT",
@@ -19,7 +19,7 @@
     "prepare:resources": "node scripts/prepare-resources.mjs",
     "pack": "npm run prepare:resources && electron-builder --dir --win --x64",
     "dist": "npm run prepare:resources && electron-builder --win nsis --x64",
-    "test:runtime": "node --test test/runtime.test.mjs"
+    "test:runtime": "node --test test/runtime.test.mjs test/prepare-resources.test.mjs"
   },
   "dependencies": {
     "koffi": "3.3.3"
@@ -43,6 +43,7 @@
       "lib/**",
       "ui/**",
       "assets/**",
+      "!assets/orrery-icon-agents.*",
       "package.json"
     ],
     "asarUnpack": [
@@ -61,6 +62,20 @@
       {
         "from": "build/hub/node_modules",
         "to": "hub/node_modules",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/hub/shared",
+        "to": "shared",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/node/node_modules",
+        "to": "node/node_modules",
         "filter": [
           "**/*"
         ]

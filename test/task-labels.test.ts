@@ -22,13 +22,13 @@ const b: CollaborationActor = { kind: 'member', memberId: 'b' };
 function fixture(path = ':memory:') {
   const store = new Store(path, new PluginHost(officialPlugins));
   const member = (id: string, clusterId: string) => ({ id, clusterId, name: id, avatar: null, harness: 'mock', model: null, effort: null,
-    mode: 'native' as const, workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null });
+    workerSessionId: 'session-' + id, cwd: '/tmp', origin: 'attached' as const, removedAt: null });
   for (const [clusterId, members] of [['c', ['a', 'b', 'coord']], ['other', ['x']]] as const) {
     if (!store.getCluster(clusterId, { includeDeleted: true })) {
       store.insertCluster({ id: clusterId, name: clusterId, category: '', createdAt: '2026-01-01' }, members.map((id) => member(id, clusterId)));
     }
   }
-  const hub = new Hub({ store, nativeAdapters: {}, });
+  const hub = new Hub({ store, nativeAdapters: {} });
   const send = (actor: CollaborationActor, command: Record<string, unknown>, clusterId = 'c') =>
     hub.collaboration.command(actor, clusterId, { operationId: randomUUID(), ...command } as unknown as CollaborationCommand) as any;
   const create = (labels: string[], actor: CollaborationActor = user, clusterId = 'c', title = 'task') =>
@@ -387,7 +387,7 @@ test('HTTP: POST /api/labels changes the library without a cluster, by the same 
   } finally { await app.close(); }
 });
 
-const NATIVE = (name: string, sessionId: string) => ({ harness: 'mock', mode: 'native' as const, sessionId, name });
+const NATIVE = (name: string, sessionId: string) => ({ harness: 'mock', sessionId, name });
 
 test('HTTP: the library route, label actions through the collaboration route, and new-cluster defaults', async () => {
   const app = await startTestHub();

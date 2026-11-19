@@ -7,6 +7,7 @@ import type { Hub } from '../../core/hub.ts';
 import type { PluginService } from '../../core/plugin.ts';
 import type { Store } from '../../core/store.ts';
 import type { HubEvent, Member } from '../../core/types.ts';
+import { waitsForBatch } from './batches.ts';
 import { idleTaskCandidates, pairKey, type IdleCandidate, type ReviewCandidate } from './idle-candidates.ts';
 import { hiddenWorkTasks } from './hidden.ts';
 import { participantKeys, taskDependencyEvaluation } from './model.ts';
@@ -94,7 +95,8 @@ export class TasksService implements PluginService {
       // Grace periods: a task just changed and a member just finishing a turn are not idle candidates yet.
       const evaluation = taskDependencyEvaluation(this.store, clusterId);
       const settledTasks = collaborationReminderTasks(this.store, clusterId)
-        .filter((task) => (task.status === 'pending' || task.status === 'review') && now - Date.parse(task.updatedAt) >= limits.idleTaskGraceMs)
+        .filter((task) => (task.status === 'pending' || task.status === 'review') && now - Date.parse(task.updatedAt) >= limits.idleTaskGraceMs
+          && !waitsForBatch(this.store, task))   // a batch's reviewer has nothing to review until the batch is complete
         .map((task) => ({ ...task, dependenciesReady: task.status === 'pending' && evaluation.versions(task) !== null }));
       const settledMembers = members.map((member) => member.status === 'idle'
         && now - (this.idleSince.get(member.id) ?? now) < limits.idleMemberGraceMs
@@ -172,7 +174,7 @@ export class TasksService implements PluginService {
     const heldByMember = new Map<string, ReminderTask[]>();
     for (const task of collaborationReminderTasks(this.store, clusterId)) {
       const id = task.status === 'review' ? (task.reviewer.kind === 'member' ? task.reviewer.memberId : null) : task.assignedMemberId;
-      if (!id || id === skipMemberId || (task.status === 'pending' && evaluation.versions(task) === null)) continue;
+      if (!id || id === skipMemberId || (task.status === 'pending' && evaluation.versions(task) === null) || waitsForBatch(this.store, task)) continue;
       const held = heldByMember.get(id);
       if (held) held.push(task);
       else heldByMember.set(id, [task]);

@@ -41,11 +41,11 @@ const GLYPH = /[\p{So}\p{Sm}\p{Extended_Pictographic}←-⇿⌀-⏿─-➿⬀-�
 
 // Kept on purpose: each entry is a file, the glyph, a pattern of its line, and why it is not an icon.
 const ALLOW: { file: string; glyph: string; line: RegExp; why: string }[] = [
-  { file: 'app.js', glyph: '→', line: /工作目录 \$\{r\.fromCwd\} → \$\{r\.toCwd\}/, why: 'the rebind preview: an arrow inside a sentence, old → new' },
+  { file: 'app.js', glyph: '→', line: /\bt\('工作目录 \{fromCwd\} → \{toCwd\}', \{ fromCwd: r\.fromCwd, toCwd: r\.toCwd \}\)/, why: 'the rebind preview: an arrow inside a sentence, old → new' },
   { file: 'task-diff-view.js', glyph: '→', line: /change\?\.before, resolve\)\} → \$\{scalar/, why: 'a field change: old → new inside a sentence' },
-  { file: 'workbench.js', glyph: '→', line: /验收方式 \$\{reviewModeText\(item\.reviewFrom/, why: 'a takeover record: old → new inside a sentence' },
+  { file: 'workbench.js', glyph: '→', line: /\bt\(" · 验收方式 \{before\} → \{after\} · 依据 \{basis\}", \{ before: reviewModeText\(item\.reviewFrom\b/, why: 'a takeover record: old → new inside a sentence' },
   { file: 'workbench.js', glyph: '→', line: /TASK_SORTS = |'优先级 高→低'/, why: 'sort orders (新→旧) are <option> text, which cannot hold an icon; the arrow reads as words' },
-  { file: 'app.js', glyph: '🦊', line: /placeholder: '例如 🦊'/, why: 'an example of an emoji avatar the user may type: user text, not an icon' },
+  { file: 'app.js', glyph: '🦊', line: /\bplaceholder: t\('例如 🦊'\)/, why: 'an example of an emoji avatar the user may type: user text, not an icon' },
   { file: 'index.html', glyph: '🦊', line: /placeholder="例如 🦊"/, why: 'the same example in the member editor' },
   { file: 'app.js', glyph: '≤', line: /≤256 KB/, why: 'a size limit written as maths in a sentence' },
   { file: 'index.html', glyph: '≤', line: /≤256 KB/, why: 'the same limit in the member editor' },

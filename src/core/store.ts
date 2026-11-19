@@ -6,14 +6,18 @@ import { dirname } from 'node:path';
 import { CHAIN_LIMIT_ERROR } from './delivery-timeline.ts';
 import { CLUSTER_GROUPS_KEY, parseGroups } from './cluster-groups.ts';
 import type { ExternalWriteSettings } from './external-plugin-config.ts';
+import { PluginConfigProblem, type SavedPluginConfigScope } from './external-plugin-values.ts';
 import { LIMIT_SETTINGS, parseLimit, type Limit, type LimitSetting } from './limits.ts';
-import { PluginHost, type CoordinatorView, type TaskView } from './plugin.ts';
+import { PluginHost, runHook, type CoordinatorView, type TaskView } from './plugin.ts';
 import type { ActivityObservation, Cluster, ClusterListing, Delivery, DeliveryResult, DeliveryState, FileInfo, HubEvent, Member, MemberRebind, Message, MessageAcknowledgement, MessageCategory, MessageFilters, QuotaSnapshot, Read, ReadVia, TokenTotals, UnreadAnnotation, UnreadBreakdown, UnreadCategory, UnreadCategoryCounts } from './types.ts';
 import type { CollectionItem, MemberRoles, Role } from './collaboration-types.ts';
 import { kindsOf } from './system-kinds.js';
 
 export type StoredMember = Omit<Member, 'status'>;
 const PURGED_CHAIN_TURNS = 'purged_chain_turns:';
+const V30_SENDER_NOTICE = 'v30_sender_notice:';
+// JSON distinguishes the global null from every cluster ID and delimits even IDs containing ':' or SQL wildcards.
+const pluginConfigPrefix = (clusterId: string | null) => 'external_plugin_config:' + JSON.stringify(clusterId) + ':';
 /** A member about to be written: it always starts visible, so `hiddenAt` may be left out and is not written (read back as null). */
 export type NewMember = Omit<StoredMember, 'hiddenAt'> & { hiddenAt?: string | null };
 /** `attachments` only when the message has any (older readers never see the field). */
@@ -39,7 +43,7 @@ export type QueuedCandidate = Pick<Delivery, 'id' | 'memberId' | 'batchId'> & {
   direct: boolean;
 };
 
-const SCHEMA_VERSION = 29;
+const SCHEMA_VERSION = 30;
 
 // The v16 collaboration tables, frozen: the v15 → v16 migration creates exactly this; v16 → v17 then adds the role
 // description column (the fresh schema below starts at the newest shape).
@@ -115,7 +119,8 @@ CREATE TABLE ${name} (
   cwd TEXT NOT NULL,
   origin TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  mode TEXT NOT NULL DEFAULT 'native' CHECK(mode = 'native'),
+  mode TEXT NOT NULL DEFAULT 'native',     -- history only, never read back; every insert writes 'native' (a migrated database keeps
+                                           -- its old default 'isolated', and 'isolated' on the members v30 moved out)
   effort TEXT,
   removed_at TEXT,
   unread_after_rowid INTEGER NOT NULL DEFAULT 0,  -- v27: messages at or before this rowid are pre-join and excluded from unread
@@ -125,6 +130,8 @@ const memberIndexesV5 = `
 CREATE UNIQUE INDEX members_active_name ON members(cluster_id, name) WHERE removed_at IS NULL;
 CREATE UNIQUE INDEX members_active_session ON members(harness, worker_session_id) WHERE removed_at IS NULL;
 `;
+// One active membership per conversation and cluster. (v14 to v29 also had two triggers keeping a session from being an
+// isolated and a native member at once; v30 drops them with isolated mode.)
 const multiSessionIndexes = `
 CREATE UNIQUE INDEX members_active_session ON members(cluster_id, harness, worker_session_id) WHERE removed_at IS NULL;
 `;
@@ -333,7 +340,7 @@ export type ClusterChanges = { name?: string; category?: string; pinnedAt?: stri
 const CLUSTER_CHANGE_COLUMNS = { name: 'name', category: 'category', pinnedAt: 'pinned_at', archivedAt: 'archived_at' } as const;
 const toMember = (r: Row): StoredMember => ({
   id: r.id, clusterId: r.cluster_id, name: r.name, avatar: r.avatar, harness: r.harness, model: r.model,
-  workerSessionId: r.worker_session_id, cwd: r.cwd, origin: r.origin, mode: r.mode, effort: r.effort, removedAt: r.removed_at ?? null,
+  workerSessionId: r.worker_session_id, cwd: r.cwd, origin: r.origin, effort: r.effort, removedAt: r.removed_at ?? null,
   hiddenAt: r.hidden_at ?? null,
 });
 const toMessage = (r: Row): Message => ({
@@ -438,6 +445,14 @@ export type SetJournalMode = (db: DatabaseSync, mode: DbMode['journal']) => stri
 
 const setJournalMode: SetJournalMode = (db, mode) => String((db.prepare(`PRAGMA journal_mode = ${mode}`).get() as Row).journal_mode);
 
+/** What Store does around a schema upgrade of an existing database (docs/architecture.md「升级前备份」). */
+export interface StoreUpgrade {
+  /** Makes one backup (or names an existing one of exactly this state) and returns its path; throws when it cannot. */
+  backup(): string;
+  /** After a start in which the upgrade sequence really completed (see the constructor): the time to end it and rotate old backups. */
+  done?(): void;
+}
+
 export class Store {
   readonly db: DatabaseSync;
   readonly plugins: PluginHost;
@@ -451,7 +466,11 @@ export class Store {
   /** One line for the start-up log when the journal mode is not the one asked for; null when it is. */
   readonly journalWarning: string | null;
 
-  constructor(path: string, plugins: PluginHost = new PluginHost(), mode: DbMode = DEFAULT_DB_MODE, setMode: SetJournalMode = setJournalMode) {
+  /** The automatic backup made before this start's schema upgrade (StoreUpgrade.backup); null when none was needed. */
+  readonly upgradeBackup: string | null = null;
+
+  constructor(path: string, plugins: PluginHost = new PluginHost(), mode: DbMode = DEFAULT_DB_MODE, setMode: SetJournalMode = setJournalMode,
+    upgrade?: StoreUpgrade) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.plugins = plugins;
@@ -459,14 +478,57 @@ export class Store {
       this.journalMode = this.applyMode(path, mode, setMode);
       this.journalWarning = this.journalMode === mode.journal || path === ':memory:' ? null
         : `database journal mode is '${this.journalMode}', not '${mode.journal}' as asked: SQLite kept the file's mode; the Hub runs as before`;
-      this.migrate();
-      this.plugins.migrate(this);
+      if (upgrade && path !== ':memory:') this.upgradeBackup = this.backupBeforeUpgrade(upgrade);
+      const from = this.schemaVersion();
+      try {
+        this.migrate();
+        const retire = this.schemaVersion() === 29;
+        const hooks = retire ? this.plugins.installed.filter((p) => p.memberRemoved).map((p) => p.id) : [];
+        this.plugins.migrate(this);
+        this.tasks = this.plugins.taskView?.(this) ?? null;
+        this.coordinator = this.plugins.coordinatorView?.(this) ?? null;
+        if (retire) this.retireIsolatedMembers(hooks);
+      } catch (e) {
+        if (from === 0 || from >= SCHEMA_VERSION) throw e;
+        // Each step commits with its version: say where it stopped. Nothing is restored on its own.
+        throw new Error(`database schema upgrade stopped at version ${this.schemaVersion()} (from ${from}, this Hub needs ${SCHEMA_VERSION}): `
+          + `${(e as Error).message}${this.upgradeBackup ? `; the backup made before the upgrade is ${this.upgradeBackup}` : ''}; nothing was restored automatically`, { cause: e });
+      }
+      // The upgrade sequence is over only when it really completed, with or without steps to run this start: no plugin was
+      // left out of the registry on the way, and every plugin with a migration record ran this start (none pending). A
+      // plugin that merely did not load (safe mode, revoked, failed to load) may still owe steps: the baseline stays.
+      // The composition root adds what only it knows (full-trust plugins kept out before the import).
+      if (path !== ':memory:' && !this.plugins.skipped.size && !this.unloadedPluginsWithTables().length) upgrade?.done?.();
     } catch (e) {
       this.db.close();
       throw e;
     }
-    this.tasks = this.plugins.taskView?.(this) ?? null;
-    this.coordinator = this.plugins.coordinatorView?.(this) ?? null;
+  }
+
+  private schemaVersion(): number {
+    return Number((this.db.prepare('PRAGMA user_version').get() as Row).user_version);
+  }
+
+  /**
+   * Before the first schema write of this start: when the database already existed and the core or any installed
+   * plugin has steps pending, one backup covers them all (docs/architecture.md「升级前备份」). A new database and one with
+   * nothing pending get none. A backup that fails changes nothing and stops the start, unless only full-trust plugins
+   * have steps pending: those (and their dependents) are skipped and the rest starts.
+   */
+  private backupBeforeUpgrade(upgrade: StoreUpgrade): string | null {
+    const core = this.schemaVersion();
+    if (core === 0) return null;
+    const plugins = this.plugins.pendingMigrations(this);
+    if (core >= SCHEMA_VERSION && !plugins.length) return null;
+    try {
+      return upgrade.backup();
+    } catch (e) {
+      if (core < SCHEMA_VERSION || plugins.some((id) => !this.plugins.isFullTrust(id))) {
+        throw new Error(`the database needs a schema upgrade and the backup before it failed, so nothing was changed: ${(e as Error).message}`, { cause: e });
+      }
+      this.plugins.skip(plugins, `升级前备份失败，没有升级它的数据表：${(e as Error).message}`);
+      return null;
+    }
   }
 
   private migrate(): void {
@@ -671,6 +733,47 @@ export class Store {
         this.db.exec('PRAGMA user_version = 29');
       });
     }
+  }
+
+  /**
+   * v29 → v30: isolated mode is gone (the Hub ran those members' turns itself). Every member still active in it, also in
+   * a cluster in the recycle bin, is moved out as a user's removal would (Store.removeMember): its unstarted deliveries
+   * are cancelled and a running one ends with an unknown result, every one of them failed with the reason, and hiding
+   * is cleared. Delivery events and pending sender notices are persisted with the changes. Each affected cluster
+   * gets one system message. Plugin tables and views are ready before this step so the regular memberRemoved hooks
+   * share the transaction. A Hub's start (and a restore) stops a coordinator that is no longer a member.
+   */
+  private retireIsolatedMembers(hooks: string[]): void {
+    this.tx(() => {
+      const now = new Date().toISOString();
+      const members = this.db.prepare("SELECT id, cluster_id, name FROM members WHERE mode != 'native' AND removed_at IS NULL ORDER BY rowid").all();
+      const skipped = members.length ? hooks.find((id) => this.plugins.skipped.has(id)) : undefined;
+      if (skipped) throw new Error(`memberRemoved cannot run because plugin ${skipped} was skipped: ${this.plugins.skipped.get(skipped)}`);
+      const queueNotice = this.db.prepare('INSERT INTO settings (key, value) SELECT ?, ? FROM deliveries WHERE id = ? AND reported = 0');
+      const byCluster = new Map<string, string[]>();
+      for (const m of members) {
+        const clusterId = m.cluster_id as string;
+        const memberId = m.id as string;
+        const { cancelled } = this.removeMember(clusterId, memberId, '隔离模式已删除，');
+        this.runMemberRemovedHooks(clusterId, memberId);
+        for (const delivery of cancelled) {
+          this.appendEvent(clusterId, memberId, 'delivery', { delivery });
+          queueNotice.run(V30_SENDER_NOTICE + delivery.id, randomUUID(), delivery.id);
+        }
+        const names = byCluster.get(clusterId);
+        if (names) names.push(m.name as string);
+        else byCluster.set(clusterId, [m.name as string]);
+      }
+      const post = this.db.prepare(`INSERT INTO messages (id, cluster_id, from_id, mentions_json, body, reply_to, chain_id, hop, created_at, kind, system_kind)
+        VALUES (?, ?, 'system', '[]', ?, NULL, ?, 0, ?, 'system', 'mode_removed')`);
+      for (const [clusterId, names] of byCluster) {
+        const id = randomUUID();
+        post.run(id, clusterId, `隔离模式已从 orrery 删除：隔离群员 ${names.join('、')} 已移出本群，不再收到消息（数据库升级 v30）。`
+          + '群聊和投递记录都保留；它们还没开始的投递已取消。要让同样的角色继续工作，请把一个原生应用里的对话加进群。', id, now);
+      }
+      this.db.exec('DROP TRIGGER IF EXISTS members_session_mode_insert; DROP TRIGGER IF EXISTS members_session_mode_update');
+      this.db.exec('PRAGMA user_version = 30');
+    });
   }
 
   /** v10 → v11, the usage migration: empty tables (nothing was recorded before). Idempotent. */
@@ -926,7 +1029,7 @@ export class Store {
     const ins = this.db.prepare(`INSERT INTO members (${MEMBER_COLUMNS}, unread_after_rowid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const m of members) {
       ins.run(m.id, m.clusterId, m.name, m.avatar, m.harness, m.model, m.workerSessionId, m.cwd, m.origin,
-        createdAt, m.mode, m.effort, m.removedAt, afterRowid);
+        createdAt, 'native', m.effort, m.removedAt, afterRowid);
     }
   }
 
@@ -939,7 +1042,7 @@ export class Store {
   }
 
   /** Invalidates membership and cancels pending work in the same transaction. History is retained. */
-  removeMember(clusterId: string, memberId: string): { member: StoredMember; cancelled: Delivery[] } {
+  removeMember(clusterId: string, memberId: string, reasonPrefix = ''): { member: StoredMember; cancelled: Delivery[] } {
     return this.tx(() => {
       const member = this.getMember(memberId, { includeRemoved: true });
       if (!member || member.clusterId !== clusterId) throw new Error(`unknown member ${memberId} in this cluster`);
@@ -948,10 +1051,14 @@ export class Store {
       this.db.prepare('UPDATE members SET removed_at = ?, hidden_at = NULL WHERE id = ?').run(removedAt, memberId);   // removal clears hiding
       const pending = this.db.prepare("SELECT * FROM deliveries WHERE member_id = ? AND state IN ('queued', 'running')").all(memberId);
       const cancelled = pending.map((d) => d.state === 'running'
-        ? this.setDeliveryState(d.id as string, 'failed', '成员已移出集群，投递结果未知；原执行可能仍在继续', 'unknown')
-        : this.setDeliveryState(d.id as string, 'failed', '成员已移出集群，投递已取消'));
+        ? this.setDeliveryState(d.id as string, 'failed', `${reasonPrefix}成员已移出集群，投递结果未知；原执行可能仍在继续`, 'unknown')
+        : this.setDeliveryState(d.id as string, 'failed', `${reasonPrefix}成员已移出集群，投递已取消`));
       return { member: { ...member, removedAt, hiddenAt: null }, cancelled };
     });
+  }
+
+  runMemberRemovedHooks(clusterId: string, memberId: string): void {
+    for (const plugin of this.plugins.installed) runHook(plugin, 'memberRemoved', () => plugin.memberRemoved?.(this, clusterId, memberId));
   }
 
   /**
@@ -1008,6 +1115,13 @@ export class Store {
   memberRebinds(memberId: string): (MemberRebind & { eventId: number })[] {
     return this.db.prepare("SELECT seq, json_extract(payload_json, '$.rebind') AS rebind FROM events WHERE member_id = ? AND kind = 'member' AND json_extract(payload_json, '$.rebind') IS NOT NULL ORDER BY seq")
       .all(memberId).map((r) => ({ ...JSON.parse(r.rebind as string), eventId: Number(r.seq) }));
+  }
+
+  /** The binding version still changes when the member moves away and back to the same session. */
+  memberBindingVersion(memberId: string): number {
+    const row = this.prepared(`SELECT seq FROM events WHERE member_id = ? AND kind = 'member'
+      AND json_type(payload_json, '$.rebind') = 'object' ORDER BY seq DESC LIMIT 1`).get(memberId);
+    return Number(row?.seq ?? 0);
   }
 
   /**
@@ -1134,7 +1248,7 @@ export class Store {
       JOIN clusters c ON c.id = r.cluster_id LEFT JOIN collaboration_policies p ON p.cluster_id = r.cluster_id
       JOIN deliveries d ON d.rowid = (SELECT rowid FROM deliveries WHERE member_id = r.id AND state = 'queued' ORDER BY rowid LIMIT 1)
       JOIN messages m ON m.id = d.message_id
-      WHERE r.harness = ? AND r.worker_session_id = ? AND r.mode = 'native' AND r.removed_at IS NULL
+      WHERE r.harness = ? AND r.worker_session_id = ? AND r.removed_at IS NULL
         AND (? IS NULL OR r.id != ?) AND c.deleted_at IS NULL AND COALESCE(p.paused, 0) = 0 ORDER BY d.rowid LIMIT 1`)
       .get(harness, sessionId, except, except);
     return row ? toQueuedCandidate(row) : null;
@@ -1180,7 +1294,6 @@ export class Store {
     const r = this.db.prepare('SELECT * FROM messages WHERE id = ?').get(id);
     return r ? toMessage(r) : null;
   }
-
   /** The message this sender already wrote with this idempotency key, if any. */
   messageByClientId(fromId: string, clientMessageId: string): Message | null {
     const r = this.db.prepare('SELECT * FROM messages WHERE from_id = ? AND client_message_id = ?').get(fromId, clientMessageId);
@@ -1190,6 +1303,62 @@ export class Store {
   getDelivery(id: string): Delivery | null {
     const r = this.db.prepare('SELECT * FROM deliveries WHERE id = ?').get(id);
     return r ? toDelivery(r) : null;
+  }
+
+  /** Resolve native delivery evidence only inside the recipient's cluster and membership. */
+  transcriptDeliveryBatch(member: StoredMember, evidence: { batchId: string } | { messageId: string; hop: number }): Message[] {
+    const byBatch = 'batchId' in evidence;
+    const anchor = byBatch ? 'd.id = ? AND d.id = d.batch_id' : 'm.id = ? AND m.hop = ? AND m.direct = 0';
+    const attempted = "(d.state IN ('running', 'done') OR d.outcome = 'unknown') AND d.attempts > 0";
+    const params = byBatch ? [evidence.batchId] : [evidence.messageId, evidence.hop];
+    return this.prepared(`WITH anchor AS (
+      SELECT d.batch_id FROM deliveries d JOIN messages m ON m.id = d.message_id
+      WHERE ${anchor} AND d.member_id = ? AND m.cluster_id = ? AND ${attempted}
+    ) SELECT m.* FROM anchor a JOIN deliveries d ON d.batch_id = a.batch_id JOIN messages m ON m.id = d.message_id
+      WHERE d.member_id = ? AND m.cluster_id = ? AND ${attempted} ORDER BY d.rowid`)
+      .all(...params, member.id, member.clusterId, member.id, member.clusterId).map(toMessage);
+  }
+
+  /**
+   * Legacy Claude direct inputs carry peer origin but no delivery id. Require exact unadorned text and consider
+   * all bindings (including deleted groups and old bindings) before linking the only candidate to this membership.
+   * Other groups' bodies never enter the result. Unknown or truncated native text cannot be passed here.
+   * Without `at` (unverified adapter candidates that carry no time) the time conditions are skipped.
+   */
+  transcriptDirectDelivery(member: StoredMember, text: string, at?: string, deliveryIdPrefix?: string): { message?: Message; deliveryId?: string } | null {
+    const timed = at !== undefined;
+    const normPrefix = deliveryIdPrefix?.toLowerCase();
+    const prefixed = normPrefix !== undefined && normPrefix.length > 0;
+    const params: (string | number)[] = [member.harness, text];
+    if (timed) params.push(at);
+    if (prefixed) params.push(normPrefix.length, normPrefix);
+    if (timed) params.push(at);
+    params.push(member.workerSessionId);
+    const candidates = this.prepared(`SELECT m.id, m.cluster_id, d.member_id, d.id AS delivery_id FROM members r
+      JOIN deliveries d ON d.member_id = r.id JOIN messages m ON m.id = d.message_id
+      WHERE r.harness = ? AND m.direct = 1 AND m.body = ? ${timed ? 'AND m.created_at <= ?' : ''}
+        ${prefixed ? 'AND substr(lower(d.id), 1, ?) = ?' : ''}
+        AND d.attempts > 0 AND (d.state IN ('running', 'done') OR d.outcome = 'unknown')
+        AND NOT EXISTS (SELECT 1 FROM message_files f WHERE f.message_id = m.id)
+        AND EXISTS (SELECT 1 FROM events e WHERE e.member_id = r.id AND e.kind = 'delivery'
+          AND json_extract(e.payload_json, '$.delivery.id') = d.id
+          AND json_extract(e.payload_json, '$.delivery.state') = 'running'
+          ${timed ? "AND json_extract(e.payload_json, '$.delivery.updatedAt') <= ?" : ''}
+          AND COALESCE(
+            (SELECT json_extract(b.payload_json, '$.rebind.toSessionId') FROM events b WHERE b.member_id = r.id
+              AND b.seq < e.seq AND b.kind = 'member' AND json_type(b.payload_json, '$.rebind') = 'object'
+              ORDER BY b.seq DESC LIMIT 1),
+            (SELECT json_extract(b.payload_json, '$.rebind.fromSessionId') FROM events b WHERE b.member_id = r.id
+              AND b.kind = 'member' AND json_type(b.payload_json, '$.rebind') = 'object' ORDER BY b.seq LIMIT 1),
+            r.worker_session_id
+          ) = ?
+        )
+      LIMIT 2`).all(...params);
+    const [match] = candidates;
+    if (!match) return null;
+    if (candidates.length !== 1 || match.member_id !== member.id || match.cluster_id !== member.clusterId) return {};
+    const message = this.getMessage(match.id as string);
+    return message ? { message, deliveryId: match.delivery_id as string } : {};
   }
 
   /** Use the member event index; a later handoff changes updated_at without ending the delivery again. */
@@ -1396,7 +1565,7 @@ export class Store {
       AND kind IN ('agent', 'delivery', 'guard', 'unread_hint') ORDER BY seq DESC LIMIT ?`).all(memberId, cursor, limit).map(toEvent);
     // The member id is a UUID: a plain text search finds its 'message' events; the payload check below confirms each.
     // shortcut: no index reaches a member inside a payload, so this walks back from `cursor` until `limit` match (the
-    // whole log for a member with few); add one with a schema change if long logs make member pages slow (docs/security.md).
+    // whole log for a member with few); add one with a schema change if long logs make member pages slow (docs/backlog.md).
     const created = this.db.prepare(`SELECT * FROM events WHERE seq < ? AND kind = 'message' AND cluster_id = ?
       AND instr(payload_json, ?) > 0 ORDER BY seq DESC LIMIT ?`).all(cursor, member.clusterId, `"memberId":${JSON.stringify(memberId)}`, limit)
       .map(toEvent).flatMap((e) => {
@@ -1785,6 +1954,18 @@ export class Store {
     return toDelivery(this.db.prepare('SELECT * FROM deliveries WHERE id = ?').get(id) as Row);
   }
 
+  /** The v30 startup notification has a durable message ID, independent of whether its delivery is reported. */
+  pendingMigrationSenderNotices(): { delivery: Delivery; noticeId: string; handled: boolean }[] {
+    return this.db.prepare(`SELECT d.*, s.value AS notice_id, n.id IS NOT NULL AS notice_exists FROM settings s
+      JOIN deliveries d ON d.id = substr(s.key, ?) LEFT JOIN messages n ON n.id = s.value
+      WHERE s.key GLOB ? ORDER BY d.rowid`).all(V30_SENDER_NOTICE.length + 1, `${V30_SENDER_NOTICE}*`)
+      .map((r) => ({ delivery: toDelivery(r), noticeId: r.notice_id as string, handled: r.reported === 1 || r.notice_exists === 1 }));
+  }
+
+  completeMigrationSenderNotice(deliveryId: string): void {
+    this.db.prepare('DELETE FROM settings WHERE key = ?').run(V30_SENDER_NOTICE + deliveryId);
+  }
+
   /** Interrupted work is not automatically retried: it may already have reached its target. */
   recoverRunning(): Delivery[] {
     const rows = this.db.prepare("SELECT d.*, m.removed_at FROM deliveries d JOIN members m ON m.id = d.member_id WHERE d.state = 'running' OR (m.removed_at IS NOT NULL AND d.state = 'queued')").all();
@@ -1826,6 +2007,32 @@ export class Store {
 
   setExternalWriteSettings(id: string, settings: ExternalWriteSettings): void {
     this.writeSetting(`external_plugin_write:${id}`, JSON.stringify(settings));
+  }
+
+  /** One plugin's explicit overrides in one scope. The ordinary SQLite backup includes these settings rows. */
+  getPluginConfig(id: string, clusterId: string | null): SavedPluginConfigScope {
+    const value = this.settingValue(pluginConfigPrefix(clusterId) + id);
+    if (value === undefined) return { revision: 0, values: {} };
+    try {
+      const saved = JSON.parse(value);
+      if (Number.isSafeInteger(saved?.revision) && saved.revision > 0 && saved.values
+        && typeof saved.values === 'object' && !Array.isArray(saved.values)) return saved;
+    } catch { /* JSON.parse can quote the stored preference in its exception. */ }
+    throw new Error('invalid saved plugin configuration');
+  }
+
+  /** Store revision N only when its scope still exists at revision N−1. A lost race leaves the other edit intact. */
+  setPluginConfig(id: string, clusterId: string | null, saved: SavedPluginConfigScope): void {
+    if (!Number.isSafeInteger(saved.revision) || saved.revision < 1) throw new Error('invalid plugin configuration revision');
+    const key = pluginConfigPrefix(clusterId) + id;
+    const json = JSON.stringify(saved);
+    const active = '(? IS NULL OR EXISTS (SELECT 1 FROM clusters WHERE id = ? AND deleted_at IS NULL))';
+    const result = saved.revision === 1
+      ? this.db.prepare(`INSERT INTO settings(key, value) SELECT ?, ? WHERE ${active} ON CONFLICT(key) DO NOTHING`)
+        .run(key, json, clusterId, clusterId)
+      : this.db.prepare(`UPDATE settings SET value = ? WHERE key = ? AND json_extract(value, '$.revision') = ? AND ${active}`)
+        .run(json, key, saved.revision - 1, clusterId, clusterId);
+    if (!result.changes) throw new PluginConfigProblem('CONFIG_CONFLICT', '配置或群聊已更改，请重新加载后再保存。');
   }
 
   /** The saved limit setting, or null if it was never saved. A saved value that is not a Limit is an error, not a default. */
@@ -1998,6 +2205,13 @@ export class Store {
     return this.getCluster(id)!;
   }
 
+  /** Plugins with a migration record in this database that are not installed this start: their tables were not cleaned. */
+  unloadedPluginsWithTables(): string[] {
+    const installed = new Set(this.plugins.installed.map((p) => p.id));
+    return this.db.prepare('SELECT plugin_id FROM plugin_migrations WHERE version > 0 ORDER BY plugin_id').all()
+      .map((r) => String(r.plugin_id)).filter((id) => !installed.has(id));
+  }
+
   /**
    * Deletes a cluster for good (Hub.purgeCluster) in one transaction. `refuse` first sees the cluster as stored (null:
    * unknown) and all its member ids, and throws to change nothing. Plugin rows go first (clusterPurging, for every
@@ -2024,7 +2238,7 @@ export class Store {
         const files = this.db.prepare('SELECT id, name FROM files WHERE cluster_id = ? ORDER BY rowid').all(id)
           .map((r) => ({ id: String(r.id), name: String(r.name) }));
         const messages = Number((this.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE cluster_id = ?').get(id) as Row).n);
-        for (const plugin of this.plugins.installed) plugin.clusterPurging?.(this, id);
+        for (const plugin of this.plugins.installed) runHook(plugin, 'clusterPurging', () => plugin.clusterPurging?.(this, id));
         const MESSAGES = '(SELECT id FROM messages WHERE cluster_id = ?)';
         const MEMBERS = '(SELECT id FROM members WHERE cluster_id = ?)';
         const run = (sql: string) => this.db.prepare(sql).run(...sql.split('?').slice(1).map(() => id));
@@ -2041,6 +2255,9 @@ export class Store {
           .run(PURGED_CHAIN_TURNS, id, id);
         run(`DELETE FROM message_files WHERE message_id IN ${MESSAGES} OR file_id IN (SELECT id FROM files WHERE cluster_id = ?)`);
         run('DELETE FROM files WHERE cluster_id = ?');
+        this.db.prepare(`DELETE FROM settings WHERE key IN (
+          SELECT ? || id FROM deliveries WHERE member_id IN ${MEMBERS} OR message_id IN ${MESSAGES})`)
+          .run(V30_SENDER_NOTICE, id, id);
         for (const table of ['reads', 'message_acknowledgements', 'deliveries']) {
           run(`DELETE FROM ${table} WHERE member_id IN ${MEMBERS} OR message_id IN ${MESSAGES}`);
         }
@@ -2050,6 +2267,7 @@ export class Store {
         run(`DELETE FROM events WHERE cluster_id = ? OR member_id IN ${MEMBERS}`);
         run('DELETE FROM messages WHERE cluster_id = ?');
         run('DELETE FROM members WHERE cluster_id = ?');
+        this.db.prepare('DELETE FROM settings WHERE instr(key, ?) = 1').run(pluginConfigPrefix(id));
         run('DELETE FROM clusters WHERE id = ?');
         this.db.exec(`UPDATE members SET unread_after_rowid = (SELECT COALESCE(MAX(rowid), 0) FROM messages)
           WHERE unread_after_rowid > (SELECT COALESCE(MAX(rowid), 0) FROM messages)`);

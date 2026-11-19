@@ -30,6 +30,8 @@ tmp/
 *.key
 secrets/
 external-plugins.json
+plugin-packages/
+updates.json
 
 # 编辑器与系统文件
 .vscode/

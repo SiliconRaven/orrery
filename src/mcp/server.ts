@@ -1,26 +1,26 @@
 // Collaboration MCP tools over Streamable HTTP (stateless). Every tool is scoped to the caller's cluster.
-// Caller kinds, checked in this order (docs/native-mode.md, "身份认证"):
-//   2. x-orrery-bridge: <secret> + x-orrery-session: <session id> (+ x-orrery-harness: <h>, default claude): a native
+// Caller kinds, checked in this order (docs/native-mode.md, "身份认证"); every one needs the bridge secret:
+//   1. x-orrery-bridge: <secret> + x-orrery-session: <session id> (+ x-orrery-harness: <h>, default claude): a native
 //      member whose bridge names its session: Claude via the orrery bridge, DeepSeek Harness via its plugin.
-//   3. x-orrery-bridge: <secret>, thread id in each tools/call's _meta.threadId: a native Codex member.
-//   4. x-orrery-bridge: <secret> + x-orrery-harness: antigravity, no session header: a native Antigravity member, named
+//   2. x-orrery-bridge: <secret>, thread id in each tools/call's _meta.threadId: a native Codex member.
+//   3. x-orrery-bridge: <secret> + x-orrery-harness: antigravity, no session header: a native Antigravity member, named
 //      by the hook-signed `orreryCaller` argument of each tools/call (./antigravity.ts). Only this caller's arguments
 //      are ever read for identity.
-//   5. The same bridge secret + x-orrery-harness: kimi: the runtime names its session in each call's
+//   4. The same bridge secret + x-orrery-harness: kimi: the runtime names its session in each call's
 //      _meta["kimi/sessionId"]; without it, Kimi is nobody (docs/adapters/kimi.md).
-//   6. The same bridge secret + x-orrery-harness: zcode: the runtime names its session in each call's _meta
+//   5. The same bridge secret + x-orrery-harness: zcode: the runtime names its session in each call's _meta
 //      (root_session_id ?? session_id, ./zcode.ts). Only this caller gets wait_for_messages (docs/adapters/zcode.md).
-//   7. A session header from a bridge of a harness on the background-wait route (x-orrery-harness: workbuddy): the
+//   6. A session header from a bridge of a harness on the background-wait route (x-orrery-harness: workbuddy): the
 //      bridge took the id from CODEBUDDY_SESSION_ID or else its WorkBuddy.exe parent's --session-id, never from tool
 //      arguments. Its callers also get wait_for_messages (docs/adapters/workbuddy.md).
-//   8. The same bridge secret + x-orrery-harness: qoder (its plugin's MCP relay): each call's
+//   7. The same bridge secret + x-orrery-harness: qoder (its plugin's MCP relay): each call's
 //      _meta["com.qoder/turnContext"].sessionId, nothing else, not even x-orrery-session (./qoder.ts, docs/adapters/qoder.md).
 // Any other harness without a session header is nobody, never the Codex path.
-// A wrong secret is 401. A conversation that is no native member gets an empty list_agents and an error from the
+// A missing or wrong secret is 401; an Authorization header names nobody (there are no member tokens). A conversation that is no native member gets an empty list_agents and an error from the
 // other tools, and writes nothing. Identity is checked when the request arrives and again when each tool runs:
 // the body can arrive long after the headers.
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -29,7 +29,8 @@ import { HIDDEN_TOOL_TEXT, memberLabel } from '../core/collaboration.ts';
 import { MAX_FILES_PER_MESSAGE } from '../core/files.ts';
 import type { CollaborationCommand, CollaborationQuery, CollaborationResult } from '../core/collaboration-types.ts';
 import type { Hub } from '../core/hub.ts';
-import type { PluginToolApi } from '../core/plugin.ts';
+import { asyncRefused, isThenable, type PluginToolApi } from '../core/plugin.ts';
+import { isPluginToolName } from '../core/external-plugin-tools.ts';
 import type { ToolListSnapshot } from '../core/tool-list.ts';
 import { WORKBUDDY_WAIT, ZCODE_WAIT, type Member, type ToolProfile, type WaitHarness } from '../core/types.ts';
 import { ANTIGRAVITY, CALLER_ARG, CALLER_ARG_HELP, signedConversation } from './antigravity.ts';
@@ -62,6 +63,9 @@ const UNSIGNED = fail(new Error('这次调用没有 orrery hook 的签名，Hub 
 const SET_CLUSTER_PAUSED = 'Pause or resume this cluster’s delivery when the coordinator policy permits it (paused). '
   + 'The enabled coordinator with deliveryControl may instead hide a member (memberId and hidden: true): a hidden member receives no messages, '
   + 'is not shown to the other members and its orrery tools do nothing; hidden: false shows it again. Nobody can hide itself, and the coordinator cannot be hidden.';
+
+/** Each request's server: its plugin tools of plugins that are not running (not listed; a call of one is answered). */
+const dormantTools = new WeakMap<McpServer, Set<string>>();
 
 export const SESSION_HEADER = 'x-orrery-session';
 export const HARNESS_HEADER = 'x-orrery-harness';
@@ -129,7 +133,7 @@ function resolveMembers(hub: Hub, secret: string, caller: Caller, meta: Record<s
 }
 
 function buildServer(hub: Hub, secret: string, caller: Caller, hubUrl: string): McpServer {
-  const server = new McpServer({ name: 'orrery', version: '0.10.0-beta.1' });
+  const server = new McpServer({ name: 'orrery', version: '0.10.0-beta.2' });
   /** Only trusted credentials name the conversation; model arguments do not choose an identity. */
   const current = (meta: Record<string, unknown> | undefined, args?: Record<string, unknown>) => currentMembers(hub, secret, caller, meta, args);
   /** A clusterId naming a membership that is hidden gets HIDDEN, not the list of the caller's other clusters. */
@@ -203,7 +207,8 @@ function buildServer(hub: Hub, secret: string, caller: Caller, hubUrl: string): 
       + 'Speak only to ask, deliver a result, report a blockage or ask someone to act; acknowledgement belongs to ack_messages. '
       + 'Set `fyi: true` when nobody has to act (a progress note, thanks): never set `fyi` when answering someone\'s question; when `fyi: true` is used, named members keep it unread without being woken, except if `replyTo` is set and the sender of the replied-to message is still an active member explicitly named in this message, that asker IS woken and `fyiOverridden` lists their name. '
       + 'Task results and evidence go into the `summary` of task_action submit: the Hub notifies the reviewer, so do not @ the reviewer separately; '
-      + '@ the coordinator only to ask for reassignment or when the flow is stuck.',
+      + '@ the coordinator only to ask for reassignment or when the flow is stuck. '
+      + 'A plugin the user installed may refuse a send (error REFUSED_BY_PLUGIN with its reason): nothing was stored or delivered; wait or rephrase, and do not resend it unchanged in a loop.',
     inputSchema: {
       body: z.string(),
       clusterId,
@@ -241,7 +246,7 @@ function buildServer(hub: Hub, secret: string, caller: Caller, hubUrl: string): 
       me = again;
     }
     try {
-      const { message, deliveredTo, unresolvedMentions, mentionHints, fyiOverridden, warning, duplicate } = hub.sendFromMember(me.id, body, replyTo, ids, taskIds, to, clientMessageId, fyi);
+      const { message, deliveredTo, unresolvedMentions, mentionHints, fyiOverridden, warning, duplicate } = await hub.sendFromMemberGated(me.id, body, replyTo, ids, taskIds, to, clientMessageId, fyi);
       if (duplicate) {
         await hub.discardFiles(ids);   // the same id won the race during the copy
         return reply(hub, me, { messageId: message.id, deliveredTo, duplicate });
@@ -305,7 +310,7 @@ function buildServer(hub: Hub, secret: string, caller: Caller, hubUrl: string): 
     const annotations = hub.store.annotateMessagesForMember(me.id, msgs);
     return text(hub.store.withDeliveries(msgs).map((m) => {
       // Attachments: name and size, plus the local path for a native member (docs/files.md).
-      const attachments = hub.attachmentsFor(m.id, me);
+      const attachments = hub.attachmentsFor(m.id);
       const classified = annotations.get(m.id)!;
       // Delivery outcomes only on the caller's own messages: who got someone else's message is not its business.
       return {
@@ -465,31 +470,30 @@ function buildServer(hub: Hub, secret: string, caller: Caller, hubUrl: string): 
   // renamed; the HTTP API is unchanged.
   const query = (name: string, description: string, kind: CollaborationQuery['kind'], schema: Record<string, z.ZodType>,
     prepare: (params: Record<string, unknown>) => Record<string, unknown> = (p) => p,
-    project: (result: never, params: Record<string, unknown>, me: { id: string; clusterId: string; mode: 'native' }) => unknown = (r) => r) => {
+    project: (result: never, params: Record<string, unknown>, me: { id: string; clusterId: string }) => unknown = (r) => r) =>
     server.registerTool(name, { description, inputSchema: { ...schema, clusterId, ...signed } }, async (args, extra) => {
       const me = select(extra._meta, args);
       if ('isError' in me) return me;
       const { clusterId: _cluster, [CALLER_ARG]: _signature, ...params } = args as Record<string, unknown>;
       try {
-        const result = hub.collaboration.query({ kind: 'member', memberId: me.id }, me.clusterId, { ...prepare(params), kind } as CollaborationQuery);
-        return reply(hub, me, project(result as never, params, me));
+        // A plugin's argument mapping and projection may be async: they run in this async handler and are awaited.
+        const result = hub.collaboration.query({ kind: 'member', memberId: me.id }, me.clusterId, { ...(await prepare(params)), kind } as CollaborationQuery);
+        return reply(hub, me, await project(result as never, params, me));
       } catch (e) { return fail(e); }
     });
-  };
   const command = (name: string, description: string, schema: Record<string, z.ZodType>,
     action: CollaborationCommand['action'] | ((args: Record<string, unknown>) => CollaborationCommand['action']),
-    extend: (result: CollaborationResult, me: { id: string; clusterId: string }) => unknown = (r) => r) => {
+    extend: (result: CollaborationResult, me: { id: string; clusterId: string }) => unknown = (r) => r) =>
     server.registerTool(name, { description, inputSchema: { operationId, ...schema, clusterId, ...signed } }, async (args, extra) => {
       const toolArgs = args as Record<string, unknown>;
       const me = select(extra._meta, args, typeof toolArgs.messageId === 'string' ? [toolArgs.messageId] : []);
       if ('isError' in me) return me;
       const { clusterId: _cluster, [CALLER_ARG]: _signature, ...params } = toolArgs;
       try {
-        return reply(hub, me, extend(hub.collaboration.command({ kind: 'member', memberId: me.id }, me.clusterId,
+        return reply(hub, me, await extend(await hub.collaboration.commandAsync({ kind: 'member', memberId: me.id }, me.clusterId,
           { ...params, action: typeof action === 'function' ? action(toolArgs) : action } as CollaborationCommand), me));
       } catch (e) { return fail(e); }
     });
-  };
 
   command('manage_roles', 'Manage business roles when the coordinator policy permits it: create requires name and takes an optional description; edit requires roleId and description (an empty string clears it); delete requires roleId; assign requires memberId and roleIds (an empty array clears the roles).', {
     action: z.enum(['create', 'edit', 'delete', 'assign']), name: z.string().optional(), roleId: z.string().optional(),
@@ -503,8 +507,84 @@ function buildServer(hub: Hub, secret: string, caller: Caller, hubUrl: string): 
     generation,
   }, (args) => (args.memberId !== undefined || args.hidden !== undefined ? 'member.hidden' : 'cluster.pause'));
 
-  const toolApi = { page, hub, secret, hubUrl, query, command } as unknown as PluginToolApi;   // zod shapes are opaque to core's plugin types
-  for (const plugin of hub.store.plugins.enabled) plugin.tools?.(toolApi);
+  // Each plugin's tools are collected first and registered as one set (docs/plugins.md「故障隔离」): a plugin whose
+  // tools(api) throws, or one of whose names is already taken (a core tool, an earlier plugin's) or belongs to the
+  // restricted plugins' namespace (p_…, registered after these), loses only its own tools, every one of them, and the
+  // failure shows on its settings card.
+  const own = (name: string, sealed: boolean) => {
+    if (sealed) throw new Error(`tool ${name} was declared after tools(api) returned`);
+    if (isPluginToolName(name)) throw new Error(`tool name ${name} is reserved for restricted third-party plugins (p_<plugin>_<tool>)`);
+  };
+  for (const plugin of hub.store.plugins.enabled) {
+    if (!plugin.tools) continue;
+    const declared: (() => RegisteredTool)[] = [];
+    let sealed = false;   // declarations after the build (an async tools continuing later) are refused
+    const toolApi = { page, hub, secret, hubUrl,
+      query: (...args: Parameters<typeof query>) => { own(args[0], sealed); declared.push(() => query(...args)); },
+      command: (...args: Parameters<typeof command>) => { own(args[0], sealed); declared.push(() => command(...args)); } } as unknown as PluginToolApi;   // zod shapes are opaque to core's plugin types
+    const registered: RegisteredTool[] = [];
+    try {
+      // tools(api) declares synchronously: a promise (an async tools) is refused whole, so nothing it declared before or
+      // after an await is registered, and its rejection is caught.
+      const answer: unknown = plugin.tools(toolApi);
+      if (isThenable(answer)) { sealed = true; throw asyncRefused(answer, 'tools(api)'); }
+      for (const register of declared) registered.push(register());
+    } catch (e) {
+      for (const tool of registered) tool.remove();
+      hub.pluginFault(plugin.id, 'tools', e);
+    } finally { sealed = true; }
+  }
+
+  // Third-party plugin tools (docs/external-plugins.md「群员工具」): only for a caller whose conversation is known when
+  // it lists tools (a bridge's session header), so the list is that conversation's own. The catalogs
+  // built without a member (fingerprints, offline catalogs) never contain one. Listed with exactly the declared schema;
+  // the SDK lets every object through and the Hub checks the arguments itself. (The transport's own parsing already
+  // drops a `__proto__` key, so no plugin can ever receive one.)
+  // A tool of a plugin that is not running is registered too, so a tools/call of it (an app still showing an older list)
+  // gets PLUGIN_NOT_RUNNING; handleMcp takes it out of every tools/list answer of this request, a batch's included.
+  if (caller.kind === 'session') {
+    const members = current(undefined);
+    const dormant = new Set<string>();
+    for (const tool of Array.isArray(members) ? hub.pluginTools(members) : []) {
+      // One tool that cannot be registered (a name taken some other way) is left out; it never fails the whole build.
+      try {
+        server.registerTool(tool.name, { description: tool.description, inputSchema: z.looseObject({}).meta(tool.inputSchema) },
+          async (args, extra) => pluginTool(tool.name, args, extra._meta));
+      } catch (e) {
+        console.warn(`plugin tool ${tool.name} left out: ${e instanceof Error ? e.message : e}`);
+        continue;
+      }
+      if (!tool.running) dormant.add(tool.name);
+    }
+    if (dormant.size) dormantTools.set(server, dormant);
+  }
+
+  /**
+   * One plugin tool call: the caller and its cluster resolved as for every tool (the `clusterId` argument chooses among
+   * the conversation's own memberships, never another identity), then the Hub's checks and the plugin's answer. Once the
+   * plugin answered, the same caller is resolved again: the answer goes back only to the same shown membership.
+   */
+  async function pluginTool(name: string, raw: unknown, meta: Record<string, unknown> | undefined) {
+    const input = raw === undefined || raw === null ? {} : raw;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return fail(Object.assign(new Error('参数须是一个 JSON 对象。'), { code: 'INVALID_ARGUMENT' }));
+    const fields = input as Record<string, unknown>;
+    const cluster = Object.hasOwn(fields, 'clusterId') ? fields.clusterId : undefined;
+    if (cluster !== undefined && typeof cluster !== 'string') return fail(Object.assign(new Error('clusterId 须是字符串。'), { code: 'INVALID_ARGUMENT' }));
+    const me = select(meta, cluster === undefined ? {} : { clusterId: cluster });
+    if ('isError' in me) return me;
+    const outcome = await hub.callPluginTool({
+      name, clusterId: me.clusterId, member: { id: me.id, name: me.name },
+      arguments: Object.fromEntries(Object.entries(fields).filter(([key]) => key !== 'clusterId')),
+      still: () => {
+        const now = current(meta);
+        return Array.isArray(now) && now.some((m) => m.id === me.id && m.clusterId === me.clusterId) && !!hub.store.getCluster(me.clusterId);
+      },
+    });
+    if (!outcome.ok) return fail(Object.assign(new Error(outcome.message), { code: outcome.code }));
+    const blocks = [...(outcome.text !== undefined ? [outcome.text] : []), ...(outcome.data !== undefined ? [JSON.stringify(outcome.data)] : [])];
+    const hint = hub.unreadHint([me]);
+    return { content: [...blocks, ...(hint ? [hint] : [])].map((text) => ({ type: 'text' as const, text })) };
+  }
 
   return server;
 }
@@ -564,7 +644,21 @@ export async function handleMcp(hub: Hub, secret: string, req: IncomingMessage, 
   });
   await server.connect(transport);
   const receive = transport.onmessage;
+  // The tools of plugins that are not running are registered (a call of one is answered PLUGIN_NOT_RUNNING) but taken
+  // out of every tools/list answer of this request, also when a batch carries a tools/call and a tools/list together.
+  const dormant = dormantTools.get(server);
+  const lists = new Set<unknown>();
+  if (dormant) {
+    const send = transport.send.bind(transport);
+    transport.send = (message, options) => {
+      const result = 'result' in message && lists.has(message.id) ? message.result as { tools?: { name: string }[] } : undefined;
+      return send(Array.isArray(result?.tools)
+        ? { ...message, result: { ...result, tools: result.tools.filter((tool) => !dormant.has(tool.name)) } } as typeof message
+        : message, options);
+    };
+  }
   transport.onmessage = (message, extra) => {
+    if ('method' in message && message.method === 'tools/list' && 'id' in message) lists.add(message.id);
     try {
       if ('method' in message && message.method === 'tools/call') {
         const params = message.params as { _meta?: Record<string, unknown>; arguments?: unknown } | undefined;

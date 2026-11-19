@@ -120,9 +120,7 @@ test('a file that cannot be written is logged and never throws; told still holds
 
 // ---- Hub level: a real Hub restarted over the same home, with the stored list made older by hand. ----
 
-/**
- * Native mock A (s1) and C (s2, fails while state.failC), plus "antigravity" G (g1, another profile).
- */
+/** Mock A (s1) and C (s2, fails while state.failC), and "antigravity" G (g1, another profile). Returns the started Hub. */
 async function startWith(dir: string, state: { failC: boolean }) {
   const sessions = ['s1', 's2', 'g1'].map((id) => ({ id, title: id, model: null, cwd: dir, updatedAt: null }));
   const native = createMockNativeAdapter({
@@ -170,7 +168,7 @@ test('Hub: a pending native member is told once, again after a failed run, never
   try {
     await waitFor(() => readFile(app).profiles.standard.fingerprint !== 'sha256:old', 'second comparison');
     const [a, c] = members!;
-    assert.deepEqual(Object.keys(readFile(app).pending).sort(), [a.id, c.id].sort(), 'native standard members only');
+    assert.deepEqual(Object.keys(readFile(app).pending).sort(), [a.id, c.id].sort(), 'standard-profile members only');
     const send = async (body: string, to?: string[]) => {
       await app.api('POST', `/api/clusters/${clusterId}/messages`, { body, ...(to ? { to } : {}) });
       await waitFor(() => app.settled(clusterId), `settled after ${body}`);

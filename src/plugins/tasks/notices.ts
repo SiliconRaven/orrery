@@ -3,13 +3,17 @@ import { personName } from '../../core/collaboration.ts';
 import type { Store } from '../../core/store.ts';
 import type { Task } from '../../core/collaboration-types.ts';
 import type { HubEvent } from '../../core/types.ts';
-import { collaborationTask } from './store.ts';
+import { collaborationTask, taskBatch } from './store.ts';
 import { BASIS_LABELS, reviewModeText } from './takeover.ts';
 
 const CLOSE_LABELS: Record<string, string> = { not_planned: '不做了', duplicate: '重复', superseded: '被取代' };
 
 export function noticeBody(store: Store, clusterId: string, source: HubEvent, action: string, task: Task | undefined, shipWake = false): string {
-  const body = actionBody(store, clusterId, source, action, task, shipWake);
+  const left = (source.payload as Record<string, any>).leftBatchId;
+  const batch = typeof left === 'string' ? taskBatch(store, clusterId, left) : null;
+  // A takeover moves the review away from the batch reviewer: the task goes on outside its batch.
+  const body = actionBody(store, clusterId, source, action, task, shipWake)
+    + (batch ? `任务已移出批次 B${batch.number}【${batch.title}】，此后按普通任务验收和合并。` : '');
   // An edit, assignment or hand-off that also moved self review on a taken-over task says to whom and on what basis.
   const t = (source.payload as Record<string, any>).takeover;
   if (!t || action === 'task.takeover' || t.reviewTo?.kind !== 'self') return body;
@@ -45,10 +49,13 @@ function actionBody(store: Store, clusterId: string, source: HubEvent, action: s
       return `${who} 接取了${title}，事件 ${seq}。`;
     case 'task.start':
       return `${who} 开始执行${title}，事件 ${seq}。`;
-    case 'task.submit':
+    case 'task.submit': {
+      const batch = task?.batchId ? taskBatch(store, clusterId, task.batchId) : null;
       return task?.reviewer.kind === 'self'
         ? `${who} 提交了${title}的结果并完成自查，任务已完成，事件 ${seq}。`
-        : `${who} 提交了${title}的结果，等待 ${reviewer} 验收，事件 ${seq}。`;
+        : batch ? `${who} 提交了${title}的结果，属于批次 B${batch.number}【${batch.title}】，批次齐了以后 ${reviewer} 一起验收，事件 ${seq}。`
+          : `${who} 提交了${title}的结果，等待 ${reviewer} 验收，事件 ${seq}。`;
+    }
     case 'task.review':
       return payload.verdict === 'reject'
         ? `${who} 退回了${title}的结果${reason}，事件 ${seq}。`

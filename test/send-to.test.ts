@@ -1,4 +1,4 @@
-// Member-page sends addressed by member id (docs/architecture.md, "按成员 ID 发送"): acceptance items 7 and 8.
+// Member-page sends addressed by member id (`to` on POST /api/clusters/:id/messages, docs/collaboration-api.md).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -21,7 +21,10 @@ test('7: `to` delivers to exactly those members, ignores @names in the body, and
     await app.api('PATCH', `/api/members/${a.id}`, { name: 'B' });
     await app.api('POST', path, { body: '@B old name', to: [b.id] });
     await app.api('POST', path, { body: 'both', to: [a.id, b.id] });
-    assert.deepEqual((await app.messages(cluster.id)).map((m) => m.deliveries.map((d) => d.memberId)), [[b.id], [b.id], [a.id, b.id]]);
+    const msgs = await app.messages(cluster.id);
+    assert.deepEqual(msgs.map((m) => [m.systemKind, m.deliveries.map((d) => d.memberId)]), [
+      [undefined, [b.id]], ['member_renamed', []], ['member_renamed', []], [undefined, [b.id]], [undefined, [a.id, b.id]],
+    ]);
 
     const rejected = async (to: unknown) => {
       const res = await fetch(app.url + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body: 'x', to }) });
@@ -30,8 +33,7 @@ test('7: `to` delivers to exactly those members, ignores @names in the body, and
     for (const to of [[x.id], [b.id, x.id], ['nobody'], [], [b.id, b.id], [1], [b.id, null], b.id, null, {}]) {
       assert.equal(await rejected(to), 400, JSON.stringify(to));
     }
-    const msgs = await app.messages(cluster.id);
-    assert.equal(msgs.length, 3, 'no message stored for a rejected send');
+    assert.equal((await app.messages(cluster.id)).length, msgs.length, 'no message stored for a rejected send');
     assert.deepEqual(await app.messages((await app.api('GET', '/api/state')).clusters[1].id), [], 'X got nothing');
     const all = app.store.db.prepare('SELECT COUNT(*) AS n FROM deliveries').get() as { n: number };
     assert.equal(all.n, 4, 'no delivery created by a rejected send');

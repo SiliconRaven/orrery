@@ -1,4 +1,4 @@
-// Acceptance criteria 3, 4, 5, 6, 8, 9 from docs/architecture.md (batch 1).
+// Hub core: who a message reaches, queueing, loop limits (hops, turns per chain and per hour), pause, and restarts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -211,7 +211,7 @@ test('9: a running delivery becomes unknown after a Hub restart', async () => {
   try {
     assert.equal(store.withDeliveries(store.listMessages(cluster.id, 10))[0].deliveries[0].state, 'running',
       'the interrupted turn was left running in the database');
-    const hub = new Hub({ store, nativeAdapters: { mock: fixtureNativeMock(app.dir) }, });
+    const hub = new Hub({ store, nativeAdapters: { mock: fixtureNativeMock(app.dir) } });
     const [after] = store.withDeliveries(store.listMessages(cluster.id, 10));
     assert.equal(after.id, msg.id);
     assert.equal(after.deliveries[0].state, 'failed');
@@ -230,7 +230,7 @@ test('4b: @ parsing — full names only, word boundaries, @all means everyone, u
   try {
     await app.api('POST', '/api/pause', { paused: true });   // only the parsing matters here
     const { cluster, members: [m1, m12, al] } = await app.api('POST', '/api/clusters', {
-      name: 'c', members: [{ projectPath: tempDir(), harness: 'mock' }, { projectPath: tempDir(), harness: 'mock' }, { projectPath: tempDir(), harness: 'mock', name: 'al' }],
+      name: 'c', members: [{ harness: 'mock', mode: 'native', projectPath: '/work' }, { harness: 'mock', mode: 'native', projectPath: '/work' }, { harness: 'mock', mode: 'native', name: 'al', projectPath: '/work' }],
     });
     assert.deepEqual([m1.name, m12.name], ['mock-1', 'mock-1-2']);
     const mentions = async (body: string) => (await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body })).mentions;
@@ -279,11 +279,11 @@ test('8e: a restart preserves the chain turn count without retrying a running tu
 test('8f: thousands of deliveries over the chain limit are failed without blowing the stack', async () => {
   const dir = tempDir();
   const store = new Store(':memory:');
-  const hub = new Hub({ store, nativeAdapters: { mock: fixtureNativeMock(dir) },  limits: { maxTurnsPerChain: 0 } });
+  const hub = new Hub({ store, nativeAdapters: { mock: fixtureNativeMock(dir) }, limits: { maxTurnsPerChain: 0 } });
   try {
     hub.start();   // never called: no turn may start
     hub.setPaused(true);
-    const { cluster } = await hub.createCluster('c', [{ projectPath: tempDir(), harness: 'mock', name: 'A' }]);
+    const { cluster } = await hub.createCluster('c', [{ harness: 'mock', mode: 'native', name: 'A', projectPath: '/work' }]);
     for (let i = 0; i < 6000; i++) hub.sendFromUser(cluster.id, `@A m${i}`);
     hub.setPaused(false);
     const counts = store.db.prepare('SELECT state, COUNT(*) AS n FROM deliveries GROUP BY state').all();

@@ -4,7 +4,7 @@ Language: [中文](README.md) | **English**
 
 Native Mode connector for ZCode Desktop using Node built-in modules only (orrery never modifies ZCode settings):
 
-> **Beta Notice**: Bundled with `orrery v0.10.0-beta.1` (Beta pre-release); interfaces and config formats may still change.
+> **Beta Notice**: Bundled with `orrery v0.10.0-beta.2` (Beta pre-release); interfaces and config formats may still change.
 
 Installed-app users: use the bundled Node path and set `ORRERY_HOME` for the host plugin. See [installer setup](../../docs/desktop.en.md).
 

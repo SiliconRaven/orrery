@@ -94,7 +94,7 @@ test('state_seq: the triggers number every insert and every state or outcome cha
   const store = new Store(join(tempDir(), 'seq.db'));
   try {
     store.insertCluster({ id: 'c', name: 'c', createdAt: '2026-01-01T00:00:00.000Z', category: '' }, [
-      { id: 'm1', clusterId: 'c', name: 'One', avatar: null, harness: 'mock', model: null, workerSessionId: 'w1', cwd: '/p', origin: 'created', mode: 'native', effort: null, removedAt: null },
+      { id: 'm1', clusterId: 'c', name: 'One', avatar: null, harness: 'mock', model: null, workerSessionId: 'w1', cwd: '/p', origin: 'created', effort: null, removedAt: null },
     ]);
     const seq = (id: string) => Number((store.db.prepare('SELECT state_seq FROM deliveries WHERE id = ?').get(id) as any).state_seq);
     const msg = (id: string) => ({ id, clusterId: 'c', from: 'user', mentions: ['m1'], body: id, replyTo: null, chainId: id, hop: 0, createdAt: '2026-01-01T00:00:01.000Z' });
@@ -174,7 +174,7 @@ test('the mark survives reopening the database', () => {
   const path = join(tempDir(), 'dismiss.db');
   const store = new Store(path);
   store.insertCluster({ id: 'c', name: 'c', createdAt: '2026-01-01T00:00:00.000Z', category: '' }, [
-    { id: 'm1', clusterId: 'c', name: 'One', avatar: null, harness: 'mock', model: null, workerSessionId: 'w1', cwd: '/p', origin: 'created', mode: 'native', effort: null, removedAt: null },
+    { id: 'm1', clusterId: 'c', name: 'One', avatar: null, harness: 'mock', model: null, workerSessionId: 'w1', cwd: '/p', origin: 'created', effort: null, removedAt: null },
   ]);
   const [d] = store.insertMessage({ id: 'msg1', clusterId: 'c', from: 'user', mentions: ['m1'], body: 'hi', replyTo: null, chainId: 'msg1', hop: 0, createdAt: '2026-01-01T00:00:01.000Z' }, ['m1']);
   store.setDeliveryState(d.id, 'failed', 'boom');
@@ -297,7 +297,7 @@ test('page: the two writes, the bound of "all", and the events that reload the c
   assert.match(appJs, /onclick: \(\) => exclusive\(\(\) => write\(`\/api\/clusters\/\$\{encodeURIComponent\(cid\)\}\/deliveries\/\$\{encodeURIComponent\(delivery\.id\)\}\/dismiss`, \{\}, i\)\)/, 'one');
   assert.match(appJs, /data = await api\('GET', path\);/);
   assert.equal(appJs.match(/data = await api\('GET', path\);/g)!.length, 2, 'data is replaced only on open and inside write');
-  assert.match(appJs, /'aria-label': `标为已知：\$\{nameOf\(delivery\.memberId\)\} 的「\$\{snippet\(msg\.body, 30\)\}」`/, 'names the member and the message');
+  assert.match(appJs, /'aria-label': t\('标为已知：\{value\} 的「\{value2\}」', \{ value: nameOf\(delivery\.memberId\), value2: snippet\(msg\.body, 30\) \}\)/, 'names the member and the message');
   assert.match(appJs, /case 'delivery_dismissed':.*\n      if \(e\.clusterId === S\.sel\.cluster\) loadProblemsSoon\(\);/);
   assert.match(appJs, /the problem count \(Store\.deliveryProblems\)\.\n      if \(e\.clusterId === S\.sel\.cluster\) loadProblemsSoon\(\);\n      break;\n    case 'delivery_dismissed'/,
     'a member reading may clear an offline problem');

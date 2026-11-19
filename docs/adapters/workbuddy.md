@@ -24,7 +24,8 @@ WorkBuddy 适配器结合“独立 stdio MCP 桥（识别会话 ID）”与 [共
 2. 可选复制 `plugins/workbuddy-orrery/skill/SKILL.md` 到本地技能目录，在目标对话说“加入 orrery”；
 3. **权限警示**：WorkBuddy 自身的“默认权限”沙箱档位可能不逐条弹窗确认文件改动或沙箱内行为；若出现运行等待命令询问，仅可放行逐字相同命令，切勿切换到“允许完全访问”。
 
-## 只读会话存储
+## 只读会话存储与对话正文读取
 
 - **列表来源**：复制 `<WORKBUDDY_CONFIG_DIR 或 ~/.workbuddy>/workbuddy.db`（及 `-wal`）临时副本只读查询 `sessions`（过滤 playground、后台定时任务及非本地会话）与 `workspaces`。暂不支持在 Hub 新建对话，不支持额度与 token 统计。
+- **只读对话正文**：`Hub.memberTranscript` 按页只读 `<workbuddyHome>/projects/<proj>/<sessionId>.jsonl`（严格核对首行 `session-meta.sessionId`、排除 `subagents/` 并拒绝越界路径、硬链接与符号链接，不碰 `workbuddy.db`）；`reasoning` 仅输出占位、`isMeta` 归为 `system`、支持直接 MCP 与 `DeferExecuteTool` 工具调用及跨页配对；展示工具文本前遮盖等待票据，且仅将整条命令结构精确匹配本会话 `wait.mjs` 票据的 `TaskOutput` 或已配对前景 Shell 等待命令输出交由 Hub 核实归属，未配对或子串嵌套均保留原条目。
 - 会话身份由宿主提供；重置、回退或新建对话后身份变化时，应重新连接 MCP。

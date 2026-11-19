@@ -14,7 +14,8 @@ import {
   type HealthResult, type LaunchDeps, type PowerShellRunner, type SpawnedHub,
 } from '../src/launcher.ts';
 import { REPO_ROOT } from '../src/main.ts';
-import { fixtureNativeMock, freePort, startTestHub, tempDir, TEST_TOKEN, waitFor } from './helpers.ts';
+import { freePort, startTestHub, tempDir, TEST_TOKEN, waitFor } from './helpers.ts';
+import type { MockScript } from './mock.ts';
 
 function hubEnv(dir: string, port: number): Record<string, string | undefined> {
   return { ...process.env, ORRERY_PORT: String(port), ORRERY_HOME: join(dir, 'home'), ORRERY_DB: join(dir, 'h.db'), ORRERY_API_TOKEN: TEST_TOKEN };
@@ -546,18 +547,16 @@ test('launcher 7: a same-data Hub still closing on another port is waited for; n
   const gate = Promise.withResolvers<void>();
   let entered = false;
   let aborted = false;
-  // A native delivery that takes a while to clean up after the abort.
-  const native = fixtureNativeMock(dir);
-  native.deliver = async (_id, _text, { signal }) => {
+  // A worker that takes a while to clean up after the abort.
+  const script: MockScript = async (_msg, _tools, _emit, signal) => {
     entered = true;
     signal.addEventListener('abort', () => { aborted = true; }, { once: true });
     await gate.promise;
-    return 'completed';
   };
   const q = await freePort();
   let p = await freePort();
   while (p === q) p = await freePort();
-  const a = await startTestHub({ dir, port: q, nativeAdapters: { mock: native } });
+  const a = await startTestHub({ dir, port: q, mock: { script } });
   const env = { ...hubEnv(dir, p), ORRERY_DB: join(dir, 'test.db') };
   const r = realDeps(env);
   const spawnedAt: number[] = [];
@@ -565,9 +564,7 @@ test('launcher 7: a same-data Hub still closing on another port is waited for; n
   r.deps.spawnHub = (log) => { spawnedAt.push(Date.now()); return spawnHub(log); };
   let closedAt = 0;
   try {
-    const { cluster } = await a.api('POST', '/api/clusters', {
-      name: 'c', members: [{ harness: 'mock', mode: 'native', projectPath: join(dir, 'project-1'), name: 'A' }],
-    });
+    const { cluster } = await a.cluster('c', ['A']);
     a.hub.sendFromUser(cluster.id, '@A hold');
     const id: string = await waitFor(() => entered && (a.store.db.prepare("SELECT id FROM deliveries WHERE state = 'running'").get() as { id: string } | undefined)?.id, 'A running') as string;
     const delivery = () => a.store.db.prepare('SELECT state, attempts FROM deliveries WHERE id = ?').get(id) as { state: string; attempts: number };
@@ -595,18 +592,16 @@ test('launcher 7: a health check that gets no answer while the old Hub is closin
   const gate = Promise.withResolvers<void>();
   let entered = false;
   let aborted = false;
-  // A native delivery that takes a while to clean up after the abort.
-  const native = fixtureNativeMock(dir);
-  native.deliver = async (_id, _text, { signal }) => {
+  // A worker that takes a while to clean up after the abort.
+  const script: MockScript = async (_msg, _tools, _emit, signal) => {
     entered = true;
     signal.addEventListener('abort', () => { aborted = true; }, { once: true });
     await gate.promise;
-    return 'completed';
   };
   const q = await freePort();
   let p = await freePort();
   while (p === q) p = await freePort();
-  const a = await startTestHub({ dir, port: q, nativeAdapters: { mock: native } });
+  const a = await startTestHub({ dir, port: q, mock: { script } });
   const env = { ...hubEnv(dir, p), ORRERY_DB: join(dir, 'test.db') };
   const r = realDeps(env);
   // stopping → no answer (injected) → stopping again: the silent check must not open the way for a second Hub.
@@ -623,9 +618,7 @@ test('launcher 7: a health check that gets no answer while the old Hub is closin
   r.deps.spawnHub = (log) => { spawnedAt.push(Date.now()); return spawnHub(log); };
   let closedAt = 0;
   try {
-    const { cluster } = await a.api('POST', '/api/clusters', {
-      name: 'c', members: [{ harness: 'mock', mode: 'native', projectPath: join(dir, 'project-1'), name: 'A' }],
-    });
+    const { cluster } = await a.cluster('c', ['A']);
     a.hub.sendFromUser(cluster.id, '@A hold');
     const id: string = await waitFor(() => entered && (a.store.db.prepare("SELECT id FROM deliveries WHERE state = 'running'").get() as { id: string } | undefined)?.id, 'A running') as string;
     const delivery = () => a.store.db.prepare('SELECT state, attempts FROM deliveries WHERE id = ?').get(id) as { state: string; attempts: number };

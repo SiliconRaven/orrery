@@ -14,17 +14,19 @@ import { externalPluginSender } from './external-plugin-config.ts';
 import { FileStore, isFileId, MAX_FILES_PER_MESSAGE, type FileStoreOptions } from './files.ts';
 import { HANDOVER, handoverPackage, type HandoverPackage } from './handover.ts';
 import { LIMIT_SETTINGS, parseLimit, type Limit, type LimitSetting, type LimitSource } from './limits.ts';
+import { emptyTranscriptPage, TRANSCRIPT_MAX_ITEMS, type TranscriptPage, type TranscriptRequest } from './native-transcript.ts';
 import { NOTIFY_SETTINGS, parseNotifyValue, type NotifySetting } from './notify-settings.ts';
-import type { EnvelopeItem, PluginService } from './plugin.ts';
+import { asyncRefused, isThenable, PluginHookError, runHook, shortError, type EnvelopeItem, type PluginService } from './plugin.ts';
 import { groupedProjects, projectIdentities } from './projects.ts';
 import { listSkills, skillRefs, type SkillInfo } from './skills.ts';
 import { ToolObservations } from './tool-observations.ts';
 import type { ToolLists, ToolListMemory } from './tool-list.ts';
+import { attributeTranscript, openTranscriptCursor, transcriptCursor } from './transcript-attribution.ts';
 import type { ClusterChanges, QueuedCandidate, Store, StoredMember } from './store.ts';
 import { emptyUnreadBreakdown } from './store.ts';
 import { QUOTA_WARNING_PERCENT, quotaLevel, usageAlert, UsageTracker, type UsageReport } from './usage.ts';
 import type {
-  ActivityObserver, ActivitySnapshot, AgentEvent, BridgeDoneResult, BridgePort, Cluster, ClusterListing, Delivery, DeliveryResult, DeliveryState, FileInfo, HubEvent, Member, MemberMode, MemberRebind, Message, MessageCategory, ModelInfo, NativeAdapter, ProjectInfo,
+  ActivityObserver, ActivitySnapshot, AgentEvent, BridgeDoneResult, BridgePort, Cluster, ClusterListing, Delivery, DeliveryResult, DeliveryState, FileInfo, HubEvent, Member, MemberRebind, Message, MessageCategory, ModelInfo, NativeAdapter, ProjectInfo,
   MessageCategoryFilter, MessageFilters, QuotaWindow, ReadVia, SessionInfo, SystemMessageKind, ToolCallObservation, ToolProfile, UnreadBreakdown, UnreadCategory, UnreadCategoryCounts, TurnHookHarness, WaitHarness,
 } from './types.ts';
 
@@ -62,6 +64,9 @@ export function formatUnreadSummary(b: UnreadBreakdown): string {
   return `未读 ${b.total}：${parts.join(' · ')}`;
 }
 
+/** One recorded plugin failure: where it happened (service, start, sweep, close, onQuotaChanged, tools …) and its first line. */
+export interface PluginFault { phase: string; error: string; at: string }
+
 export interface Limits {
   maxHops: number;         // the start-up hop limit (ORRERY_MAX_HOPS); a saved setting overrides it, see getLimit()
   maxTurnsPerChain: number; // the start-up per-chain turn limit (ORRERY_MAX_TURNS_PER_CHAIN); likewise overridden
@@ -96,7 +101,7 @@ export const DEFAULT_LIMITS: Limits = {
 
 export interface HubOptions {
   store: Store;
-  nativeAdapters: Record<string, NativeAdapter>;
+  nativeAdapters: Record<string, NativeAdapter>;    // by harness
   limits?: Partial<Limits>;
   files?: FileStoreOptions; // where attachments are kept (docs/files.md); absent: no uploads or attachments
   skillsDir?: string;       // the user's shared skills folder, read-only (docs/files.md); absent: no skills
@@ -126,6 +131,85 @@ export interface SentMessage {
   warning?: string;
   duplicate?: true;
 }
+
+/**
+ * A member's message as gate plugins are asked about it (messages.gate, docs/external-plugins.md「发言检查」), after
+ * every check of the Hub's own and before anything is written. The plugin layer decides which plugin sees `body`.
+ */
+export interface MessageCheckRequest {
+  /** Opaque and unique per check (one send attempt); the same id names it in message.created and its result. */
+  checkId: string;
+  clusterId: string;
+  sender: { id: string; name: string };
+  mentions: string[];     // member ids the message names (a member's @all: every present member)
+  recipients: string[];   // member ids it will be delivered to
+  fyi: boolean;
+  replyTo: string | null;
+  attachments: number;
+  body: string;
+}
+type MessageCheckFailure = 'not_running' | 'timeout' | 'stopped' | 'exited' | 'protocol' | 'error' | 'malformed';
+export type MessageCheckOutcome = { pluginId: string; name: string } & (
+  { verdict: 'allow' } | { verdict: 'refuse'; reason: string } | { verdict: 'failed'; failure: MessageCheckFailure });
+/**
+ * How a check ended, told once it is final: stored, or not stored because another plugin refused it or the Hub's own
+ * checks after the wait rejected it (including another send with the same clientMessageId stored meanwhile).
+ */
+export type MessageCheckResult = { stored: true; messageId: string } | { stored: false; reason: 'refused_by_other' | 'rejected_by_hub' };
+/**
+ * checkMessage → null: no plugin checks this cluster, and the send goes on at once. The promise never rejects.
+ * For every check that returned a promise the Hub calls checkSettled exactly once, after the outcome is final; just
+ * before it writes the message it calls checkStoring with the new message's id (its message event follows within that call).
+ */
+export interface MessageGate {
+  checkMessage(request: MessageCheckRequest): Promise<MessageCheckOutcome[]> | null;
+  checkStoring?(checkId: string, messageId: string): void;
+  checkSettled?(checkId: string, result: MessageCheckResult): void;
+}
+
+/** A tool a third-party plugin offers members (docs/external-plugins.md「群员工具」), as tools/list shows it. */
+export interface MemberToolDeclaration {
+  name: string; description: string; inputSchema: Record<string, unknown>;
+  /** The plugin is ready: listed. Not running: not listed, a call is answered PLUGIN_NOT_RUNNING. */
+  running: boolean;
+}
+/** What the member's tools/call gets: the plugin's answer, or a stable code and a sentence. */
+export type MemberToolOutcome = { ok: true; text?: string; data?: unknown } | { ok: false; code: string; message: string };
+export interface MemberToolCall {
+  /** The name the member called (p_<plugin>_<tool>). */
+  name: string;
+  /** The membership the MCP layer authenticated and selected; never taken from the tool's arguments. */
+  clusterId: string;
+  member: { id: string; name: string };
+  /** The arguments as the member sent them, without the Hub's own clusterId. */
+  arguments: unknown;
+  /** Asked once the plugin has answered: is the caller still this membership (same conversation, shown)? */
+  still(): boolean;
+}
+/** The composition root's third-party plugins (ExternalPlugins), for members' tools. Without one, members get none. */
+export interface MemberToolHost {
+  memberTools(clusterIds: readonly string[]): MemberToolDeclaration[];
+  callMemberTool(call: MemberToolCall): Promise<MemberToolOutcome>;
+}
+
+/** A send a gate plugin refused: nothing was stored or delivered. The MCP layer shows `code: message`. */
+class MessageRefused extends Error {
+  readonly code = 'REFUSED_BY_PLUGIN';
+}
+// One user-visible record per key and window; repeats inside the window are only counted, and the next record says how many.
+const GATE_REFUSAL_RECORD_MS = 60_000;     // per plugin and refused member
+const GATE_FAILURE_RECORD_MS = 600_000;    // per plugin and cluster: a dead plugin would otherwise write one per minute forever
+// Per plugin, cluster and kind (restart, gave up): a flapping plugin's restarts 2 s and 10 s apart make one record and a count.
+const PLUGIN_RESTART_RECORD_MS = 60_000;
+const GATE_FAILURE_TEXT: Record<MessageCheckFailure, string> = {
+  not_running: '插件没有在运行',
+  timeout: '没有在时限内回答；插件仍在运行，下一条发言照常检查',
+  // 3: MAX_CHECK_TIMEOUTS in external-plugin-process.ts
+  stopped: '连续 3 次没有在时限内回答，插件已被停止；在它重新启动之前不再检查发言',
+  exited: '插件进程退出了',
+  protocol: '插件出错（请求超时或输出不符合协议），已被停止', error: '插件回答了错误或收不下这个请求（可能不支持 message.check）', malformed: '插件的回答格式不对',
+};
+
 export interface DeliveryDetail extends Omit<DeliveryOutcome, 'outcome'> {
   outcome: DeliveryResult;
   queuedAt?: string;
@@ -143,9 +227,9 @@ export function fmtSize(n: number): string {
 
 export interface MemberSpec {
   harness: string;
-  mode?: MemberMode;        // default 'native'
+  mode?: unknown;           // input only: 'native', required to create a conversation (see buildMembers), optional to attach one
   projectPath?: string;
-  sessionId?: string;       // attach an existing conversation: native mode only
+  sessionId?: string;       // attach an existing conversation; absent: create one (when the harness can)
   name?: string;
   avatar?: string | null;
   model?: string;           // new sessions only
@@ -157,6 +241,8 @@ export interface BridgeConnection {
   send(e: { deliveryId: string; sessionId: string; text: string }): void;
   close(): void;
   sendActivity?(frame: { observerId: string; sessions: string[] }): void;
+  /** Third-party plugin tools changed (a plugin started or stopped): the bridge tells its app the tool list changed. */
+  toolsChanged?(): void;
   version?: string;   // the app version the bridge reported (Antigravity's sidecar), shown as harnessModes' bridgeVersion
 }
 
@@ -190,18 +276,30 @@ interface Running {
 
 /** Why Hub.purgeCluster changed nothing; the web API answers 404 for NOT_FOUND, else 409. */
 export class PurgeRefused extends Error {
-  readonly code: 'NOT_FOUND' | 'NOT_IN_TRASH' | 'NAME_MISMATCH' | 'TRASH_CHANGED' | 'RUNNING' | 'ADDING_MEMBERS';
+  readonly code: 'NOT_FOUND' | 'NOT_IN_TRASH' | 'NAME_MISMATCH' | 'TRASH_CHANGED' | 'RUNNING' | 'ADDING_MEMBERS' | 'PLUGIN_DATA';
   /** RUNNING: the member whose work is still running. */
   readonly member: string | null;
-  constructor(code: PurgeRefused['code'], message: string, member: string | null = null) {
+  /** PLUGIN_DATA: plugins with tables in this database that did not run this start (the likely cause). */
+  readonly plugins: string[];
+  constructor(code: PurgeRefused['code'], message: string, member: string | null = null, plugins: string[] = []) {
     super(message);
     this.code = code;
     this.member = member;
+    this.plugins = plugins;
   }
 }
 
 /** A permanent delete that happened: what it removed, the file ids whose folders could not be removed, and whether the WAL was written back. */
-export interface PurgeResult { clusterId: string; messages: number; files: number; filesFailed: string[]; walCheckpointed: boolean }
+/**
+ * `pluginDataMayRemain` (only when non-empty): plugins whose tables the database has (a migration record) but that did
+ * not run this start (revoked, failed to load, safe mode): their clusterPurging did not run, so rows of the deleted
+ * cluster may remain in their tables; the purge is never reported as complete for them.
+ */
+export interface PurgeResult { clusterId: string; messages: number; files: number; filesFailed: string[]; walCheckpointed: boolean; pluginDataMayRemain?: string[] }
+
+/** SQLite's own foreign-key failure (SQLITE_CONSTRAINT_FOREIGNKEY, which node:sqlite reports as `errcode`). */
+const SQLITE_CONSTRAINT_FOREIGNKEY = 787;
+const isForeignKeyFailure = (e: unknown): boolean => (e as { errcode?: unknown } | null)?.errcode === SQLITE_CONSTRAINT_FOREIGNKEY;
 
 /** Persists one event (Hub.emit, or inside Hub.atomically). */
 type RecordEvent = (clusterId: string | null, memberId: string | null, kind: HubEvent['kind'], payload: unknown) => HubEvent;
@@ -221,6 +319,9 @@ const ACK_ERROR_MAX = 500;
 const MAX_CLIENT_MESSAGE_ID = 200;
 const MAX_NEW_BATCH_MESSAGES = 32;
 
+/** Why a request for an isolated member is refused (docs/native-mode.md). */
+const ISOLATED_REMOVED = 'isolated mode was removed: a member is a conversation of its native app';
+
 /** Longest sidebar group name (characters, after trimming). */
 export const MAX_CATEGORY = 40;
 /** Longest cluster name (characters, after trimming) for a new cluster or a rename; older longer names are kept. */
@@ -228,7 +329,7 @@ export const MAX_CLUSTER_NAME = 60;
 
 /**
  * A cluster name, for create and rename alike: trimmed, non-empty, at most MAX_CLUSTER_NAME characters, none of
- * \ / : * ? " < > |, no control characters or line separators (they would split the
+ * \ / : * ? " < > | (a name once named a folder; the rule stays), no control characters or line separators (they would split the
  * envelope header line), not starting with ".". Duplicates are allowed: clusters are told apart by id.
  */
 function checkClusterName(name: unknown): string {
@@ -351,7 +452,7 @@ function outcomeOf(d: Delivery): { status: DeliveryOutcome['status']; outcome: D
 const own = <T>(rec: Record<string, T>, key: unknown): T | undefined =>
   typeof key === 'string' && Object.hasOwn(rec, key) ? rec[key] : undefined;
 
-/** The tool profile a member's mode and harness give it (its MCP caller kind), before any tool call is observed. */
+/** The tool profile a member's harness gives it (its MCP caller kind), before any tool call is observed. */
 function defaultProfile(member: StoredMember): ToolProfile {
   return member.harness === 'antigravity' ? 'antigravity'
     : member.harness === 'zcode' ? 'zcode'
@@ -364,6 +465,7 @@ export class Hub {
   readonly collaboration: Collaboration;
   readonly limits: Limits;
   private readonly nativeAdapters: Record<string, NativeAdapter>;
+  private readonly transcriptCursorKey = randomUUID();
   readonly files: FileStore | null;
   private readonly skillsDir: string | undefined;
   private readonly avatarNames: string[];                 // preset avatar names, read once at start-up
@@ -375,6 +477,10 @@ export class Hub {
   // The effective limit settings (docs/hop-limit.md); each changed only after its store write.
   private readonly limitSettings: Record<LimitSetting, { limit: Limit; source: LimitSource }>;
   private readonly externalGuardUntil = new Map<string, number>();
+  // Gate plugins (messages.gate) asked before a member's message is stored; set by the composition root once it exists.
+  private gate: MessageGate | null = null;
+  private memberToolHost: MemberToolHost | null = null;
+  private readonly gateRecords = new Map<string, { until: number; repeats: number }>();
   // The coordinator notification settings (docs/collaboration.md); each changed only after its store write.
   private readonly notifySettings: Record<NotifySetting, { value: number; source: 'saved' | 'default' }>;
   /** How long a member holding a task may show no Hub-observed activity; the web setting changes it. */
@@ -404,8 +510,10 @@ export class Hub {
   private readonly shown = new Map<string, Member['status']>();
   private readonly watching = new Set<string>();
   private statusTimer: NodeJS.Timeout | undefined;
-  /** Each enabled plugin's background side, by plugin id. */
+  /** Each enabled plugin's background side, by plugin id; one whose construction or start failed is not (or no longer) here. */
   readonly services = new Map<string, PluginService>();
+  /** The latest failure of each plugin per phase (docs/plugins.md「故障隔离」), for its settings card. In memory only. */
+  private readonly faults = new Map<string, Map<string, PluginFault>>();
   private idleSweep: NodeJS.Timeout | undefined;
   // Quota notices: keys (cluster, harness, window, resetsAt, level) already told, the exhausted window per
   // cluster and harness a recovery notice waits for, the earliest-reset timer and the Claude quota poll.
@@ -482,9 +590,7 @@ export class Hub {
     this.collaboration = new Collaboration(opts.store, (event) => {
       this.notify(event);
       const payload = event.payload as { action?: string; paused?: boolean; suggested?: boolean };
-      for (const service of this.services.values()) {
-        try { service.onEvent?.(event); } catch { console.warn('Hub service failed to observe a collaboration event'); }
-      }
+      for (const [id, service] of this.services) this.guardPlugin(id, 'onEvent', () => service.onEvent?.(event));
       if (payload.action === 'cluster.pause' && !payload.suggested && event.clusterId) {
         for (const member of this.store.listMembers(event.clusterId)) {
           if (payload.paused === true) this.scheduleSession(member);
@@ -542,6 +648,7 @@ export class Hub {
     };
     this.stalledAfterMs = savedStalled === null ? this.limits.stalledMemberMs : savedStalled * 60_000;
     this.atomically((record) => {
+      // Deliveries interrupted by the last stop: their senders are told at start, as after a user's removal.
       for (const d of this.store.recoverRunning()) {
         record(this.store.getMember(d.memberId, { includeRemoved: true })?.clusterId ?? null, d.memberId, 'delivery', { delivery: d });
         this.recoveredFailures.push(d);
@@ -556,10 +663,56 @@ export class Hub {
         if ((payload as { quota?: unknown }).quota) this.quotaChanged();
       },
     });
-    for (const plugin of this.store.plugins.enabled) if (plugin.service) this.services.set(plugin.id, plugin.service(this));
+    for (const plugin of this.store.plugins.enabled) {
+      if (!plugin.service) continue;
+      try {
+        const service: unknown = plugin.service(this);
+        // A factory answers synchronously: a promise (an async factory) is refused and its rejection caught.
+        if (isThenable(service)) throw asyncRefused(service, 'service()');
+        if (!service || typeof service !== 'object') throw new Error('service() did not return an object');
+        this.services.set(plugin.id, service);
+      } catch (e) { this.pluginFault(plugin.id, 'service', e); }
+    }
   }
 
-  /** Begin delivering. Called once the MCP endpoint URL is known. */
+  /**
+   * Records a plugin failure for its settings card and logs it once per new text (docs/plugins.md「故障隔离」). Also
+   * used by the MCP tool builder and the composition root (a plugin left out at start-up).
+   */
+  pluginFault(pluginId: string, phase: string, error: unknown): void {
+    const text = shortError(error);
+    const phases = this.faults.get(pluginId) ?? new Map<string, PluginFault>();
+    this.faults.set(pluginId, phases);
+    if (phases.get(phase)?.error !== text) console.warn(`plugin ${pluginId} failed in ${phase}: ${text}`);
+    phases.set(phase, { phase, error: text, at: new Date().toISOString() });
+  }
+
+  /** A plugin's recorded failures, one per phase, oldest phase first. */
+  pluginFaults(pluginId: string): PluginFault[] {
+    return [...(this.faults.get(pluginId)?.values() ?? [])];
+  }
+
+  /**
+   * Runs one plugin callback so that neither a synchronous throw nor a promise it hands back and that rejects reaches
+   * the Hub: both are recorded as a fault of this phase, then `failed` runs. Timers and promises the plugin starts on its
+   * own and does not hand back are outside this (docs/plugins.md「故障隔离」).
+   */
+  private guardPlugin(pluginId: string, phase: string, run: () => unknown, failed?: () => void): void {
+    const fault = (e: unknown) => { this.pluginFault(pluginId, phase, e); failed?.(); };
+    try {
+      const result = run();
+      if (result && typeof (result as PromiseLike<unknown>).then === 'function') (result as PromiseLike<unknown>).then(undefined, fault);
+    } catch (e) { fault(e); }
+  }
+
+  /** A service whose start failed takes no part in anything later; it is closed once to release what it armed. */
+  private dropService(pluginId: string, service: PluginService): void {
+    if (this.services.get(pluginId) !== service) return;
+    this.services.delete(pluginId);
+    this.guardPlugin(pluginId, 'close', () => service.close?.());
+  }
+
+  /** Begin delivering. Called once the Hub listens. */
   start(): void {
     this.started = true;
     // Nothing queued before this start has a confirmed online state (pending ones were in memory): confirm them all.
@@ -592,14 +745,18 @@ export class Hub {
       for (const fn of afterCommit) fn();
     }
     for (const d of this.recoveredFailures.splice(0)) this.notifyFailedSender(d);
-    for (const service of this.services.values()) service.start?.();
+    for (const { delivery, noticeId, handled } of this.store.pendingMigrationSenderNotices()) {
+      if (!handled) this.notifyFailedSender(delivery, noticeId);
+      this.store.completeMigrationSenderNotice(delivery.id);
+    }
+    for (const [id, service] of [...this.services]) this.guardPlugin(id, 'start', () => service.start?.(), () => this.dropService(id, service));
     this.statusTimer = setInterval(() => {
       this.watchStatus();
       this.warnLongQueues();
     }, this.limits.recheckMs);
     this.statusTimer.unref();
     this.idleSweep = setInterval(() => {
-      for (const service of this.services.values()) service.sweep?.();
+      for (const [id, service] of this.services) this.guardPlugin(id, 'sweep', () => service.sweep?.());
       this.checkQuota();   // retries a quota notice skipped while paused or without a coordinator
       this.store.checkpoint();   // keeps the WAL file small; never throws
     }, this.limits.idleSweepMs);
@@ -626,7 +783,9 @@ export class Hub {
     clearInterval(this.idleSweep);
     clearTimeout(this.quotaTimer);
     clearInterval(this.claudeQuotaTimer);
-    for (const service of this.services.values()) service.close?.();
+    // One failing close stops neither the others nor the Hub's own shutdown; a start that fails later closes nothing again.
+    for (const [id, service] of this.services) this.guardPlugin(id, 'close', () => service.close?.());
+    this.services.clear();
     for (const r of this.running.values()) r.abort.abort();
     for (const [id, a] of this.acks) {
       clearTimeout(a.timer);
@@ -708,17 +867,20 @@ export class Hub {
 
   private emitMember(m: StoredMember): void {
     const member = this.withStatus(m);
-    const before = this.shown.get(m.id);
     const event = this.store.appendEvent(m.clusterId, m.id, 'member', { member });
-    this.shown.set(m.id, member.status);
+    this.publishMember(member, event);
+  }
+
+  private publishMember(member: Member, event: HubEvent, publishFollowing?: () => void): void {
+    const before = this.shown.get(member.id);
+    this.shown.set(member.id, member.status);
     this.notify(event);
+    publishFollowing?.();   // publish in sequence before status hooks can write more events
     this.notifyMemberStatus(member, before);
   }
 
   private notifyMemberStatus(member: Member, before: Member['status'] | undefined): void {
-    for (const service of this.services.values()) {
-      try { service.onMemberStatus?.(member, before); } catch { console.warn('Hub service failed to observe a member status'); }
-    }
+    for (const [id, service] of this.services) this.guardPlugin(id, 'onMemberStatus', () => service.onMemberStatus?.(member, before));
   }
 
   /**
@@ -752,14 +914,14 @@ export class Hub {
 
   // ---- harness discovery ----
 
-  /** Every registered native harness. */
+  /** Every harness with a (native) adapter. */
   harnesses(): string[] {
     return Object.keys(this.nativeAdapters);
   }
 
   /**
-   * Which modes each harness supports; `nativeCreate`: a native member can be a new conversation; `bridgeVersion`
-   * (only when known): the app version reported by the harness's connected shared bridge stream.
+   * What each harness supports (GET /api/harness-modes): `native` is always true; `nativeCreate`: a member can be a new
+   * conversation; `bridgeVersion` (only when known): the app version reported by the harness's connected shared bridge stream.
    */
   harnessModes(): { harness: string; native: true; nativeCreate: boolean; bridgeVersion?: string }[] {
     return this.harnesses().map((harness) => {
@@ -775,7 +937,7 @@ export class Hub {
 
   private nativeAdapter(harness: unknown): NativeAdapter {
     const a = own(this.nativeAdapters, harness);
-    if (!a) throw new Error(`unknown harness ${harness} for native mode`);
+    if (!a) throw new Error(`unknown harness ${harness}`);
     return a;
   }
 
@@ -797,7 +959,7 @@ export class Hub {
   /** Sessions of a project, with their active memberships; `memberId` retains the old first-membership field. */
   async listSessions(
     harness: string, projectPath: string,
-  ): Promise<(SessionInfo & { memberId: string | null; memberships: { clusterId: string; clusterName: string; memberId: string; memberName: string; mode: MemberMode; hidden?: true }[]; online?: boolean })[]> {
+  ): Promise<(SessionInfo & { memberId: string | null; memberships: { clusterId: string; clusterName: string; memberId: string; memberName: string; hidden?: true }[]; online: boolean })[]> {
     const adapter = this.nativeAdapter(harness);
     const projects = await adapter.listProjects();
     const paths = [...new Set([projectPath, ...projects.map((p) => p.path)])];
@@ -817,7 +979,7 @@ export class Hub {
         ...s,
         memberId: members[0]?.id ?? null,
         memberships: members.map((m) => ({ clusterId: m.clusterId, clusterName: this.store.getCluster(m.clusterId)!.name,
-          memberId: m.id, memberName: m.name, mode: m.mode, ...(m.hiddenAt ? { hidden: true as const } : {}) })),   // the user's page only
+          memberId: m.id, memberName: m.name, ...(m.hiddenAt ? { hidden: true as const } : {}) })),   // the user's page only
         online: adapter.isOnline(s.id, this.bridge),
       };
     });
@@ -830,11 +992,13 @@ export class Hub {
 
   // ---- clusters and members ----
 
+  /** Every active membership of the member's conversation, itself included. */
   private sessionMembers(m: StoredMember): StoredMember[] {
     return this.store.getMembersBySession(m.harness, m.workerSessionId);
   }
 
-  private sessionKey(m: Pick<Member, 'id' | 'mode' | 'harness' | 'workerSessionId'>): string {
+  /** One conversation, whatever clusters it is in: delivery channel, per-hour counts and notice windows are per key. */
+  private sessionKey(m: Pick<Member, 'harness' | 'workerSessionId'>): string {
     return JSON.stringify(['native', m.harness, m.workerSessionId]);
   }
 
@@ -918,14 +1082,18 @@ export class Hub {
   }
 
   restoreCluster(id: string): Cluster {
-    let event!: HubEvent;
+    const events: HubEvent[] = [];
+    const afterCommit: (() => void)[] = [];
     const cluster = this.store.transaction(() => {
       const restored = this.store.restoreCluster(id);
       const members = this.store.listMembers(id).map((member) => this.withStatus(member));
-      event = this.store.appendEvent(id, null, 'cluster', { cluster: restored, members });
+      events.push(this.store.appendEvent(id, null, 'cluster', { cluster: restored, members }));
+      // The start-up check skips the recycle bin: a coordinator moved out meanwhile (v30) is stopped now.
+      this.store.coordinator?.disableIfRemoved?.(this, id, { event: (e) => events.push(e), afterCommit: (fn) => afterCommit.push(fn) });
       return restored;
     });
-    this.notify(event);
+    for (const event of events) this.notify(event);
+    for (const fn of afterCommit) fn();
     return cluster;
   }
 
@@ -938,7 +1106,28 @@ export class Hub {
    * files are removed, and the WAL is written back. A file folder that cannot be removed is reported, not rolled back.
    */
   async purgeCluster(id: string, name: unknown, trashVersion: number): Promise<PurgeResult> {
-    const purged = this.store.purgeCluster(id, (cluster, memberIds, actualVersion) => {
+    let purged: ReturnType<Store['purgeCluster']>;
+    try {
+      purged = this.purgeRows(id, name, trashVersion);
+    } catch (e) {
+      // The transaction rolled back (nothing was deleted). Plugins whose tables exist but whose clusterPurging did not run
+      // this start (revoked, failed to load, safe mode) are named as the likely cause only of a foreign-key failure; any
+      // other failure (a loaded plugin's hook, say) keeps its own error and names them at most as a side note.
+      const unloaded = e instanceof PurgeRefused ? [] : this.store.unloadedPluginsWithTables();
+      if (!unloaded.length) throw e;
+      if (isForeignKeyFailure(e)) {
+        throw new PurgeRefused('PLUGIN_DATA', `nothing was deleted: ${(e as Error).message}; plugins with tables in this database `
+          + `that did not run this start may still hold this cluster's data and are the likely cause: ${unloaded.join(', ')}`, null, unloaded);
+      }
+      const note = `; besides, plugins with tables in this database that did not run this start may still hold this cluster's data: ${unloaded.join(', ')}`;
+      if (e instanceof Error) { e.message += note; throw e; }
+      throw new Error(`${String(e)}${note}`);
+    }
+    return this.afterPurge(id, purged);
+  }
+
+  private purgeRows(id: string, name: unknown, trashVersion: number) {
+    return this.store.purgeCluster(id, (cluster, memberIds, actualVersion) => {
       if (!cluster) throw new PurgeRefused('NOT_FOUND', `unknown cluster ${id}`);
       if (!cluster.deletedAt) throw new PurgeRefused('NOT_IN_TRASH', 'the cluster is not in the recycle bin (restored?); nothing was deleted');
       if (typeof name !== 'string' || name !== cluster.name) throw new PurgeRefused('NAME_MISMATCH', 'the name does not match the cluster\'s name; nothing was deleted');
@@ -947,13 +1136,17 @@ export class Hub {
       const busy = this.purgeBlocker(memberIds);
       if (busy) throw new PurgeRefused('RUNNING', `member ${busy} still has work running; nothing was deleted, try again once it has ended`, busy);
     });
+  }
+
+  private async afterPurge(id: string, purged: ReturnType<Store['purgeCluster']>): Promise<PurgeResult> {
     this.notify(purged.event);
     this.forgetPurged(id, purged.memberIds);
-    for (const service of this.services.values()) {
-      try { service.onClusterPurged?.(id, purged.memberIds); } catch { /* memory only: the cluster is gone either way */ }
-    }
+    // Memory only: the cluster is gone either way.
+    for (const [pluginId, service] of this.services) this.guardPlugin(pluginId, 'onClusterPurged', () => service.onClusterPurged?.(id, purged.memberIds));
     const filesFailed = this.files ? await this.files.removeFolders(purged.files) : [];
-    return { clusterId: id, messages: purged.messages, files: purged.files.length, filesFailed, walCheckpointed: this.store.checkpoint() };
+    const remain = this.store.unloadedPluginsWithTables();
+    return { clusterId: id, messages: purged.messages, files: purged.files.length, filesFailed, walCheckpointed: this.store.checkpoint(),
+      ...(remain.length ? { pluginDataMayRemain: remain } : {}) };
   }
 
   /** The name of a member of these whose work is still running (a Hub run, a moved member's old run, a running delivery), or null. */
@@ -999,9 +1192,8 @@ export class Hub {
    */
   private connectionReport(m: StoredMember): { state: 'online' | 'offline'; basis: string } {
     if (m.removedAt) return { state: 'offline', basis: '已移出集群' };
-    const adapter = own(this.nativeAdapters, m.harness);
-    if (!adapter) return { state: 'offline', basis: 'Hub 没有这个 harness 的适配器' };
-    const a = adapter;
+    const a = own(this.nativeAdapters, m.harness);
+    if (!a) return { state: 'offline', basis: 'Hub 没有这个 harness 的适配器' };
     return { state: a.isOnline(m.workerSessionId, this.bridge) ? 'online' : 'offline',
       basis: a.confirmOnline ? 'Hub 检查原生应用是否运行' : 'Hub 检查桥或等待通道是否连接' };
   }
@@ -1080,7 +1272,7 @@ export class Hub {
     return this.usage.poll(true);
   }
 
-  /** Every active native membership of this authenticated conversation. */
+  /** Every active membership of this authenticated conversation. */
   nativeCallers(harness: string, sessionId: string): Member[] {
     return this.closed ? [] : this.store.getMembersBySession(harness, sessionId).map((m) => this.withStatus(m));
   }
@@ -1141,7 +1333,7 @@ export class Hub {
     this.store.transaction(() => {
       this.store.insertCluster(cluster, built);
       ensureDefaultRoles(this.store, cluster.id);
-      for (const plugin of this.store.plugins.enabled) plugin.clusterCreated?.(this.store, cluster.id);
+      for (const plugin of this.store.plugins.enabled) runHook(plugin, 'clusterCreated', () => plugin.clusterCreated?.(this.store, cluster.id));
     });
     const members = built.map((m) => this.withStatus(m));
     this.emit(cluster.id, null, 'cluster', { cluster, members });
@@ -1302,8 +1494,9 @@ export class Hub {
 
     for (const spec of specs as MemberSpec[]) {
       // Validate what we can before a session gets created in the native app.
-      const mode = spec?.mode === undefined ? 'native' : spec.mode;
-      if (mode !== 'native') throw new Error(`invalid mode ${JSON.stringify(mode)}`);
+      const mode = spec?.mode;
+      if (mode === 'isolated') throw new Error(ISOLATED_REMOVED);
+      if (mode !== undefined && mode !== 'native') throw new Error(`invalid mode ${JSON.stringify(mode)}`);
       const native = this.nativeAdapter(spec.harness);
       if (spec.name !== undefined) checkName(spec.name);
       const avatar = checkAvatar(spec.avatar ?? null, this.avatarNameSet);
@@ -1313,8 +1506,16 @@ export class Hub {
       if (attach && (model !== undefined || effort !== undefined)) {
         throw new Error('model and effort apply to new sessions only; an attached conversation keeps its own');
       }
+      // Before isolated mode was removed, a spec without mode asked for an isolated member (a Hub-run worker): such a
+      // request must fail, never quietly become a conversation with the user's own permissions. Attaching names an
+      // existing conversation, so only creating needs the explicit mode.
+      if (!attach && mode !== 'native') throw new Error(`${ISOLATED_REMOVED}; to create a new conversation of the native app, send mode "native"`);
       if (!attach && !native.createSession) {
         throw new Error(`${spec.harness} native members can only attach an existing conversation`);
+      }
+      // A new conversation works in the project the user picked; there is no default folder (docs/native-mode.md).
+      if (!attach && (typeof spec.projectPath !== 'string' || !spec.projectPath.trim())) {
+        throw new Error('projectPath is required for a new conversation: pick a project folder, or attach an existing conversation with sessionId');
       }
 
       const id = randomUUID();
@@ -1342,15 +1543,14 @@ export class Hub {
         session = { sessionId: info.id, model: info.model, cwd: info.cwd, origin: 'attached' };
         sessionTitle = info.title;
       } else {
-        if (typeof spec.projectPath !== 'string' || !spec.projectPath.trim()) throw new Error('projectPath is required for a new native conversation');
-        const cwd = resolve(spec.projectPath);
+        const cwd = resolve(spec.projectPath!);
         const created = await native.createSession!({ cwd, title, model, effort, ...(memberName ? { memberName } : {}) });
         session = { ...created, cwd, origin: 'created' };
       }
       memberName ??= nameFor(session.model);
       this.usage.sessionSeen(spec.harness, { id: session.sessionId, title: sessionTitle, model: session.model });
       built.push({
-        id, clusterId: cluster.id, name: memberName, avatar, harness: spec.harness, mode,
+        id, clusterId: cluster.id, name: memberName, avatar, harness: spec.harness,
         model: session.model, effort: effort ?? null, workerSessionId: session.sessionId, cwd: session.cwd, origin: session.origin, removedAt: null,
         hiddenAt: null,   // the same shape as a member read back from the store (toMember)
       });
@@ -1365,7 +1565,7 @@ export class Hub {
     const afterCommit: (() => void)[] = [];
     const member = this.store.transaction(() => {
       const removed = this.store.removeMember(clusterId, memberId);
-      for (const plugin of this.store.plugins.installed) plugin.memberRemoved?.(this.store, clusterId, memberId);
+      this.store.runMemberRemovedHooks(clusterId, memberId);
       const member = this.withStatus(removed.member);
       for (const delivery of removed.cancelled) {
         this.pendingSenderNotices.delete(delivery.messageId);
@@ -1379,7 +1579,7 @@ export class Hub {
       }, memberId);
       return member;
     });
-    // Revoke and stop only after the membership, cancellations and their events commit together.
+    // Forget and stop only after the membership, cancellations and their events commit together.
     this.toolObservations.remove(memberId);
     this.clearThrottleTimers(memberId);
     for (const [id, m] of this.pending) if (m === memberId) this.pending.delete(id);
@@ -1434,9 +1634,15 @@ export class Hub {
       if (this.store.getMembersBySession(before.harness, info.id).some((m) => m.clusterId === before.clusterId)) {
         throw new Error(`session ${info.id} is already a member of this cluster`);
       }
-      for (const plugin of this.store.plugins.enabled) plugin.memberRebinding?.(this.store, before, { harness: before.harness, workerSessionId: info.id });
+      for (const plugin of this.store.plugins.enabled) {
+        // A throw refuses the move with the plugin's own words; a promise cannot be waited for inside the transaction.
+        const answer: unknown = plugin.memberRebinding?.(this.store, before, { harness: before.harness, workerSessionId: info.id });
+        if (isThenable(answer)) throw new PluginHookError(plugin.id, 'memberRebinding', asyncRefused(answer, 'memberRebinding'));
+      }
       const { member, interrupted } = this.store.rebindMember(memberId, { workerSessionId: info.id, cwd: info.cwd, model: info.model });
-      for (const plugin of this.store.plugins.enabled) plugin.memberRebound?.(this.store, before.clusterId, memberId, actorKey(before), actorKey(member));
+      for (const plugin of this.store.plugins.enabled) {
+        runHook(plugin, 'memberRebound', () => plugin.memberRebound?.(this.store, before.clusterId, memberId, actorKey(before), actorKey(member)));
+      }
       const rebind: MemberRebind = { memberId, memberName: member.name, clusterId: member.clusterId, harness: member.harness,
         fromSessionId: before.workerSessionId, toSessionId: member.workerSessionId, fromCwd: before.cwd, toCwd: member.cwd,
         confirmedStopped: true, at: new Date().toISOString() };
@@ -1473,6 +1679,52 @@ export class Hub {
   memberRebinds(memberId: string): (MemberRebind & { eventId: number })[] {
     if (!this.store.getMember(memberId, { includeRemoved: true })) throw new Error(`unknown member ${memberId}`);
     return this.store.memberRebinds(memberId);
+  }
+
+  /**
+   * In-process read for trusted consumers. Only the member's active native binding supplies the session id.
+   * A transcript read does not produce a Hub event or write to the Store.
+   */
+  async memberTranscript(memberId: string, request: TranscriptRequest = {}): Promise<TranscriptPage> {
+    if (!request || typeof request !== 'object' || Array.isArray(request)
+      || Object.keys(request).some((name) => name !== 'direction' && name !== 'limit' && name !== 'cursor')) {
+      return emptyTranscriptPage('refused');
+    }
+    const { cursor, direction, limit = TRANSCRIPT_MAX_ITEMS } = request;
+    if ((direction !== undefined && direction !== 'before' && direction !== 'after')
+      || !Number.isSafeInteger(limit) || limit < 1) return emptyTranscriptPage('refused');
+    if (typeof memberId !== 'string' || !memberId || this.closed) return emptyTranscriptPage('missing');
+
+    const member = this.store.getMember(memberId);   // excludes removed memberships and deleted clusters
+    if (!member || !member.workerSessionId) return emptyTranscriptPage('missing');
+    const adapter = own(this.nativeAdapters, member.harness);
+    if (!adapter?.transcript) return emptyTranscriptPage('unsupported');
+    const bindingOf = (m: StoredMember) =>
+      JSON.stringify([m.id, m.clusterId, m.harness, m.workerSessionId, this.store.memberBindingVersion(m.id)]);
+    const binding = bindingOf(member);
+    let nativeCursor: string | undefined;
+    if (cursor !== undefined) {
+      if (typeof cursor !== 'string' || cursor.length > 4096) return emptyTranscriptPage('reset');
+      const opened = openTranscriptCursor(this.transcriptCursorKey, binding, cursor);
+      if (!opened) return emptyTranscriptPage('reset');
+      nativeCursor = opened;
+    }
+
+    let page: TranscriptPage;
+    try {
+      page = await adapter.transcript(member.workerSessionId, { cursor: nativeCursor, direction, limit: Math.min(limit, TRANSCRIPT_MAX_ITEMS) });
+    } catch {
+      // Adapter exceptions can contain native paths or content.
+      page = emptyTranscriptPage('refused');
+    }
+    if (this.closed) return emptyTranscriptPage('missing');
+    const current = this.store.getMember(memberId);
+    if (!current) return emptyTranscriptPage('missing');
+    if (bindingOf(current) !== binding) return emptyTranscriptPage('reset');
+    if (page.status !== 'ok') return emptyTranscriptPage(page.status);
+    return { ...page, items: attributeTranscript(this.store, current, page.items),
+      before: page.before === undefined ? undefined : transcriptCursor(this.transcriptCursorKey, binding, page.before),
+      after: page.after === undefined ? undefined : transcriptCursor(this.transcriptCursorKey, binding, page.after) };
   }
 
   /**
@@ -1527,19 +1779,26 @@ export class Hub {
   }
 
   updateMember(id: string, fields: { name?: unknown; avatar?: unknown }): Member {
-    const m = this.store.getMember(id);
-    if (!m) throw new Error(`unknown member ${id}`);
-    const update: { name?: string; avatar?: string | null } = {};
-    if (fields.name !== undefined && fields.name !== m.name) {
-      update.name = checkName(fields.name);
-      if (this.store.listMembers(m.clusterId).some((o) => o.name === update.name)) {
-        throw new Error(`name ${update.name} is already used in this cluster`);
+    const { member, event, publishNotice } = this.store.transaction(() => {
+      const m = this.store.getMember(id);
+      if (!m) throw new Error(`unknown member ${id}`);
+      const name = fields.name === undefined || fields.name === m.name ? undefined : checkName(fields.name);
+      const peers = name === undefined ? [] : this.store.listMembers(m.clusterId);
+      if (peers.some((peer) => peer.name === name)) {
+        throw new Error(`name ${name} is already used in this cluster`);
       }
-    }
-    if (fields.avatar !== undefined) update.avatar = checkAvatar(fields.avatar, this.avatarNameSet);
-    const updated = this.store.updateMember(id, update);
-    this.emitMember(updated);
-    return this.withStatus(updated);
+      const avatar = fields.avatar === undefined ? undefined : checkAvatar(fields.avatar, this.avatarNameSet);
+      const member = this.withStatus(this.store.updateMember(id, { name, avatar }));
+      const event = this.store.appendEvent(m.clusterId, id, 'member', { member });
+      // Chat history is shared, so a hidden member's rename is recorded only in its member event.
+      const publishNotice = name !== undefined && !m.hiddenAt ? this.collaborationNotification({ kind: 'user' }, m.clusterId, event, {
+        recipients: peers.filter((peer) => !peer.hiddenAt).map((peer) => peer.id), wake: [], systemKind: 'member_renamed',
+        body: `成员「${m.name}」已改名为「${name}」。\nMember “${m.name}” was renamed to “${name}”.`,
+      }) : undefined;
+      return { member, event, publishNotice };
+    });
+    this.publishMember(member, event, publishNotice);
+    return member;
   }
 
   // ---- hidden members (docs/cluster-members.md「隐身」) ----
@@ -1724,7 +1983,7 @@ export class Hub {
     return true;
   }
 
-  /** A loop-guard notice raised outside the scheduler (the ZCode wait limits, src/mcp/zcode.ts) on each native membership of the session. */
+  /** A loop-guard notice raised outside the scheduler (the ZCode wait limits, src/mcp/zcode.ts) on each membership of the session. */
   guardSession(harness: string, sessionId: string, payload: { reason: string } & Record<string, unknown>): void {
     if (this.closed) return;
     for (const m of this.store.getMembersBySession(harness, sessionId)) this.emit(m.clusterId, m.id, 'guard', payload);
@@ -1742,7 +2001,6 @@ export class Hub {
       ? this.store.listMembers().filter((m) => m.harness === harness)
       : this.store.getMembersBySession(harness, sessionId);
     for (const m of members) {
-      if (!m) continue;
       this.emitMember(m);
       this.schedule(m.id);   // a stream that just connected gets the member's queued deliveries right away
     }
@@ -1863,7 +2121,7 @@ export class Hub {
     return { messageId: message.id, deliveredTo: recipients.map((id) => members.find((member) => member.id === id)!.name) };
   }
 
-  private externalPluginGuard(pluginId: string, clusterId: string, reason: string, details: Record<string, unknown>, intervalMs = 60_000): boolean {
+  private externalPluginGuard(pluginId: string, clusterId: string | null, reason: string, details: Record<string, unknown>, intervalMs = 60_000): boolean {
     // Denied requests can arrive faster than accepted messages. Bound their guard rows as well as chat warnings.
     const key = JSON.stringify([pluginId, clusterId, reason, details.window]);
     const now = Date.now();
@@ -1881,6 +2139,37 @@ export class Hub {
     const body = `插件「${pluginId}」达到发送上限（${interval} ${limit} 条），暂未发送新消息。`;
     this.post({ id, clusterId, from: 'system', kind: 'system', systemKind: 'plugin_rate_limit', body, mentions: [], replyTo: null, chainId: id, hop: 0,
       createdAt: new Date().toISOString() }, [], false, [], [], undefined, pluginId);
+  }
+
+  /**
+   * A plugin's published events went over its per-minute cap. Like the send notice: a guard record and a chat notice
+   * without recipients in the cluster the refused event named, at most once a minute per plugin and cluster; it wakes
+   * nobody and is not sent back to that plugin. A global event has no chat to show it in: the guard record and a log line.
+   */
+  externalPluginPublishLimit(pluginId: string, clusterId: string | null, limit: number): void {
+    if (!this.externalPluginGuard(pluginId, clusterId, 'external_plugin_publish_rate_limit', { window: 'minute', limit })) return;
+    if (!clusterId || !this.store.getCluster(clusterId)) {
+      console.warn(`external plugin ${pluginId} reached its event publish limit (${limit} a minute); events over it were refused`);
+      return;
+    }
+    const id = randomUUID();
+    const body = `插件「${pluginId}」发布事件达到上限（每分钟 ${limit} 条），超出上限的事件被拒绝，没有转发给其他插件。`;
+    this.post({ id, clusterId, from: 'system', kind: 'system', systemKind: 'plugin_rate_limit', body, mentions: [], replyTo: null, chainId: id, hop: 0,
+      createdAt: new Date().toISOString() }, [], false, [], [], undefined, pluginId);
+  }
+
+  /**
+   * A third-party plugin failed and is restarted automatically ('restart'), or its automatic restarts ran out
+   * ('gave-up'): one system record in each of its existing clusters (the gate records' mechanism: no recipient, wakes
+   * nobody, not sent to that plugin), at most one per plugin, cluster and kind a minute, the repeats counted in the next.
+   * A plugin with no cluster gets a log line only.
+   */
+  externalPluginRestartRecord(pluginId: string, clusterIds: readonly string[], kind: 'restart' | 'gave-up', text: string): void {
+    const existing = clusterIds.filter((id) => this.store.getCluster(id));
+    if (!existing.length) console.warn(`external plugin ${pluginId}: ${kind === 'restart' ? 'restarting after a failure' : 'automatic restarts used up'}`);
+    for (const clusterId of existing) {
+      this.gateRecord(`${kind}:${pluginId}:${clusterId}`, PLUGIN_RESTART_RECORD_MS, clusterId, pluginId, text, 'plugin_restarted', kind === 'restart' ? '次自动重启' : '条同类记录');
+    }
   }
 
   /** A user explicitly hands one unsuccessful or uncertain delivery to another member. */
@@ -2076,7 +2365,7 @@ export class Hub {
   }
 
   /**
-   * Copies the files a native member names from its own outbox folder (MCP send_message) into the store; all or
+   * Copies the files a member names from its own outbox folder (MCP send_message) into the store; all or
    * nothing. The folder is the caller's own (`memberId` is the authenticated caller).
    * The outbox is never changed: the sender cleans it up with its own tools.
    */
@@ -2102,13 +2391,13 @@ export class Hub {
     await this.files?.discard(ids);
   }
 
-  /** A message's attachments as `member` may see them. */
-  attachmentsFor(messageId: string, member: StoredMember): AttachmentView[] {
-    return this.attachmentViews(this.store.attachmentsOf(messageId), member);
+  /** A message's attachments as a member sees them. */
+  attachmentsFor(messageId: string): AttachmentView[] {
+    return this.attachmentViews(this.store.attachmentsOf(messageId));
   }
 
-  /** Files as `member` may see them (envelope, read_messages, get_task): the local path only for a native member. */
-  attachmentViews(files: FileInfo[], member: { mode: 'native' }): AttachmentView[] {
+  /** Files as a member sees them (envelope, read_messages, get_task): name, size and the local path. */
+  attachmentViews(files: FileInfo[]): AttachmentView[] {
     return files.map((f) => ({
       name: f.name, size: f.size, ...(this.files ? { path: this.files.pathOf(f) } : {}),
     }));
@@ -2124,22 +2413,162 @@ export class Hub {
   }
 
   /**
-   * Called by the MCP layer; `fromId` was established from the caller's native conversation.
-   * When the turn handles a batch, the message continues the chain of `replyTo` if that is in the batch, else of the
-   * batch's newest message.
-   * A native conversation may speak any time. An active Hub run determines its chain even when it speaks in another
-   * cluster. Otherwise `replyTo` (if delivered to this conversation), then its newest delivery attempt, determine
+   * Called by the MCP layer; `fromId` was established from the caller's conversation.
+   * A conversation may speak any time. An active Hub run determines its chain even when it speaks in another cluster:
+   * when the run delivers a batch, the message continues the chain of `replyTo` if that is in the batch, else of the
+   * batch's newest message (hop + 1). Otherwise `replyTo` (if delivered to this conversation), then its newest delivery attempt, determine
    * the chain across memberships, including removed ones. Only a conversation never sent a delivery starts at hop 0.
    * `clientMessageId`: the caller's idempotency key; see resentMessage. Nothing is ever resent automatically.
    * `fyi`: nobody has to act. The members it names keep it unread (mentions) and nobody gets a delivery; not stored.
+   * No gate plugin is asked here: every path where a member's words become a message (the MCP send_message tool, a
+   * replies member's answer) uses sendFromMemberGated. This one is for tests and setup that run without plugins.
    */
   sendFromMember(fromId: string, body: string, replyTo?: string, attachments: string[] = [], taskIds?: unknown, to?: unknown, clientMessageId?: unknown, fyi?: unknown): SentMessage {
+    const plan = this.planMemberSend(fromId, body, replyTo, attachments, taskIds, to, clientMessageId, fyi);
+    return 'earlier' in plan ? plan.earlier : plan.commit();
+  }
+
+  /**
+   * sendFromMember, with the gate plugins (messages.gate) asked last, after every check of the Hub's own and before
+   * anything is written: a refusal throws MessageRefused and leaves no message, delivery or message event, only a
+   * rate-limited record. A plugin that does not answer in time lets the message through (fail-open), also recorded.
+   * Without a gate plugin for this cluster nothing waits: the message is written within this call, as before.
+   * A clientMessageId repeat of an accepted message returns it without asking; a refused one was never stored, so
+   * a repeat is asked again.
+   */
+  async sendFromMemberGated(fromId: string, body: string, replyTo?: string, attachments: string[] = [], taskIds?: unknown, to?: unknown, clientMessageId?: unknown, fyi?: unknown): Promise<SentMessage> {
+    const plan = this.planMemberSend(fromId, body, replyTo, attachments, taskIds, to, clientMessageId, fyi);
+    if ('earlier' in plan) return plan.earlier;
+    const gate = this.gate;
+    const check: MessageCheckRequest = { ...plan.check, checkId: randomUUID() };
+    const asking = gate?.checkMessage(check);
+    if (!gate || !asking) return plan.commit();
+    // Told to the gate exactly once, in `finally`, when it is final; it says only what happened to this check.
+    let result: MessageCheckResult = { stored: false, reason: 'rejected_by_hub' };
+    let writing: string | undefined;
+    try {
+      const outcomes = await asking;
+      // The turn, the members or a concurrent repeat may have changed while the plugins answered: check everything again.
+      const again = this.planMemberSend(fromId, body, replyTo, attachments, taskIds, to, clientMessageId, fyi, plan);
+      if ('earlier' in again) return again.earlier;   // stored by another send, not by this check
+      try { this.gateVerdicts(check, outcomes); } catch (error) {
+        if (error instanceof MessageRefused) result = { stored: false, reason: 'refused_by_other' };
+        throw error;
+      }
+      writing = again.id;
+      gate.checkStoring?.(check.checkId, again.id);
+      const sent = again.commit();
+      result = { stored: true, messageId: sent.message.id };
+      return sent;
+    } finally {
+      // A commit can throw after its transaction (a failing listener): the message is stored all the same.
+      if (!result.stored && writing) {
+        try { if (this.store.getMessage(writing)) result = { stored: true, messageId: writing }; } catch { /* closed: not stored by us */ }
+      }
+      try { gate.checkSettled?.(check.checkId, result); } catch { /* observation must not change the send's result */ }
+    }
+  }
+
+  /** The composition root's gate plugins (ExternalPlugins); without one, no message is checked. */
+  setMessageGate(gate: MessageGate): void { this.gate = gate; }
+
+  /** The composition root's third-party plugins for members' tools (ExternalPlugins); without one, members get none. */
+  setMemberTools(host: MemberToolHost): void { this.memberToolHost = host; }
+
+  /**
+   * The third-party tools of these memberships (one conversation's, hidden ones already left out): those of plugins
+   * granted tools.provide and at least one of their clusters, `running` or not. Each name once.
+   */
+  pluginTools(members: readonly Pick<Member, 'clusterId'>[]): MemberToolDeclaration[] {
+    if (!this.memberToolHost || this.closed || !members.length) return [];
+    const seen = new Set<string>();
+    return this.memberToolHost.memberTools([...new Set(members.map((m) => m.clusterId))]).filter((t) => !seen.has(t.name) && !!seen.add(t.name));
+  }
+
+  /** A member calls a third-party tool; it writes no message or delivery, wakes nobody and uses no loop budget. */
+  callPluginTool(call: MemberToolCall): Promise<MemberToolOutcome> {
+    if (!this.memberToolHost) return Promise.resolve({ ok: false, code: 'NOT_GRANTED', message: '没有这个插件工具。' });
+    return this.memberToolHost.callMemberTool(call);
+  }
+
+  /**
+   * Plugin tools of these clusters changed: the bridge of each conversation (its own stream) with a shown membership in
+   * one of them is told, so its app can list again. Conversations elsewhere hear nothing.
+   */
+  pluginToolsChanged(clusterIds: readonly string[]): void {
+    if (this.closed) return;
+    for (const [key, conn] of this.bridges) {
+      const cut = key.indexOf('\n');   // "<harness>\n<session id>"; neither part can hold a newline (bridge.ts isId)
+      if (!this.nativeCallers(key.slice(0, cut), key.slice(cut + 1)).some((m) => !m.hiddenAt && clusterIds.includes(m.clusterId))) continue;
+      try { conn.toolsChanged?.(); } catch { /* one closed stream must not stop the others */ }
+    }
+  }
+
+  /**
+   * The user-visible trace of a member's call of a third-party tool: a system record (plugin_tool_call) without
+   * recipients. It wakes nobody and is not sent to that plugin as an event. The caller (ExternalPlugins) limits how
+   * often: one a minute per plugin, member and tool, the repeats counted in the next one.
+   */
+  externalPluginToolRecord(pluginId: string, clusterId: string, text: string): void {
+    if (this.closed || !this.store.getCluster(clusterId)) return;
+    const id = randomUUID();
+    this.post({ id, clusterId, from: 'system', kind: 'system', systemKind: 'plugin_tool_call', body: text, mentions: [], replyTo: null, chainId: id, hop: 0,
+      createdAt: new Date().toISOString() }, [], false, [], [], undefined, pluginId);
+  }
+
+  /** Records what the gate plugins said (rate-limited), and throws when any of them refused. */
+  private gateVerdicts(check: Omit<MessageCheckRequest, 'checkId'>, outcomes: MessageCheckOutcome[]): void {
+    const refusals: Extract<MessageCheckOutcome, { verdict: 'refuse' }>[] = [];
+    for (const outcome of outcomes) {
+      if (outcome.verdict === 'allow') continue;
+      if (outcome.verdict === 'refuse') {
+        refusals.push(outcome);
+        this.gateRecord(`refuse:${outcome.pluginId}:${check.sender.id}`, GATE_REFUSAL_RECORD_MS, check.clusterId, outcome.pluginId,
+          `插件「${outcome.name}」拒绝了 ${check.sender.name} 的一条发言：${outcome.reason || '（插件没有说明原因）'}。这条发言没有存进群聊，也没有投递。`,
+          'plugin_refused', '条被拒绝的发言');
+      } else {
+        this.gateRecord(`${outcome.failure === 'stopped' ? 'stopped' : 'failed'}:${outcome.pluginId}:${check.clusterId}`, GATE_FAILURE_RECORD_MS, check.clusterId, outcome.pluginId,
+          `插件「${outcome.name}」没有完成发言检查（${GATE_FAILURE_TEXT[outcome.failure]}），这一次该插件未拦截 ${check.sender.name} 的发言；最终结果仍以其他检查为准。`,
+          'plugin_check_failed', '次没有完成的检查');
+      }
+    }
+    if (!refusals.length) return;
+    throw new MessageRefused(refusals.map((r) => `插件「${r.name}」拒绝了这条发言：${r.reason || '（插件没有说明原因）'}`).join('；')
+      + '。这条消息没有存进群聊，也没有投递给任何人。可以等一会儿或改写后再发；不要原样反复重试。');
+  }
+
+  /**
+   * One system record the user sees in the cluster (no recipient, wakes nobody, never the refused text), at most one
+   * per key and window; the repeats inside a window are counted and the next record says how many there were.
+   */
+  private gateRecord(key: string, windowMs: number, clusterId: string, pluginId: string, text: string, systemKind: SystemMessageKind, unit: string): void {
+    const now = Date.now();
+    const seen = this.gateRecords.get(key);
+    if (seen && now < seen.until) { seen.repeats++; return; }
+    this.gateRecords.set(key, { until: now + windowMs, repeats: 0 });
+    const body = seen?.repeats ? `${text}\n（上一条同类记录之后的 ${Math.round(windowMs / 60_000)} 分钟内另有 ${seen.repeats} ${unit}，没有单独记录。）` : text;
+    const id = randomUUID();
+    try {
+      // The plugin does not get its own record as an event (sourcePluginId), so it cannot answer itself.
+      this.post({ id, clusterId, from: 'system', kind: 'system', systemKind, body, mentions: [], replyTo: null, chainId: id, hop: 0,
+        createdAt: new Date(now).toISOString() }, [], false, [], [], undefined, pluginId);
+    } catch { /* a record that cannot be written (the cluster was just deleted) must not change the send's result */ }
+  }
+
+  private planMemberSend(fromId: string, body: string, replyTo?: string, attachments: string[] = [], taskIds?: unknown, to?: unknown,
+    clientMessageId?: unknown, fyi?: unknown, context?: { from: StoredMember; run?: Running; handling: Message | null }):
+    { earlier: SentMessage } | { from: StoredMember; run?: Running; handling: Message | null; id: string;
+      check: Omit<MessageCheckRequest, 'checkId'>; commit: () => SentMessage } {
     const from = this.store.getMember(fromId);
     if (!from) throw new Error(`unknown member ${fromId}`);
     if (from.hiddenAt) throw new Error(HIDDEN_TOOL_TEXT);   // a hidden member cannot speak (its tools refuse first)
+    if (context && (from.harness !== context.from.harness || from.workerSessionId !== context.from.workerSessionId)) {
+      throw new Error('rejected: the sender conversation changed during the message check');
+    }
+    const run = context ? context.run : this.sessionRun(from);
     if (fyi !== undefined && typeof fyi !== 'boolean') throw new Error('fyi must be a boolean');
-    const earlier = this.resentMessage(fromId, clientMessageId);
-    if (earlier) return earlier;
+    const earlier = this.resentMessage(fromId, clientMessageId, run ?? null);
+    if (earlier) return { earlier };
     const files = this.checkAttachments(from.clusterId, attachments);
     if (!body.trim() && !files.length) throw new Error('body is required');
     if (replyTo) replyTo = this.collaboration.resolveId('messages', from.clusterId, replyTo, `unknown message ${replyTo} in this cluster`);
@@ -2173,7 +2602,7 @@ export class Hub {
     }
     // The coordinator plugin says where a message that names nobody goes; a member's stays in the chat record.
     const fallback = mentions.length === 0 && !fyi ? this.store.coordinator?.unaddressedRecipient({ clusterId: from.clusterId, from: fromId, body, members }) : null;
-    // A member's @all is a broadcast (docs/collaboration.md 唤醒表): everyone keeps it unread, and only the members
+    // A member's @all is a broadcast (wake-up table in docs/collaboration.md): everyone keeps it unread, and only the members
     // named explicitly ("@all FYI, @B please handle") are woken; the broadcast itself wakes nobody.
     // fyi: for information only, so named members are not woken — unless replying to an active asker explicitly
     // addressed by this message, who is still waiting for the answer and must be woken while everyone else stays unread.
@@ -2184,11 +2613,14 @@ export class Hub {
 
     const id = randomUUID();
     let handling: Message | null;
-    const run = this.sessionRun(from);
-    handling = run
-      ? run.messages.find((m) => m.id === replyTo) ?? run.messages.at(-1)!
-      : (replyTo ? this.store.lastDeliveredToSession(from.harness, from.workerSessionId, replyTo) : null)
-        ?? this.store.lastDeliveredToSession(from.harness, from.workerSessionId);
+    if (context) {
+      handling = context.handling;
+    } else {
+      handling = run
+        ? run.messages.find((m) => m.id === replyTo) ?? run.messages.at(-1)!
+        : (replyTo ? this.store.lastDeliveredToSession(from.harness, from.workerSessionId, replyTo) : null)
+          ?? this.store.lastDeliveredToSession(from.harness, from.workerSessionId);
+    }
     const chainId = handling?.chainId ?? id;
     const hop = handling ? handling.hop + 1 : 0;
     // Unlimited skips only this check; chainId and hop are computed and stored as always.
@@ -2197,16 +2629,21 @@ export class Hub {
       this.emit(from.clusterId, fromId, 'guard', { reason: 'max_hops', chainId, hop, maxHops: limit.value });
       throw new Error(`rejected: hop ${hop} exceeds the limit of ${limit.value} for this message chain`);
     }
-    const message = this.post({
-      id, clusterId: from.clusterId, from: fromId, mentions, body, replyTo: replyTo ?? null, chainId, hop, createdAt: new Date().toISOString(),
-      ...(fyi ? { fyi: true } : {}), ...(broadcast ? { explicitMentions: explicit } : {}),
-    }, recipients, false, files, this.checkTaskIds(from.clusterId, taskIds), clientMessageId as string | undefined);
-    if (run) run.sentMcpMessage = true;
-    const deliveredTo = recipients.map((m) => members.find((x) => x.id === m)!.name);
-    return {
-      ...this.sentResult(message, deliveredTo, unresolvedMentions, members, broadcast || fyi === true),
-      ...(fyiOverrideIds.length && deliveredTo.length ? { fyiOverridden: deliveredTo } : {}),
-    };
+    const linkedTaskIds = this.checkTaskIds(from.clusterId, taskIds);
+    const check: Omit<MessageCheckRequest, 'checkId'> = { clusterId: from.clusterId, sender: { id: fromId, name: from.name }, mentions: [...mentions],
+      recipients: [...recipients], fyi: fyi === true, replyTo: replyTo ?? null, attachments: files.length, body };
+    return { from, run, handling, id, check, commit: () => {
+      const message = this.post({
+        id, clusterId: from.clusterId, from: fromId, mentions, body, replyTo: replyTo ?? null, chainId, hop, createdAt: new Date().toISOString(),
+        ...(fyi ? { fyi: true } : {}), ...(broadcast ? { explicitMentions: explicit } : {}),
+      }, recipients, false, files, linkedTaskIds, clientMessageId as string | undefined);
+      if (run) run.sentMcpMessage = true;
+      const deliveredTo = recipients.map((m) => members.find((x) => x.id === m)!.name);
+      return {
+        ...this.sentResult(message, deliveredTo, unresolvedMentions, members, broadcast || fyi === true),
+        ...(fyiOverrideIds.length && deliveredTo.length ? { fyiOverridden: deliveredTo } : {}),
+      };
+    } };
   }
 
   /** The first send's result: its unresolved names and, with no recipient, the warning. A broadcast reaches everyone as
@@ -2234,7 +2671,7 @@ export class Hub {
    * send's diagnosis (`unresolvedMentions`, `warning`) is not replayed or recomputed: it belongs to that send, the Hub
    * does not store it, and the repeat's own `to` or the current member names must not change it, so the reply omits it.
    */
-  resentMessage(fromId: string, clientMessageId: unknown): SentMessage | null {
+  resentMessage(fromId: string, clientMessageId: unknown, sendingRun?: Running | null): SentMessage | null {
     if (clientMessageId === undefined) return null;
     if (typeof clientMessageId !== 'string' || !clientMessageId || clientMessageId.length > MAX_CLIENT_MESSAGE_ID) {
       throw new Error(`clientMessageId must be a non-empty string of at most ${MAX_CLIENT_MESSAGE_ID} characters`);
@@ -2242,7 +2679,7 @@ export class Hub {
     const message = this.store.messageByClientId(fromId, clientMessageId);
     if (!message) return null;
     const from = this.store.getMember(fromId);
-    const run = from && this.sessionRun(from);
+    const run = sendingRun === undefined ? from && this.sessionRun(from) : sendingRun;
     if (run) run.sentMcpMessage = true;   // as for a first send: this turn has spoken, its answer is not forwarded
     // From the deliveries, as the first send reported them.
     const deliveredTo = this.deliveriesSeenBy(message, fromId).map((d) => personName(this.store, message.clusterId, d.memberId));
@@ -2457,7 +2894,7 @@ export class Hub {
   private quotaChanged(): void {
     if (!this.started || this.closed) return;
     this.checkQuota();
-    for (const service of this.services.values()) service.onQuotaChanged?.();
+    for (const [id, service] of this.services) this.guardPlugin(id, 'onQuotaChanged', () => service.onQuotaChanged?.());
   }
 
   /**
@@ -2582,7 +3019,7 @@ export class Hub {
       body: `投递失败或离线：消息「${clip}」（来源 ${original.id}）没有送到 ${personName(this.store, original.clusterId, delivery.memberId)}${task ? `（任务${task.number ? ` #${task.number}` : ''}【${task.title}】）` : ''}，`
         + `${delivery.state === 'offline' ? '该成员当前离线' : '投递未成功'}${delivery.error ? `（${delivery.error}）` : ''}，事件 ${event.seq}。请查看实际投递结果。`
         + this.deliveryNoticeDetail(original, delivery),
-      // A failure that affects no open task is informational (docs/collaboration.md 唤醒表): the coordinator keeps it
+      // A failure that affects no open task is informational (wake-up table in docs/collaboration.md): the coordinator keeps it
       // as unread without a turn. A failure on an open task is the "member offline, work affected" case and wakes it.
       ...(affectsTask ? {} : { wake: [] }),
     }, original);
@@ -2593,7 +3030,7 @@ export class Hub {
    * busy/queued state, pause, hourly notice cap, or per-(sender, recipient) cooldown applies — in all suppressed
    * cases `delivery.reported` stays 0 so the next envelope still carries it.
    */
-  private notifyFailedSender(delivery: Delivery): void {
+  private notifyFailedSender(delivery: Delivery, noticeId?: string): void {
     if (!this.isRunning() || this.paused) return;
     const original = this.store.getMessage(delivery.messageId);
     if (!original || original.from === 'user' || original.from === 'system' || original.kind === 'system' || original.kind === 'plugin' || original.fyi) return;
@@ -2615,7 +3052,7 @@ export class Hub {
     const members = this.store.listMembers(original.clusterId, { includeRemoved: true });
     const body = `${this.formatFailureGroup(members, original, [delivery])}\n这些投递不会自动重发。`;
     const taskIds = this.store.tasks?.links(original.id) ?? [];
-    const id = randomUUID();
+    const id = noticeId ?? randomUUID();
     this.pendingSenderNotices.set(id, [delivery.id]);
     try {
       this.post(
@@ -3007,15 +3444,15 @@ export class Hub {
   }
 
   /**
-   * Starts the member's next run if it may: one run at a time per native conversation. A run delivers the oldest
+   * Starts the member's next run if it may: one run at a time per conversation. A run delivers the oldest
    * queued delivery together with the queued ones after it (a batch), counted as one turn for the per-hour limit unless
    * every delivery in it is a system notification (docs/collaboration.md). A burst of system notifications first waits
    * noticeWindowMs so it runs as one turn; a user message flushes that wait. Member and plugin messages with no user
    * message queued wait until messageWindowMs after the oldest of them was created, so what arrives meanwhile joins
-   * the same turn; a user message ends that wait at once too. A direct message (native, no
+   * the same turn; a user message ends that wait at once too. A direct message (no
    * envelope) always runs alone, and a batch stops before one, so order is kept. New batches have a message-count cap.
    * A batch interrupted by a restart ends unknown instead of being automatically sent again.
-   * A native member found offline (its harness missing counts too) gets nothing later: its queued deliveries end
+   * A member found offline (its harness missing counts too) gets nothing later: its queued deliveries end
    * 'offline', even while paused, busy or throttled (with confirmOnline: once a fresh check confirms it). Exception:
    * the start-up grace, where they stay queued. A pending delivery (see decideOnline) never runs, and a batch stops
    * before one, so order is kept. `confirmed`: confirmOnline just said online.
@@ -3047,14 +3484,14 @@ export class Hub {
     const hourlyLimit = this.hourlyTurnLimit(member);
     const limited = this.throttled.has(memberId) || starts.length >= hourlyLimit;
     const { limit: chainLimit } = this.limitSettings.maxTurnsPerChain;
-    const direct = (q: QueuedCandidate) => native !== undefined && q.direct && !this.store.tasks?.links(q.message.id).length;
+    const direct = (q: QueuedCandidate) => q.direct && !this.store.tasks?.links(q.message.id).length;
     // A runnable direct user message cannot join a batch or wait for another message. No need to read the tail.
     const fastHead = sharedHead && !this.pending.has(sharedHead.id) && !sharedHead.batchId && !limited
       && sharedHead.message.from === 'user' && direct(sharedHead)
       && (chainLimit.kind === 'unlimited' || this.store.countChainTurns(sharedHead.message.chainId) < chainLimit.value)
       ? sharedHead : null;
-    const before = native && sharedHead && !fastHead ? this.store.firstQueuedSession(member.harness, member.workerSessionId, memberId)?.id : undefined;
-    const all = fastHead ? [fastHead] : native && !sharedHead ? [] : this.store.queuedCandidates(memberId, before);
+    const before = sharedHead && !fastHead ? this.store.firstQueuedSession(member.harness, member.workerSessionId, memberId)?.id : undefined;
+    const all = fastHead ? [fastHead] : !sharedHead ? [] : this.store.queuedCandidates(memberId, before);
     const cut = all.findIndex((q) => this.pending.has(q.id));
     const queue = cut < 0 ? all : all.slice(0, cut);
     const chainTurns = new Map<string, number>();   // chain id -> turns started, counting the ones this run adds
@@ -3417,19 +3854,22 @@ export class Hub {
     this.finish(member, run, state, error, outcome);
   }
 
-  /** A native turn's answer, unless this run already sent an MCP message. A rejection (e.g. the hop limit) posts nothing. */
+  /**
+   * A native turn's answer, unless this run already sent an MCP message. A rejection (e.g. the hop limit, or a gate
+   * plugin's refusal) posts nothing. Without a gate plugin the answer is written within this call; with one it is
+   * written once the plugins answered (at most their timeout later), even if the run has ended meanwhile.
+   */
   private postReply(member: StoredMember, run: Running, text: string): void {
     if (this.closed || run.sentMcpMessage || !text.trim() || this.running.get(member.id) !== run || !this.store.getMember(member.id)) return;
     if (this.store.getMember(member.id)?.hiddenAt) return;   // hidden during the turn: its answer is not posted
-    try {
-      this.sendFromMember(member.id, text, run.messages.at(-1)!.id);
-    } catch (e) {
+    this.sendFromMemberGated(member.id, text, run.messages.at(-1)!.id).catch((e: unknown) => {
+      if (this.closed) return;
       // The hop limit already emitted its guard event; anything else is shown on the member's page. The member itself
       // learns it from its next envelope (it has no tool that would tell it).
       const why = e instanceof Error ? e.message : String(e);
       this.agentEvents(member, run)({ type: 'error', message: `回答没有发到群里：${why}` });
       this.replyNotes.set(member.id, [...(this.replyNotes.get(member.id) ?? []), why]);
-    }
+    });
   }
 
   private finish(member: StoredMember, run: Running, state: 'done' | 'failed' | 'offline', error: string | null, outcome: DeliveryResult | null = null): void {
@@ -3500,7 +3940,7 @@ export class Hub {
     const sectionItems = sections.map((section) => section.map(({ message: m, header = '', lead = '', afterBody = '', tail = '' }) => {
       const named = m.mentions.filter((id) => !hidden(id));
       const to = m.mentions.length ? (named.length ? named.map((id) => `@${nameOf(id)}`).join(' ') : `@${self.name}`) : 'all';
-      const files = this.attachmentLines(m.id, self);
+      const files = this.attachmentLines(m.id);
       attached ||= files !== '';
       const note = this.store.coordinator?.envelopeNote(m) ?? '';
       const pluginNote = m.kind === 'plugin'
@@ -3521,7 +3961,7 @@ export class Hub {
     // Notes on what the bodies carry: attachments (how to read them), and $name references to the user's skills.
     let extra = '';
     if (attached) extra += '附件是本机文件，用你自己的工具按上面的路径读取。';
-    // Native members with MCP can send files through the outbox (docs/files.md); Kimi (replies) cannot.
+    // Members with MCP can send files through the outbox (docs/files.md); Kimi (replies) cannot.
     const replies = own(this.nativeAdapters, self.harness)?.replies;
     if (!replies && this.files) {
       let box: string | null = null;
@@ -3566,7 +4006,7 @@ export class Hub {
       how = `要让某人收到，正文里写 @名字。上面共 ${msgs.length} 条消息，回复哪一条就带 replyTo=那条的 messageId；回复仍在群的成员还要写 @发送者名字（已移出成员无法接收消息，请另选当前收件人）。${removedBatchNote}`;
     }
     // A replies member may have direct MCP tools; without them its plain-text answer is its message.
-    if (own(this.nativeAdapters, self.harness)?.replies) {
+    if (replies) {
       // It has no list_agents, so the note tells it who it can @.
       const others = members.filter((x) => !x.removedAt && x.id !== self.id && !hidden(x.id)).map((x) => `@${x.name}（${x.harness}）`);
       const removedRepliesNote = removedSenders.length
@@ -3639,13 +4079,13 @@ export class Hub {
 
   /** A direct message (member page, native member, no envelope): the body as typed, then its attachment lines. */
   private directText(msg: Message, self: StoredMember): string {
-    const files = this.attachmentLines(msg.id, self);
+    const files = this.attachmentLines(msg.id);
     return msg.body.trim() ? msg.body + files : files.trimStart();
   }
 
-  /** One line per attachment, after a message's body: name and size, plus the local path for a native member. */
-  private attachmentLines(messageId: string, self: StoredMember): string {
-    return this.attachmentsFor(messageId, self)
+  /** One line per attachment, after a message's body: name, size and the local path. */
+  private attachmentLines(messageId: string): string {
+    return this.attachmentsFor(messageId)
       .map((a) => `\n[orrery 附件] ${a.name}（${fmtSize(a.size)}）${a.path ? `：${a.path}` : ''}`).join('');
   }
 

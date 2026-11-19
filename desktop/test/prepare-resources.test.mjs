@@ -17,8 +17,8 @@ test('resource staging rejects changed archives and excludes untracked runtime d
   try {
     const source = join(temp, 'source');
     const staged = join(temp, 'hub');
-    const tracked = ['src/main.ts', 'plugins/demo/main.mjs', 'package.json', 'package-lock.json', 'LICENSE', 'scripts/ship.ts', 'scripts/test-queue.ts'];
-    for (const file of [...tracked, 'plugins/demo/node_modules/dev/index.js', 'plugins/demo/local.log', '.env']) {
+    const tracked = ['src/main.ts', 'shared/i18n/index.js', 'plugins/demo/main.mjs', 'package.json', 'package-lock.json', 'LICENSE', 'scripts/ship.ts', 'scripts/test-queue.ts'];
+    for (const file of [...tracked, 'plugins/demo/node_modules/dev/index.js', 'plugins/demo/local.log', 'shared/i18n/local-data.js', '.env']) {
       await mkdir(dirname(join(source, file)), { recursive: true });
       await writeFile(join(source, file), file);
     }

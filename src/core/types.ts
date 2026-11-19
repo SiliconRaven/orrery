@@ -1,6 +1,8 @@
 // Interface contract shared by every module. Imports only the types of the system-kind table (./system-kinds.js), which the page loads too. From
 // docs/architecture.md and docs/native-mode.md.
 import type { SystemKind } from './system-kinds.js';
+import type { TranscriptPage, TranscriptRequest } from './native-transcript.ts';
+export * from './native-transcript.ts';
 
 export type MemberStatus = 'idle' | 'busy' | 'offline';
 
@@ -46,9 +48,6 @@ export interface ActivityObserver {
   close(): void;
 }
 
-/** A conversation the user sees in the native app; the Hub only delivers into it. */
-export type MemberMode = 'native';
-
 export interface Cluster {
   id: string;
   name: string;
@@ -84,7 +83,6 @@ export interface Member {
   harness: string;         // 'mock' | 'claude' | 'codex'
   model: string | null;
   effort: string | null;   // 原生 Claude 的 model/effort 由应用决定，Hub 只记录（可为 null）
-  mode: MemberMode;
   workerSessionId: string;
   cwd: string;
   origin: 'attached' | 'created';  // 接入已有对话，还是由 orrery 新建
@@ -289,6 +287,7 @@ export interface QuotaSnapshot {
   source: string;          // where they came from, e.g. 'rollout', 'app-server', 'oauth/usage'
 }
 
+/** Hub 提供给原生适配器的桥：只有 Claude 原生适配器用到。 */
 export interface BridgePort {
   isOnline(harness: string, sessionId: string): boolean;
   /** 经桥把文字投进该会话；resolve 为桥的回执。会话不在线时 reject。 */
@@ -362,6 +361,8 @@ export interface NativeAdapter {
   quota?(opts: { refresh: boolean }): Promise<QuotaSnapshot | null>;
   /** Optional: the whole conversation's token totals, read-only from the harness's own files. Null: not readable. */
   conversationTokens?(sessionId: string): Promise<TokenTotals | null>;
+  /** Optional: read a bounded transcript page for the member's bound native session. */
+  transcript?(sessionId: string, request: TranscriptRequest): Promise<TranscriptPage>;
   /**
    * Set when attachSession only reads the harness's own files on this machine (no process, no request to the app): the
    * Hub may then call it every few minutes to show a member's current conversation title and model (docs/cluster-members.md).

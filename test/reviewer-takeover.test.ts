@@ -20,7 +20,7 @@ async function fixture(name: string) {
   const native = createMockNativeAdapter({ harness: 'claude', sessions });
   const app = await startTestHub({ dir, nativeAdapters: { claude: native } });
   const { cluster, members } = await app.hub.createCluster(name, ['A', 'B', 'C', 'D', 'E'].map((n, i) =>
-    ({ harness: 'claude', mode: 'native' as const, sessionId: `s${i + 1}`, name: n })));
+    ({ harness: 'claude', sessionId: `s${i + 1}`, name: n })));
   const [a, b, c, d, e] = members;
   let serial = 0;
   const op = () => `takeover-${name}-${++serial}`;
@@ -469,8 +469,8 @@ test('migration: a step-4 database gets the settings table, off for every cluste
   store.close();
   store = new Store(path, new PluginHost(officialPlugins));
   try {
-    assert.equal(MIGRATIONS.length, 5);
-    assert.equal((store.db.prepare("SELECT version FROM plugin_migrations WHERE plugin_id = 'tasks'").get() as { version: number }).version, 5);
+    assert.ok(MIGRATIONS.length >= 5);   // step 6 (review batches) came later
+    assert.equal((store.db.prepare("SELECT version FROM plugin_migrations WHERE plugin_id = 'tasks'").get() as { version: number }).version, MIGRATIONS.length);
     assert.equal((store.db.prepare('SELECT COUNT(*) AS n FROM task_cluster_settings').get() as { n: number }).n, 0);
     store.transaction(() => store.db.exec(MIGRATIONS[4]));   // running it again is harmless
   } finally { store.close(); }

@@ -1,10 +1,13 @@
-// Fake native adapter for tests and for trying native mode without a real app. Two kinds:
+// Fake native adapter (the `mock` harness) for tests, and the base of the ORRERY_MOCK=1 demo mock (./demo.ts). Two kinds:
 // - 'bridge': like Claude. Online only while a bridge stream for the session is connected; delivers through
 //   BridgePort.push and resolves 'accepted' on a good ack. No createSession (the user creates sessions in the app).
 // - 'queue': like Codex. Always online; "runs" the turn itself, emits one text event and resolves 'completed'.
+//   Tests replace that turn with a script that answers through the MCP tools (test/mock.ts).
 import { randomUUID } from 'node:crypto';
 import type { ModelInfo, NativeAdapter, NativeDeliverContext, ProjectInfo, SessionInfo } from '../../core/types.ts';
+
 export const MOCK_MODEL = 'mock-1';
+/** What listModels returns: a default with efforts and one without. */
 export const MOCK_MODELS: ModelInfo[] = [
   { id: MOCK_MODEL, label: 'Mock 1', efforts: ['low', 'high'], isDefault: true },
   { id: 'mock-2', efforts: [] },
