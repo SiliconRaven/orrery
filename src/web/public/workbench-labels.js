@@ -1,7 +1,7 @@
 import { t } from "./i18n.js";
 // The label library on the page (docs/collaboration.md「标签库」): the grouped label picker of the task form, the grouped
 // filter list, and the library manager. The Hub owns every rule; the page only lays the library out and sends label.*.
-import { confirmDialog, emptyState, h, icon, noticeDialog } from './ui.js';
+import { confirmDialog, emptyState, h, icon, lt, noticeDialog } from './ui.js';
 import { formDialog } from './workbench-form.js';
 
 export const LABEL_COLORS = 8;
@@ -175,7 +175,7 @@ export function openLabelManager({ api, tone, gate, onClose = () => {} }) {
   }
   /** Runs one label action; a refusal goes to a notice, the list reloads either way. */
   async function run(body) {
-    try { await command(body); } catch (e) { await noticeDialog(e.message, t("没有完成")); }
+    try { await command(body); } catch (e) { await noticeDialog(e.message, lt("没有完成")); }
     await load();
   }
   const labelsOf = () => allLabels(library);
@@ -199,9 +199,9 @@ export function openLabelManager({ api, tone, gate, onClose = () => {} }) {
     description.value = group?.description ?? '';
     const required = h('input', { type: 'checkbox', checked: group?.required === true });
     const fresh = h('input', { type: 'checkbox', checked: group?.newClusterDefault === true });
-    formDialog(group ? t("编辑组 · {name}", { name: group.name }) : t("新建组"), [h('label', {}, t("组名（1～20 字）"), name), h('label', {}, t("说明"), description),
-      h('label', { class: 'workbench-check' }, required, h('span', {}, t("必选：使用这个组的群，每个新任务至少带它的一个标签"))),
-      h('label', { class: 'workbench-check' }, fresh, h('span', {}, t("新群默认使用（只影响以后新建的群）")))], async () => {
+    formDialog(group ? lt("编辑组 · {name}", { name: group.name }) : lt("新建组"), [h('label', {}, lt("组名（1～20 字）"), name), h('label', {}, lt("说明"), description),
+      h('label', { class: 'workbench-check' }, required, h('span', {}, lt("必选：使用这个组的群，每个新任务至少带它的一个标签"))),
+      h('label', { class: 'workbench-check' }, fresh, h('span', {}, lt("新群默认使用（只影响以后新建的群）")))], async () => {
       const fields = { name: name.value.trim(), description: description.value.trim(), required: required.checked, newClusterDefault: fresh.checked };
       await command(group ? { action: 'label.group_edit', groupId: group.id, ...fields } : { action: 'label.group_create', ...fields });
       await load();
@@ -215,17 +215,17 @@ export function openLabelManager({ api, tone, gate, onClose = () => {} }) {
     const description = h('textarea', { placeholder: t("什么时候用这个标签（可留空）") });
     description.value = label?.description ?? '';
     const archived = h('input', { type: 'checkbox', checked: label?.archived === true });
-    formDialog(label ? t("编辑标签 · {name}", { name: label.name }) : t("新建标签"), [h('label', {}, t("名字（1～20 字）"), name), h('label', {}, t("组"), group),
-      h('label', {}, t("颜色"), color), h('label', {}, t("说明"), description),
-      label ? h('label', { class: 'workbench-check' }, archived, h('span', {}, t("归档：已带着的任务保留，不能再加到任务上"))) : null], async () => {
+    formDialog(label ? lt("编辑标签 · {name}", { name: label.name }) : lt("新建标签"), [h('label', {}, lt("名字（1～20 字）"), name), h('label', {}, lt("组"), group),
+      h('label', {}, lt("颜色"), color), h('label', {}, lt("说明"), description),
+      label ? h('label', { class: 'workbench-check' }, archived, h('span', {}, lt("归档：已带着的任务保留，不能再加到任务上"))) : null], async () => {
       const fields = { name: name.value.trim(), groupId: group.value || null, color: color.value === '' ? null : Number(color.value), description: description.value.trim() };
       if (!label) { await command({ action: 'label.create', ...fields }); await load(); return; }
       if (fields.name !== label.name) {
         const target = labelsOf().find((item) => item.id !== label.id && labelKey(item.name) === labelKey(fields.name));
         const ok = await confirmDialog(target
-          ? { title: t("改成已有的名字会合并"), message: t("「{source}」会并进「{target}」并从库里消失，{usage}上的「{source}」都会换成「{target}」。", { source: label.name, target: target.name, usage: impactText(label.usage) }), confirmText: t("合并"), danger: true }
-          : { title: t("改名会影响所有群"), message: t("{usage}上的「{oldName}」都会改成「{newName}」；各群会记下改了哪些任务。", { usage: impactText(label.usage), oldName: label.name, newName: fields.name }), confirmText: t("改名") });
-        if (!ok) throw new Error(t("已取消，没有保存。"));
+          ? { title: lt("改成已有的名字会合并"), message: lt("「{source}」会并进「{target}」并从库里消失，{usage}上的「{source}」都会换成「{target}」。", { source: label.name, target: target.name, usage: impactText(label.usage) }), confirmText: lt("合并"), danger: true }
+          : { title: lt("改名会影响所有群"), message: lt("{usage}上的「{oldName}」都会改成「{newName}」；各群会记下改了哪些任务。", { usage: impactText(label.usage), oldName: label.name, newName: fields.name }), confirmText: lt("改名") });
+        if (!ok) throw new Error(lt("已取消，没有保存。"));
       }
       await command({ action: 'label.edit', labelId: label.id, ...fields, archived: archived.checked });
       await load();
@@ -234,24 +234,24 @@ export function openLabelManager({ api, tone, gate, onClose = () => {} }) {
 
   function mergeForm(label) {
     const others = labelsOf().filter((item) => item.id !== label.id);
-    if (!others.length) { void noticeDialog(t("库里没有别的标签可以合并进去。"), t("不能合并")); return; }
+    if (!others.length) { void noticeDialog(lt("库里没有别的标签可以合并进去。"), lt("不能合并")); return; }
     const target = h('select', {}, others.map((item) => h('option', { value: item.id }, item.name)));
-    formDialog(t("合并标签 · {name}", { name: label.name }), [h('p', { class: 'muted' }, t("「{name}」会从库里消失，{impactText}上的它都换成所选的标签。", { name: label.name, impactText: impactText(label.usage) })),
-      h('label', {}, t("并进"), target)], async () => {
+    formDialog(lt("合并标签 · {name}", { name: label.name }), [h('p', { class: 'muted' }, lt("「{name}」会从库里消失，{impactText}上的它都换成所选的标签。", { name: label.name, impactText: impactText(label.usage) })),
+      h('label', {}, lt("并进"), target)], async () => {
       const into = others.find((item) => item.id === target.value);
-      const ok = await confirmDialog({ title: t("确认合并？"), message: t("把「{source}」并进「{target}」，影响{usage}。", { source: label.name, target: into?.name, usage: impactText(label.usage) }), confirmText: t("合并"), danger: true });
-      if (!ok) throw new Error(t("已取消，没有合并。"));
+      const ok = await confirmDialog({ title: lt("确认合并？"), message: lt("把「{source}」并进「{target}」，影响{usage}。", { source: label.name, target: into?.name, usage: impactText(label.usage) }), confirmText: lt("合并"), danger: true });
+      if (!ok) throw new Error(lt("已取消，没有合并。"));
       await command({ action: 'label.merge', labelId: label.id, intoLabelId: target.value });
       await load();
     });
   }
 
   async function deleteLabel(label) {
-    const ok = await confirmDialog({ title: t("删除标签？"), message: t("「{name}」会从标签库里去掉；{usage}", { name: label.name, usage: label.usage?.tasks ? t("{impactText}上的文字保留。", { impactText: impactText(label.usage) }) : t("没有任务用它。") }), confirmText: t("删除"), danger: true });
+    const ok = await confirmDialog({ title: lt("删除标签？"), message: lt("「{name}」会从标签库里去掉；{usage}", { name: label.name, usage: label.usage?.tasks ? lt("{impactText}上的文字保留。", { impactText: impactText(label.usage) }) : lt("没有任务用它。") }), confirmText: lt("删除"), danger: true });
     if (ok) await run({ action: 'label.delete', labelId: label.id });
   }
   async function deleteGroup(group) {
-    const ok = await confirmDialog({ title: t("删除组？"), message: t("「{name}」里的 {count} 个标签会变成未分组，所有群都不再使用这个组。", { name: group.name, count: group.labels.length }), confirmText: t("删除"), danger: true });
+    const ok = await confirmDialog({ title: lt("删除组？"), message: lt("「{name}」里的 {count} 个标签会变成未分组，所有群都不再使用这个组。", { name: group.name, count: group.labels.length }), confirmText: lt("删除"), danger: true });
     if (ok) await run({ action: 'label.group_delete', groupId: group.id });
   }
 

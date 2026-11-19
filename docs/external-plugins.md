@@ -180,7 +180,7 @@ Hub → 插件：`initialize`（只带实际授权；插件在结果里可用 `n
 
 **网页**只从插件目录的 `ui/` 提供，入口固定 `ui/index.html`；只认 `.html`、`.css`、`.js`、`.json`、`.svg`、`.png`、`.jpg`、`.webp`、`.woff2`，单个文件最多 1 MiB，整个 `ui/` 最多 200 个文件、4 MiB；路径逐段校验，不跟随链接或联接。页面每次打开界面时由 Hub 生成一个不可猜的界面 ID，地址 `/plugin-ui/<界面 ID>/index.html`，界面关闭、插件停止或重启、授权收回、Hub 重启后立即失效。
 
-框架是 `<iframe sandbox="allow-scripts">`，来源不透明：读不到 cookie、令牌、协作页和存储，调不到 Hub 接口；CSP 只允许从自己的地址前缀加载脚本、样式、图片和字体，禁止 `fetch`、XHR、WebSocket 外连和导航。框架只能经 `postMessage` 与页面通信（`orrery.ready`、`orrery.request` → `orrery.init`、`orrery.theme`、`orrery.response`、`orrery.push`），页面经认证的接口把请求交给 Hub，Hub 发 `ui.request` 给这个插件的进程（10 秒超时，最多 16 KiB）。orrery 在框外画插件名和“第三方插件”标记，插件去不掉。
+框架是 `<iframe sandbox="allow-scripts">`，来源不透明：读不到 cookie、令牌、协作页和存储，调不到 Hub 接口；CSP 只允许从自己的地址前缀加载脚本、样式、图片和字体，禁止 `fetch`、XHR、WebSocket 外连和导航。框架只能经 `postMessage` 与页面通信（`orrery.ready`、`orrery.request` → `orrery.init`、`orrery.theme`、`orrery.language`、`orrery.response`、`orrery.push`；界面语言切换时页面不重新加载，只发 `orrery.language`），页面经认证的接口把请求交给 Hub，Hub 发 `ui.request` 给这个插件的进程（10 秒超时，最多 16 KiB）。orrery 在框外画插件名和“第三方插件”标记，插件去不掉。
 
 - `host.ui.push {clusterId, position?, data}`：推给自己在这个群打开着的界面；
 - `host.ui.chip {clusterId, text, state?}`：标题栏标签文字（最多 24 字）和状态点（`running`、`done`、`failed`）；

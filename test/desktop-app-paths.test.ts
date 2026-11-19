@@ -292,7 +292,7 @@ test('desktop app paths: the settings view is the shell\'s own trusted page, ope
   assert.doesNotMatch(win, /parent|modal/, 'no owner (as the + panel: lowerShell)');
   assert.match(win, /webPreferences: \{ preload: SETTINGS_PRELOAD, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false \}/);
   assert.match(shell, /export const SETTINGS_PAGE = pathToFileURL\(join\(HERE, 'ui', 'settings\.html'\)\)\.href;/);
-  assert.equal((shell.match(/settingsWin\.loadURL\(/g) ?? []).length, 2, 'initial load and explicit trusted language change');
+  assert.equal((shell.match(/settingsWin\.loadURL\(/g) ?? []).length, 1, 'loaded once; a language switch redraws it in place');
   assert.match(shell, /settingsPage\.on\('before-input-event', \(e, input\) => \{ if \(reloadKey\(input\)\) e\.preventDefault\(\); \}\);/);
   assert.match(shell, /win\.on\('closed', \(\) => \{ if \(!settingsWin\.isDestroyed\(\)\) settingsWin\.destroy\(\); \}\);/);
   assert.match(fnBody(shell, 'quit'), /if \(!settingsWin\.isDestroyed\(\)\) settingsWin\.destroy\(\);/);

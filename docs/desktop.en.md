@@ -69,4 +69,4 @@ The build verifies the pinned official Node 24.19.0 archive and includes its lic
 
 ## Interface language
 
-Desktop settings switch the shell between Chinese and English immediately. The collaboration page keeps its drafts and uses the new language on the next open or manual F5 refresh. Its own language selector confirms unsaved work before reloading.
+Switch between Chinese and English in desktop settings or in the collaboration page's Settings → Appearance. The shell and the collaboration page switch together at once, without reloading any page; drafts, attachments and open panels stay. The next start uses the last choice. The collaboration page only rewrites `uiLang` in its own address, and the shell only adopts a valid value from the current Hub page's main frame; the page still has no desktop permissions.

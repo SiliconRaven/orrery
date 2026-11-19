@@ -1,7 +1,7 @@
 import { t } from "./i18n.js";
 // The dependency graph's canvas: wheel zoom, panning, free node dragging and automatic arrangement. Layout preferences
 // stay in this browser (localStorage, per cluster) and never reach the Hub. Pure helpers are tested in test/workbench-graph.test.ts.
-import { confirmDialog, emptyState, h, icon } from './ui.js';
+import { confirmDialog, emptyState, h, icon, lt } from './ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const LAYOUT_VERSION = 1;
@@ -454,9 +454,9 @@ export function createGraphCanvas({ onOpen, rerender, settled }) {
       let ok = false;
       try {
         ok = await confirmDialog({
-          title: t("自动整理依赖图？"),
-          message: t("这会清除你在这个群里手动拖动过的位置，并按依赖和状态重新排布全部任务。"),
-          confirmText: t("自动整理"),
+          title: lt("自动整理依赖图？"),
+          message: lt("这会清除你在这个群里手动拖动过的位置，并按依赖和状态重新排布全部任务。"),
+          confirmText: lt("自动整理"),
           danger: state.positions.size > 0,
         });
       } finally {

@@ -1,4 +1,4 @@
-import { t, language, translateStatic } from './i18n.js';
+import { t, language, languageInAddress, onLanguageChange, setLanguage, translateStatic } from './i18n.js';
 // orrery web UI: cluster list, group chat, member page. Live state comes from the Hub's SSE event log.
 // See docs/architecture.md and docs/native-mode.md (HTTP API, event kinds, @ rules).
 import {
@@ -26,7 +26,7 @@ import { createPluginUi } from './plugin-ui.js';
 import { isTaskChangeNotice, parseLegacyTaskNotice, shipFailureNotice } from './task-diff.js';
 import { createTaskCandidates, createTaskRefs, inRanges, quotedRanges, taskRefIds } from './task-refs.js';
 import { conversationMatrix, CONVERSATIONS_VIEW_KEY, harnessApp, mountKeepingScroll, STATUS_WORD, viewFromStored } from './conversation-matrix.js';
-import { avatarKind, emptyState, hiddenMark, icon, memberAppText, memberMarks, memberPresence, memberRowActions, removeMemberConfirm, setAvatarMarks } from './ui.js';   // the member list's icons (kept apart from the long import above)
+import { avatarKind, emptyState, hiddenMark, icon, liveAsk, lt, memberAppText, memberMarks, memberPresence, memberRowActions, removeMemberConfirm, setAvatarMarks } from './ui.js';   // the member list's icons (kept apart from the long import above)
 import { createShipFailureView, createTaskDiffView } from './task-diff-view.js';
 import { openTrash } from './trash.js';
 import { openExtensions } from './extensions.js';
@@ -35,6 +35,11 @@ import { attachCommands, chatSubmitAllowed, commandForm, createCommandState, dra
 
 const $ = (id) => document.getElementById(id);
 translateStatic(document);
+// The desktop shell switches this page's language with this event (desktop/ui/language.mjs pageLanguageScript); the
+// page accepts zh or en only, and only where its address carries the language (the desktop's collaboration page).
+addEventListener('orrery:desktop-language', (event) => {
+  if (languageInAddress() && (event.detail === 'zh' || event.detail === 'en')) setLanguage(event.detail);
+});
 let pluginSlots = { message: [] };
 
 // ---- state ----
@@ -773,7 +778,7 @@ function unauthorized() {
   denied = true;
   stream?.close();
   setConn(false);   // shows 未通过验证 (review api-token r1, P2)
-  noticeDialog(t('这个页面没有通过 Hub 的验证（没有令牌，或令牌已失效）。请从 orrery 启动器或桌面版重新打开页面。'), t('需要重新打开页面'));
+  noticeDialog(lt('这个页面没有通过 Hub 的验证（没有令牌，或令牌已失效）。请从 orrery 启动器或桌面版重新打开页面。'), lt('需要重新打开页面'));
 }
 
 // An EventSource cannot see a 401: before rebuilding a closed stream, /api/health tells.
@@ -886,15 +891,12 @@ async function checkHub() {
  * What a reload would lose: composer drafts, attachments waiting to be sent, open dialogs and edits, sends in flight,
  * and unsaved limit edits (the settings forms keep them when the dialog is closed).
  */
-function unsaved({ fromSettings = false } = {}) {
+function unsaved() {
   return {
     drafts: [chat.input.value, direct.input.value, ...drafts.values()],
     uploads: [...uploads.values()].reduce((n, list) => n + list.length, 0),
     editing: sending.size > 0 || editingId !== null || panelEditor.dirty() || Boolean(openForm) || [...taskDrafts.values()].some((ids) => ids.length)
-      || [...document.querySelectorAll('dialog[open]')].some((d) => d.id !== 'viewer' && (!fromSettings || d.id !== 'settings-dialog'))
-      || (fromSettings && installPanel?.hasDraft() === true)
-      || (fromSettings && [...$('settings-dialog').querySelectorAll('.plugin-write input')].some((input) =>
-        input.type === 'checkbox' ? input.checked !== input.defaultChecked : input.value !== input.defaultValue))
+      || [...document.querySelectorAll('dialog[open]')].some((d) => d.id !== 'viewer')
       || Boolean(S.settings?.usageAlert && (String(S.settings.usageAlert.turnTokens) !== $('usage-alert-turn').value
         || String(S.settings.usageAlert.conversationTokens) !== $('usage-alert-conversation').value))
       || LIMIT_FORMS.some((f) => limitFormEdited(f.setting, S.settings, { unlimited: $(`${f.id}-unlimited`).checked, value: $(`${f.id}-value`).value }))
@@ -908,7 +910,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 $('cluster-resume').addEventListener('click', async () => {
   try {
     await api('POST', `/api/clusters/${encodeURIComponent(S.sel.cluster)}/collaboration`, { action: 'cluster.pause', paused: false, operationId: crypto.randomUUID() });
-  } catch (e) { await noticeDialog(e.message, t('恢复投递失败')); }
+  } catch (e) { await noticeDialog(e.message, lt('恢复投递失败')); }
 });
 
 /**
@@ -935,8 +937,8 @@ function trustedPluginsChanged(now) {
 async function reloadUnlessUnsaved() {
   if (reloadWouldLose(unsaved())) {
     const ok = await confirmDialog({
-      title: t('现在刷新页面？'), message: t('未发送的草稿、附件和没保存的编辑会丢失。可以先发送或复制它们，再点横幅刷新。'),
-      confirmText: t('刷新'), danger: true,
+      title: lt('现在刷新页面？'), message: lt('未发送的草稿、附件和没保存的编辑会丢失。可以先发送或复制它们，再点横幅刷新。'),
+      confirmText: lt('刷新'), danger: true,
     });
     if (!ok) return;
   }
@@ -945,7 +947,9 @@ async function reloadUnlessUnsaved() {
 $('update-reload').addEventListener('click', reloadUnlessUnsaved);
 $('trust-reload').addEventListener('click', reloadUnlessUnsaved);
 
+let connOk = null;   // the last state shown, drawn again after a language switch
 function setConn(ok) {
+  connOk = ok;
   const el = $('conn');
   el.className = `conn ${ok ? 'ok' : 'bad'}`;
   el.textContent = ok ? t('已连接') : denied ? t('未通过验证') : t('已断开，重连中…');
@@ -1216,7 +1220,8 @@ function stableList(el) {
   };
   window.addEventListener('pointerup', released);
   window.addEventListener('pointercancel', released);
-  return (sig, draw) => {
+  return (signature, draw) => {
+    const sig = `${language()}\n${signature}`;   // a language switch redraws the list
     if (sig === shown) return;
     if (down) { pending = true; return; }
     shown = sig;
@@ -1308,7 +1313,7 @@ async function clusterMenuAction(id, action) {
   if (action === 'rename') return renameCluster(cluster);
   if (action === 'delete') return deleteCluster(cluster);
   if (action === 'new-group') {
-    return groupNameDialog(t('新建分组'), '', async (name) => {
+    return groupNameDialog(lt('新建分组'), '', async (name) => {
       await api('POST', '/api/cluster-groups', { name });
       await moveToGroup(id, name);
     }, t('“{name}”会移进这个新分组。', { name: cluster.name }));
@@ -1318,7 +1323,7 @@ async function clusterMenuAction(id, action) {
     await api('PATCH', `/api/clusters/${encodeURIComponent(id)}`, action === 'pin'
       ? cluster.archivedAt ? { archived: false, pinned: true } : { pinned: !cluster.pinnedAt }
       : { archived: !cluster.archivedAt });
-  } catch (error) { await noticeDialog(error.message, t('更新群聊失败')); }
+  } catch (error) { await noticeDialog(error.message, lt('更新群聊失败')); }
 }
 
 function openClusterMenu(id, trigger) {
@@ -1356,8 +1361,8 @@ document.addEventListener('pointerdown', (event) => {
 
 function renameCluster(cluster) {
   sidebarNameDialog({
-    title: t('改名'), label: t('群聊名称'), initial: cluster.name, note: t('允许与其他群聊重名。'),
-    validate: clusterNameInput, invalidTitle: t('改名失败'),
+    title: lt('改名'), label: lt('群聊名称'), initial: cluster.name, note: lt('允许与其他群聊重名。'),
+    validate: clusterNameInput, invalidTitle: lt('改名失败'),
     save: (name) => api('PATCH', `/api/clusters/${encodeURIComponent(cluster.id)}`, { name }),
     findOpener: () => clusterMenuTrigger(cluster.id),
   });
@@ -1368,20 +1373,21 @@ function sidebarNameDialog({ title, label, initial, note, maxLength, validate, s
   const input = h('input', { 'aria-label': label, maxlength: maxLength });
   input.value = initial;
   let saving = false;
-  const cancel = h('button', { type: 'button', onclick: () => { if (!saving) dialog.close(); } }, t('取消'));
-  const ok = h('button', { type: 'submit', class: 'primary' }, t('保存'));
+  const cancel = h('button', { type: 'button', onclick: () => { if (!saving) dialog.close(); } }, lt('取消'));
+  const ok = h('button', { type: 'submit', class: 'primary' }, lt('保存'));
   const dialog = h('dialog', { 'aria-label': title }, h('form', { class: 'workbench-form' }, h('h2', {}, title),
     note ? h('p', { class: 'muted' }, note) : null, h('label', {}, label, input), h('div', { class: 'row end' }, cancel, ok)));
   dialog.addEventListener('cancel', (event) => { if (saving) event.preventDefault(); });
   dialog.querySelector('form').addEventListener('submit', async (event) => {
     event.preventDefault();
     if (saving) return;
-    const result = validate(input.value);
-    if (result.error) { await noticeDialog(result.error, invalidTitle); input.focus(); return; }
+    const value = input.value;
+    const result = validate(value);
+    if (result.error) { await noticeDialog(lt(() => validate(value).error), invalidTitle); input.focus(); return; }
     saving = true;
     ok.disabled = true; cancel.disabled = true; input.disabled = true;
     try { await save(result.name); dialog.close(); }
-    catch (error) { await noticeDialog(error.message, t('{title}失败', { title: title })); }
+    catch (error) { await noticeDialog(error.message, lt('{title}失败', { title: title })); }
     finally { saving = false; ok.disabled = false; cancel.disabled = false; input.disabled = false; }
   });
   dialog.addEventListener('close', () => {
@@ -1401,13 +1407,13 @@ async function moveToGroup(id, category) {
   const cluster = S.clusters.get(id);
   if (!cluster || (cluster.category ?? '') === category) return;
   try { await api('PATCH', `/api/clusters/${encodeURIComponent(id)}`, { category }); }
-  catch (error) { await noticeDialog(error.message, t('移动失败')); }
+  catch (error) { await noticeDialog(error.message, lt('移动失败')); }
 }
 
 /** A group name dialog; `save(name)` runs on submit and the dialog stays open, with the Hub's answer, if it throws. */
 function groupNameDialog(title, initial, save, note = '') {
   sidebarNameDialog({
-    title, label: t('分组名'), initial, save, note, maxLength: 80,
+    title, label: lt('分组名'), initial, save, note, maxLength: 80,
     validate: (value) => {
       const { category, error } = categoryInput(value);
       return { name: category, error: error || (!category && t('分组名不能为空')) };
@@ -1421,7 +1427,7 @@ async function groupAction(name, action) {
   if (trigger?.isConnected) trigger.focus({ preventScroll: true });   // dialogs opened below return focus here
   const groups = groupList();
   try {
-    if (action === 'rename') return groupNameDialog(t('分组改名'), name, (to) => renameGroupKeepingView(name, to));
+    if (action === 'rename') return groupNameDialog(lt('分组改名'), name, (to) => renameGroupKeepingView(name, to));
     if (action === 'up' || action === 'down') {
       const next = moveGroup(groups, name, action === 'up' ? -1 : 1);
       if (next) await api('PUT', '/api/cluster-groups', { groups: next });
@@ -1429,15 +1435,15 @@ async function groupAction(name, action) {
     }
     if (action === 'delete') {
       const count = [...S.clusters.values()].filter((c) => (c.category ?? '').trim() === name).length;
-      const ok = await confirmDialog({ title: t('删除分组？'), message: count
-        ? t('“{name}”里的 {count} 个群聊会移到“{UNGROUPED}”，群聊本身不变。', { name: name, count: count, UNGROUPED: t(UNGROUPED) })
-        : t('“{name}”是空分组。', { name: name }), confirmText: t('删除分组'), danger: true });
+      const ok = await confirmDialog({ title: lt('删除分组？'), message: count
+        ? lt('“{name}”里的 {count} 个群聊会移到“{UNGROUPED}”，群聊本身不变。', { name: name, count: count, UNGROUPED: lt(UNGROUPED) })
+        : lt('“{name}”是空分组。', { name: name }), confirmText: lt('删除分组'), danger: true });
       if (!ok) return;
       await api('DELETE', '/api/cluster-groups', { name });
       // Its clusters are drawn under 未分组 by the events; the name's collapse must not carry over to a new group of that name.
       if (collapsedGroups.delete(name)) { writeCollapsedGroups(); render(); }
     }
-  } catch (error) { await noticeDialog(error.message, t('分组操作失败')); }
+  } catch (error) { await noticeDialog(error.message, lt('分组操作失败')); }
 }
 
 /**
@@ -1481,7 +1487,7 @@ function openGroupMenu(name, trigger) {
   showClusterMenu(`group:${name}`, trigger, menu);
 }
 
-$('new-group').addEventListener('click', () => groupNameDialog(t('新建分组'), '', (name) => api('POST', '/api/cluster-groups', { name }),
+$('new-group').addEventListener('click', () => groupNameDialog(lt('新建分组'), '', (name) => api('POST', '/api/cluster-groups', { name }),
   t('可以先建空分组，再把群聊拖进来，或用群聊菜单里的“移到分组”。')));
 
 // Dragging a cluster onto a group moves it there. The cluster menu's "移到分组…" does the same without a pointer.
@@ -1676,7 +1682,7 @@ function renderMemberToggle(cluster) {
   btn.setAttribute('aria-expanded', String(open));
   btn.title = open ? t('收起群员面板') : t('打开群员面板：成员页、改名和头像、移出、添加成员');
   const members = cluster ? membersOf(cluster.id) : [];
-  const sig = [S.identity, ...members.map((m) => [m.id, statusOf(m)].join('|'))].join('\n');
+  const sig = [S.identity, language(), ...members.map((m) => [m.id, statusOf(m)].join('|'))].join('\n');
   if (sig === toggleSig) return;
   toggleSig = sig;
   const counts = memberCounts(members, statusOf);   // hidden members are not counted online (docs/cluster-members.md「隐身」)
@@ -1778,7 +1784,7 @@ function renderChat() {
     let handoffs = '';
     for (const d of msg.deliveries.values()) if (d.handoffMessageId) handoffs += `${messageRef(msg.clusterId, d.handoffMessageId)?.mentions ?? '?'};`;
     const reply = msg.replyTo ? Boolean(messageRef(msg.clusterId, msg.replyTo)) : '';
-    const sig = `${S.identity}|${S.skillsVersion}|${receiptTimelines.get(id)?.version ?? 0}|${S.handoffs.has(id)}|${msg.rev}|${handoffs}|${reply}|${msg.reads.length}|${msg.acknowledgements.length}|${JSON.stringify([msg.taskIds, pluginSlots.message.map((slot) => slot.key?.(msg))])}|${taskRefs.track(msg.clusterId, refs)}|${chatRowState(msg, chatFilter, jumpExceptionId(jump, cid))}`;
+    const sig = `${S.identity}|${language()}|${S.skillsVersion}|${receiptTimelines.get(id)?.version ?? 0}|${S.handoffs.has(id)}|${msg.rev}|${handoffs}|${reply}|${msg.reads.length}|${msg.acknowledgements.length}|${JSON.stringify([msg.taskIds, pluginSlots.message.map((slot) => slot.key?.(msg))])}|${taskRefs.track(msg.clusterId, refs)}|${chatRowState(msg, chatFilter, jumpExceptionId(jump, cid))}`;
     // Task titles arrive when the workbench loads; they only rename the linked-task buttons, so they are patched in
     // place instead of rebuilding (and re-rendering the Markdown of) every linked message.
     const titles = JSON.stringify(taskTitles);
@@ -2023,7 +2029,7 @@ async function openMessage(cid, id, { receipts = false } = {}) {
     const at = list.findIndex((m) => m.id === id);
     if (!jumpCurrent(jump, jumpToken)) return keep();   // cancelled meanwhile (filter, another jump): nothing more happens
     jump = nextJump(jump, { type: 'answer', token: jumpToken, found: at >= 0 });
-    if (at < 0) { keep(); noticeDialog(t('读不到这条消息：它不在这个群的记录里。'), t('无法跳转')); return; }
+    if (at < 0) { keep(); noticeDialog(lt('读不到这条消息：它不在这个群的记录里。'), lt('无法跳转')); return; }
     // Asked for PAGE / 2 older and PAGE - PAGE / 2 - 1 newer: fewer means that end of the cluster was reached.
     commitWindow(cid, fillMessages(list, seq), at >= PAGE / 2, list.length - at - 1 < PAGE - PAGE / 2 - 1, seq);
   } catch (e) {
@@ -2031,7 +2037,7 @@ async function openMessage(cid, id, { receipts = false } = {}) {
     const current = jumpCurrent(jump, jumpToken);
     jump = nextJump(jump, { type: 'failed', token: jumpToken });
     keep();
-    if (current) noticeDialog(t('读不到这条消息：{message}', { message: e.message }), t('无法跳转'));
+    if (current) noticeDialog(lt('读不到这条消息：{message}', { message: e.message }), lt('无法跳转'));
   } finally {
     render();
   }
@@ -2559,7 +2565,7 @@ async function openDeliveryProblems() {
   try {
     data = await api('GET', path);
   } catch (e) {
-    return noticeDialog(t('读不到有问题的投递：{message}', { message: e.message }), t('有问题的投递'));
+    return noticeDialog(lt('读不到有问题的投递：{message}', { message: e.message }), lt('有问题的投递'));
   }
   const title = h('h2', { id: 'problems-title' });
   const description = h('p', { id: 'problems-description', class: 'muted' });
@@ -2621,8 +2627,9 @@ async function openDeliveryProblems() {
   };
   dismissAll.addEventListener('click', () => exclusive(async () => {
     // Taken before asking: the confirmation describes exactly the listing whose version is sent.
-    const request = dismissAllRequest(data);
-    if (request.ask && !await confirmDialog(request.ask)) return;
+    const listing = data;
+    const request = dismissAllRequest(listing);
+    if (request.ask && !await confirmDialog(liveAsk(() => dismissAllRequest(listing).ask))) return;
     await write(`${path}/dismiss`, request.body, 0);
   }));
   close.addEventListener('click', () => dialog.close());
@@ -2867,6 +2874,7 @@ viewer.addEventListener('close', () => { $('viewer-img').removeAttribute('src');
 
 let panelFor = null;   // member id the panel was last built for
 let panelIdentity = -1;
+let panelLanguage = null;   // the language its event lines were drawn in
 let panelCount = 0;    // member events already rendered
 
 const GUARD = {
@@ -2993,7 +3001,14 @@ function renderMemberPanel() {
     panelEditor.fill(m);
     panelCount = 0;
     panelIdentity = S.identity;
+  } else if (panelLanguage !== language() && panelCount) {
+    // A language switch is not another member: the editor keeps what is typed and picked (its labels are translated
+    // in place), and the same lines are drawn again in the new language where they were, scrolled as they were.
+    const top = box.scrollTop;
+    box.replaceChildren(...events.slice(log.prepended, log.prepended + panelCount).map(buildEvent));
+    box.scrollTop = top;
   }
+  panelLanguage = language();
   panelFor = m.id;
   // Every member is a conversation of its native app since isolated mode was removed; that removal dropped this name
   // but kept its uses, so the page threw here and never drew the member's lines.
@@ -3155,7 +3170,7 @@ let uploadKey = 0;
 
 function renderUploads() {
   const target = chat.target;
-  const key = `${target}|${uploadsVersion}`;
+  const key = `${target}|${uploadsVersion}|${language()}`;   // the chips' words follow a language switch; the files stay
   if (key === drawnUploads) return;
   drawnUploads = key;
   const list = uploads.get(target) ?? [];
@@ -3204,14 +3219,14 @@ async function toggleHidden(memberId) {
     } catch { tasks = null; }   // the dialog then says it could not read them
   }
   const held = tasks ? heldTasks(tasks, memberId) : { executing: [], reviewing: [] };
-  const text = hiddenConfirmText(m, held, hide) + (tasks === null ? t('\n（没有读到任务列表，请在任务工作台确认它手上的任务。）') : '');
-  if (!await confirmDialog({ title: hide ? t('设为隐身') : t('取消隐身'), message: text, confirmText: hide ? t('设为隐身') : t('取消隐身'), danger: hide })) return;
+  const text = lt(() => hiddenConfirmText(m, held, hide) + (tasks === null ? t('\n（没有读到任务列表，请在任务工作台确认它手上的任务。）') : ''));
+  if (!await confirmDialog({ title: hide ? lt('设为隐身') : lt('取消隐身'), message: text, confirmText: hide ? lt('设为隐身') : lt('取消隐身'), danger: hide })) return;
   hiding.add(memberId);
   render();
   try {
     upsertMember((await api('POST', `/api/members/${encodeURIComponent(memberId)}/hidden`, { hidden: hide })).member);
   } catch (e) {
-    await noticeDialog(t('没有{value}：{value2}', { value: hide ? t('设为隐身') : t('取消隐身'), value2: e.message ?? e }));
+    await noticeDialog(lt('没有{value}：{value2}', { value: hide ? lt('设为隐身') : lt('取消隐身'), value2: e.message ?? e }));
   } finally {
     hiding.delete(memberId);
     render();
@@ -3476,15 +3491,7 @@ function mountUpdatePanel() {
   } });
 }
 
-async function confirmLanguageReload() {
-  if (!reloadWouldLose(unsaved({ fromSettings: true }))) return true;
-  return confirmDialog({
-    title: t('切换语言并刷新页面？'),
-    message: t('切换语言会刷新页面，未发送的草稿、附件和没保存的编辑会丢失。请先发送或复制，再切换语言。'),
-    confirmText: t('切换并刷新'), danger: true,
-  });
-}
-const settingsFrame = initSettings(settingsDialog, undefined, { beforeLanguageChange: confirmLanguageReload });
+const settingsFrame = initSettings(settingsDialog);
 let bridgeSettingsRevision = 0;   // ignore responses after this dialog was closed or reopened
 let bridgeSettingsState;
 
@@ -3495,14 +3502,17 @@ function drawBridgeSettings(state) {
   $('bridge-native-delivery').checked = state.nativeDelivery;
   $('bridge-secondary-setting').hidden = state.role !== 'secondary';
   $('bridge-key-migrated').hidden = !state.keyMigrated;
-  $('bridge-hub-role').textContent = t(state.role === 'active' ? '活动 Hub'
-    : state.nativeDelivery ? '第二实例，已允许投递' : '第二实例：不投递');
+  // data-i18n: a language switch (translateStatic) keeps this line, and the key button below, in step with the state.
+  const role = state.role === 'active' ? '活动 Hub' : state.nativeDelivery ? '第二实例，已允许投递' : '第二实例：不投递';
+  $('bridge-hub-role').dataset.i18n = role;
+  $('bridge-hub-role').textContent = t(role);
 }
 
 function hideBridgeKey() {
   $('bridge-key-text').textContent = '';
   $('bridge-key-value').hidden = true;
   $('bridge-reveal-key').setAttribute('aria-expanded', 'false');
+  $('bridge-reveal-key').dataset.i18n = '显示接入密钥';
   $('bridge-reveal-key').textContent = t('显示接入密钥');
 }
 
@@ -3540,9 +3550,9 @@ $('bridge-native-delivery').addEventListener('change', async (event) => {
   const nativeDelivery = input.checked;
   const revision = bridgeSettingsRevision;
   if (nativeDelivery && !await confirmDialog({
-    title: t('允许第二实例投递？'),
-    message: t('请确认同一个原生对话只绑定在一个正在投递的 Hub 上。'),
-    confirmText: t('允许投递'),
+    title: lt('允许第二实例投递？'),
+    message: lt('请确认同一个原生对话只绑定在一个正在投递的 Hub 上。'),
+    confirmText: lt('允许投递'),
   })) {
     if (revision === bridgeSettingsRevision) drawBridgeSettings(bridgeSettingsState);
     return;
@@ -3561,6 +3571,7 @@ $('bridge-reveal-key').addEventListener('click', async (event) => {
     $('bridge-key-text').textContent = key;
     $('bridge-key-value').hidden = false;
     button.setAttribute('aria-expanded', 'true');
+    button.dataset.i18n = '隐藏接入密钥';
     button.textContent = t('隐藏接入密钥');
   } catch (e) {
     if (revision === bridgeSettingsRevision) showError('bridge-settings-error', e.message);
@@ -3597,7 +3608,7 @@ $('usage-alert-form').addEventListener('submit', async (event) => {
 
 $('quit').addEventListener('click', async () => {
   const ok = await confirmDialog({
-    title: t('退出 orrery？'), message: t('退出后 Hub 停止，群员收不到新消息，直到你再次打开 orrery。'), confirmText: t('退出'), danger: true,
+    title: lt('退出 orrery？'), message: lt('退出后 Hub 停止，群员收不到新消息，直到你再次打开 orrery。'), confirmText: lt('退出'), danger: true,
   });
   if (!ok) return;   // cancelled: nothing is sent
   quitting = true;   // before the request: the Hub drops this page's stream while it closes
@@ -3608,7 +3619,7 @@ $('quit').addEventListener('click', async () => {
   } catch (e) {
     quitting = false;
     if (stream?.readyState === EventSource.CLOSED) connect(S.lastSeq, true);
-    noticeDialog(t('退出失败：{message}', { message: e.message }));
+    noticeDialog(lt('退出失败：{message}', { message: e.message }));
   }
 });
 
@@ -3617,7 +3628,7 @@ $('pause').addEventListener('click', async () => {
     // The resulting 'pause' event updates S.paused; the response could be older than a newer event.
     await api('POST', '/api/pause', { paused: !S.paused });
   } catch (e) {
-    noticeDialog(t('切换暂停失败：{message}', { message: e.message }));
+    noticeDialog(lt('切换暂停失败：{message}', { message: e.message }));
   }
 });
 
@@ -3656,14 +3667,15 @@ for (const f of LIMIT_FORMS) {
   $f('form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const err = $f('error');
-    const sub = limitSubmission(f.setting, { unlimited: $f('unlimited').checked, value: $f('value').value });
+    const input = { unlimited: $f('unlimited').checked, value: $f('value').value };
+    const sub = limitSubmission(f.setting, input);
     if (sub.error) {
       err.textContent = sub.error;
       err.hidden = false;
       return;
     }
     err.hidden = true;
-    if (sub.confirm && !(await confirmDialog(sub.confirm))) {   // cancelled: nothing is sent, the form shows the Hub's value again
+    if (sub.confirm && !(await confirmDialog(liveAsk(() => limitSubmission(f.setting, input).confirm)))) {   // cancelled: nothing is sent, the form shows the Hub's value again
       f.stale = true;
       render();
       return;
@@ -3703,7 +3715,7 @@ function presetPicker(onPick = () => {}, container = null) {
   const render = () => {
     el.replaceChildren(...S.avatars.map((name) => h('button', {
       type: 'button', class: `preset-avatar${selected === name ? ' selected' : ''}`, 'aria-pressed': String(selected === name),
-      title: t('使用预设头像 {name}', { name: name }),
+      title: lt('使用预设头像 {name}', { name: name }),
       onclick: () => {
         selected = selected === name ? null : name;
         onPick(selected);
@@ -3809,13 +3821,13 @@ const dialog = $('create-dialog');
 let addToCluster = null;
 let harnessForms = [];   // [{ harness, check, pick, row, body, setShown(on), revealProblem(), refreshPresets(), choice() }] — async choice() returns the input of harnessSpecs (ui.js)
 
-const NAME_HINT = t('只允许字母、数字、汉字、_ . -，不含空格；不填按模型命名');
-const CLAUDE_HINT = t('原生 Claude 只能接入已有会话：先在 Claude Desktop 里新建一个本地会话并发一句话（会话要能加载 orrery 桥，见 README「原生模式：Claude」），再点「刷新」，选它的项目并勾选它。会话在 Desktop 里开着时显示在线。');
-const ANTIGRAVITY_HINT = t('原生 Antigravity 只能接入 Antigravity 2.0 里已有、并且打开过工作区的对话：先按 README「原生模式：Antigravity」装好并启用 orrery sidecar、hook 和 MCP 条目，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。应用开着、sidecar 已启用时显示在线。');
-const ZCODE_HINT = t('原生 ZCode 只能接入 ZCode 里已有的本地工作区对话：先按 README「原生模式：ZCode」在 ZCode 里加好 orrery 的 MCP 条目，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；ZCode 每次重启后要再说一次。');
-const WORKBUDDY_HINT = t('原生 WorkBuddy 只能接入 WorkBuddy 里已有的本地对话：先按 README「原生模式：WorkBuddy」在 WorkBuddy 里添加并信任 orrery 的 stdio MCP 服务器，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；对话进程被回收后要再说一次。');
-const QODER_HINT = t('原生 Qoder 只能接入 Qoder 里已有的对话：先按 README「原生模式：Qoder」装好 orrery 的 Qoder 插件，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；Qoder 每次重启后要再说一次。「每次询问」审批模式下等待命令每次都要你点允许，不承诺无人值守。');
-const CURSOR_HINT = t('原生 Cursor 只能接入 Cursor 里已有、跑过至少一轮的 agent 对话：先按 README「原生模式：Cursor」装好 orrery 的 Cursor 插件（hook 和 MCP），在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。每轮结束后对话挂着等待时显示在线；离线时在 Cursor 里对它说一句话，这一轮结束后重新上线。投进来的消息显示成你自己发的、首行带 [orrery · 来自 …]。');
+const NAME_HINT = lt('只允许字母、数字、汉字、_ . -，不含空格；不填按模型命名');
+const CLAUDE_HINT = lt('原生 Claude 只能接入已有会话：先在 Claude Desktop 里新建一个本地会话并发一句话（会话要能加载 orrery 桥，见 README「原生模式：Claude」），再点「刷新」，选它的项目并勾选它。会话在 Desktop 里开着时显示在线。');
+const ANTIGRAVITY_HINT = lt('原生 Antigravity 只能接入 Antigravity 2.0 里已有、并且打开过工作区的对话：先按 README「原生模式：Antigravity」装好并启用 orrery sidecar、hook 和 MCP 条目，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。应用开着、sidecar 已启用时显示在线。');
+const ZCODE_HINT = lt('原生 ZCode 只能接入 ZCode 里已有的本地工作区对话：先按 README「原生模式：ZCode」在 ZCode 里加好 orrery 的 MCP 条目，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；ZCode 每次重启后要再说一次。');
+const WORKBUDDY_HINT = lt('原生 WorkBuddy 只能接入 WorkBuddy 里已有的本地对话：先按 README「原生模式：WorkBuddy」在 WorkBuddy 里添加并信任 orrery 的 stdio MCP 服务器，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；对话进程被回收后要再说一次。');
+const QODER_HINT = lt('原生 Qoder 只能接入 Qoder 里已有的对话：先按 README「原生模式：Qoder」装好 orrery 的 Qoder 插件，在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。接入后在那个对话里说一句「加入 orrery」，它挂上等待命令后才显示在线；Qoder 每次重启后要再说一次。「每次询问」审批模式下等待命令每次都要你点允许，不承诺无人值守。');
+const CURSOR_HINT = lt('原生 Cursor 只能接入 Cursor 里已有、跑过至少一轮的 agent 对话：先按 README「原生模式：Cursor」装好 orrery 的 Cursor 插件（hook 和 MCP），在应用里新建对话并发一句话，再点「刷新」，选它的项目并勾选它。每轮结束后对话挂着等待时显示在线；离线时在 Cursor 里对它说一句话，这一轮结束后重新上线。投进来的消息显示成你自己发的、首行带 [orrery · 来自 …]。');
 /** The Antigravity hint, plus the language server version the connected sidecar reported (read when the form opens). */
 function antigravityHint() {
   const version = h('span');
@@ -3870,7 +3882,7 @@ const takenNames = () => new Set(addToCluster ? membersOf(addToCluster).map((m) 
  * adds -2 when two members of one submission would share it); emptied, the Hub names the member itself.
  */
 function nameField(auto) {
-  const input = h('input', { placeholder: t('不填按模型命名'), title: NAME_HINT });
+  const input = h('input', { placeholder: lt('不填按模型命名'), title: NAME_HINT });
   let edited = false;
   input.addEventListener('input', () => { edited = Boolean(input.value.trim()); });
   const update = () => { if (!edited) input.value = auto(); };
@@ -3886,7 +3898,7 @@ function nameField(auto) {
  * that is sent ('' for none) with the editors' precedence (editFields: upload, then emoji, then preset).
  */
 function avatarFields(harness) {
-  const emoji = h('input', { placeholder: t('例如 🦊'), maxlength: 16 });
+  const emoji = h('input', { placeholder: lt('例如 🦊'), maxlength: 16 });
   const fileInput = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/gif,image/webp', hidden: true });
   const fileName = h('span', { class: 'muted' });
   const presets = presetPicker((p) => { if (p) emoji.value = ''; });
@@ -3898,14 +3910,14 @@ function avatarFields(harness) {
   const reset = h('button', {
     type: 'button', class: 'small with-avatar',
     onclick: () => { presets.set(null); emoji.value = ''; fileInput.value = ''; fileName.textContent = ''; },
-  }, harnessApp(harness).icon ? avatarEl({ name: '', harness, avatar: null }, 'xs') : null, t('清除头像'));   // the default it returns to
+  }, harnessApp(harness).icon ? avatarEl({ name: '', harness, avatar: null }, 'xs') : null, lt('清除头像'));   // the default it returns to
   return {
     el: h('div', { class: 'avatar-fields' },
-      h('label', {}, t('头像 emoji'), emoji),
-      h('div', {}, h('span', { class: 'muted' }, t('或选一个预设头像')), presets.el),
+      h('label', {}, lt('头像 emoji'), emoji),
+      h('div', {}, h('span', { class: 'muted' }, lt('或选一个预设头像')), presets.el),
       h('div', {},
-        h('span', { class: 'muted' }, t('或上传图片（PNG/JPEG/GIF/WebP，≤256 KB）')),
-        h('div', { class: 'row' }, h('label', { class: 'button small' }, t('选择图片…'), fileInput), fileName, reset))),
+        h('span', { class: 'muted' }, lt('或上传图片（PNG/JPEG/GIF/WebP，≤256 KB）')),
+        h('div', { class: 'row' }, h('label', { class: 'button small' }, lt('选择图片…'), fileInput), fileName, reset))),
     refreshPresets: presets.refresh,
     async value() {
       const { fields, error } = await editFields({ name: '', avatar: null },
@@ -3918,10 +3930,10 @@ function avatarFields(harness) {
 
 /** Name / avatar / model / effort for one new member. Model and effort are selects from the models endpoint, free text when it lists none. */
 function newMemberFields(harness) {
-  const model = h('select', {}, h('option', { value: '' }, t('默认')));
-  const effort = h('select', {}, h('option', { value: '' }, t('默认')));
-  const modelText = h('input', { placeholder: t('默认（可填模型名）'), hidden: true });
-  const effortText = h('input', { placeholder: t('默认'), hidden: true });
+  const model = h('select', {}, h('option', { value: '' }, lt('默认')));
+  const effort = h('select', {}, h('option', { value: '' }, lt('默认')));
+  const modelText = h('input', { placeholder: lt('默认（可填模型名）'), hidden: true });
+  const effortText = h('input', { placeholder: lt('默认'), hidden: true });
   const note = h('p', { class: 'muted', hidden: true });
   let models = [];
   let loaded = false;
@@ -3932,7 +3944,7 @@ function newMemberFields(harness) {
   const fillEfforts = () => {
     const keep = effort.value;
     const list = effortChoices(models, model.value);
-    effort.replaceChildren(h('option', { value: '' }, t('默认')), ...list.map((e) => h('option', { value: e }, e)));
+    effort.replaceChildren(h('option', { value: '' }, lt('默认')), ...list.map((e) => h('option', { value: e }, e)));
     effort.value = list.includes(keep) ? keep : '';
     effort.disabled = list.length === 0;
   };
@@ -3940,7 +3952,7 @@ function newMemberFields(harness) {
   modelText.addEventListener('input', name.update);
   return {
     el: h('div', { class: 'fields' },
-      h('label', {}, t('名字'), name.input), h('label', {}, t('模型'), model, modelText), h('label', {}, t('思考强度'), effort, effortText),
+      h('label', {}, lt('名字'), name.input), h('label', {}, lt('模型'), model, modelText), h('label', {}, lt('思考强度'), effort, effortText),
       avatar.el, note),
     refreshPresets: avatar.refreshPresets,
     name: name.value,
@@ -3978,7 +3990,7 @@ function attachEditor(s, harness) {
   const avatar = avatarFields(harness);
   return {
     el: h('div', { class: 'attach-member' }, h('b', { class: 't', title: s.id }, s.title || s.id),
-      h('div', { class: 'fields' }, h('label', {}, t('名字'), name.input), avatar.el)),
+      h('div', { class: 'fields' }, h('label', {}, lt('名字'), name.input), avatar.el)),
     refreshPresets: avatar.refreshPresets,
     name: name.value,
     async value() { return { sessionId: s.id, name: name.value(), avatar: await avatar.value() }; },
@@ -4003,7 +4015,7 @@ function sessionRow(s, picked, toggle, { clusterId = addToCluster, type = 'check
     }),
     h('span', { class: 'session-details' }, h('span', { class: 't' }, s.title || s.id),
       description ? h('span', { class: 'muted session-groups' }, description) : null),
-    typeof s.online === 'boolean' ? h('span', { class: `online ${s.online ? 'on' : 'off'}` }, s.online ? t('在线') : t('离线')) : null);
+    typeof s.online === 'boolean' ? h('span', { class: `online ${s.online ? 'on' : 'off'}` }, s.online ? lt('在线') : lt('离线')) : null);
 }
 
 // The create dialog is two panes (docs/cluster-members.md「添加成员」): the app list on the left, the one app in
@@ -4025,8 +4037,8 @@ function focusApp(harness, { open = false } = {}) {
  */
 function entryList({ label, hint, onOpen, onBack, onEdit }) {
   const list = h('div', { class: 'entry-list', role: 'group', 'aria-label': label });
-  const editor = h('section', { class: 'entry-editor', 'aria-label': t('{label}：成员信息', { label: label }) });
-  const back = h('button', { type: 'button', class: 'small entry-back' }, icon('chevron-left', 'ico-sm'), t('对话列表'));
+  const editor = h('section', { class: 'entry-editor', 'aria-label': lt('{label}：成员信息', { label: label }) });
+  const back = h('button', { type: 'button', class: 'small entry-back' }, icon('chevron-left', 'ico-sm'), lt('对话列表'));
   const area = h('div', { class: 'entry-area' }, list, h('div', { class: 'entry-editor-wrap' }, back, editor));
   let rows = [];        // [{ entry, row, pick, nameEl, problemEl }]
   let focused = null;   // key of the entry the editor shows
@@ -4039,7 +4051,7 @@ function entryList({ label, hint, onOpen, onBack, onEdit }) {
       r.pick.setAttribute('aria-current', r === shown ? 'true' : 'false');
       r.entry.check.tabIndex = r.pick.tabIndex = i === at ? 0 : -1;
     });
-    const content = shown ? shown.entry.editor()?.el ?? h('p', { class: 'muted' }, t('这个对话不能加入：{reason}', { reason: shown.entry.reason })) : h('p', { class: 'muted' }, hint);
+    const content = shown ? shown.entry.editor()?.el ?? h('p', { class: 'muted' }, lt('这个对话不能加入：{reason}', { reason: shown.entry.reason })) : h('p', { class: 'muted' }, hint);
     if (editor.firstChild !== content) editor.replaceChildren(content);   // the same editor stays put: no lost focus or input
     if (open && shown) onOpen();
   };
@@ -4049,7 +4061,7 @@ function entryList({ label, hint, onOpen, onBack, onEdit }) {
     const pick = h('button', { type: 'button', class: 'entry-main' }, h('span', { class: 't' }, entry.title),
       entry.details ? h('span', { class: 'muted session-groups' }, entry.details) : null, nameEl, problemEl);
     const row = h('div', { class: `entry-row${entry.reason ? ' taken' : ''}`, title: entry.reason || '' }, entry.check, pick,
-      typeof entry.online === 'boolean' ? h('span', { class: `online ${entry.online ? 'on' : 'off'}` }, entry.online ? t('在线') : t('离线')) : null);
+      typeof entry.online === 'boolean' ? h('span', { class: `online ${entry.online ? 'on' : 'off'}` }, entry.online ? lt('在线') : lt('离线')) : null);
     pick.addEventListener('click', () => show(entry.key, { open: true }));
     // Arrow keys, Home and End move between the rows and show the row they reach; Tab goes on to the editor.
     row.addEventListener('keydown', (e) => {
@@ -4092,7 +4104,7 @@ function harnessForm({ harness, nativeCreate }) {
   let shown = false;
   const app = harnessApp(harness);
   const appLogo = () => appIcon({ icon: app.icon, label: app.name });   // the app's logo; icon stays the sprite helper
-  const check = h('input', { type: 'checkbox', 'aria-label': t('添加 {name}', { name: app.name }) });
+  const check = h('input', { type: 'checkbox', 'aria-label': lt('添加 {name}', { name: app.name }) });
   const summary = h('span', { class: 'app-row-summary' });
   const problem = h('span', { class: 'app-row-problem', hidden: true });
   const pick = h('button', { type: 'button', class: 'app-row-main', 'aria-controls': 'create-detail' },
@@ -4104,19 +4116,19 @@ function harnessForm({ harness, nativeCreate }) {
   const lists = { onOpen: () => body.classList.add('show-entry'), onBack: () => body.classList.remove('show-entry'), onEdit: () => sync() };
 
   // Attach existing conversations, and create one when the harness supports it.
-  const nProject = h('select', {}, h('option', { value: '' }, t('选择项目…')));
-  const refresh = h('button', { type: 'button', class: 'small refresh', title: t('重新读取项目和对话列表') }, t('刷新'));
-  const nCreate = nativeCreate ? h('input', { type: 'checkbox', 'aria-label': t('另外新建一个对话') }) : null;
+  const nProject = h('select', {}, h('option', { value: '' }, lt('选择项目…')));
+  const refresh = h('button', { type: 'button', class: 'small refresh', title: lt('重新读取项目和对话列表') }, lt('刷新'));
+  const nCreate = nativeCreate ? h('input', { type: 'checkbox', 'aria-label': lt('另外新建一个对话') }) : null;
   const nFields = nativeCreate ? newMemberFields(harness) : null;
-  const nList = entryList({ label: t('已有对话'), hint: t('点一个对话，在这里设置它加入后的名字和头像。'), ...lists });
+  const nList = entryList({ label: lt('已有对话'), hint: lt('点一个对话，在这里设置它加入后的名字和头像。'), ...lists });
   const nSec = h('div', { class: 'mode-body' },
-    h('div', { class: 'project-row' }, h('label', {}, t('项目'), nProject), refresh),
-    h('span', { class: 'muted' }, t('已有对话（可多选；接入后你照常在应用里用它）。点一个对话设置它的名字和头像。')),
+    h('div', { class: 'project-row' }, h('label', {}, lt('项目'), nProject), refresh),
+    h('span', { class: 'muted' }, lt('已有对话（可多选；接入后你照常在应用里用它）。点一个对话设置它的名字和头像。')),
     nList.area,
     nativeCreate
-      ? h('p', { class: 'muted' }, t('新建对话前请选择项目，并勾选「另外新建一个对话」。'))
+      ? h('p', { class: 'muted' }, lt('新建对话前请选择项目，并勾选「另外新建一个对话」。'))
       : harness === 'antigravity' ? antigravityHint()
-        : h('p', { class: 'hint' }, harness === 'claude' ? CLAUDE_HINT : harness === 'zcode' ? ZCODE_HINT : harness === 'workbuddy' ? WORKBUDDY_HINT : harness === 'qoder' ? QODER_HINT : harness === 'cursor' ? CURSOR_HINT : t('{harness} 的原生群员只能接入已有会话：先在应用里新建会话，再点「刷新」勾选它。', { harness: harness })));
+        : h('p', { class: 'hint' }, harness === 'claude' ? CLAUDE_HINT : harness === 'zcode' ? ZCODE_HINT : harness === 'workbuddy' ? WORKBUDDY_HINT : harness === 'qoder' ? QODER_HINT : harness === 'cursor' ? CURSOR_HINT : lt('{harness} 的原生群员只能接入已有会话：先在应用里新建会话，再点「刷新」勾选它。', { harness: harness })));
 
   // Picked conversations of the shown project, in the order they were picked, and the name / avatar editor of each
   // conversation shown or picked so far (an unticked one keeps what was typed until the dialog closes). Kept apart
@@ -4130,15 +4142,15 @@ function harnessForm({ harness, nativeCreate }) {
     sync();
   };
   const newEntry = nativeCreate && {
-    key: 'new', title: t('另外新建一个对话'), details: t('在应用里新建，可选模型和思考强度'), check: nCreate, reason: '',
+    key: 'new', title: lt('另外新建一个对话'), details: lt('在应用里新建，可选模型和思考强度'), check: nCreate, reason: '',
     picked: () => nCreate.checked, editor: () => { nFields.load(); return nFields; }, name: () => nFields.name(),
   };
   const sessionEntry = (s) => {
     const { disabled, reason, description } = sessionInfo(s, addToCluster);
-    const c = h('input', { type: 'checkbox', disabled, checked: picked.has(s.id) && !disabled, 'aria-label': t('选择 {value}', { value: s.title || s.id }) });
+    const c = h('input', { type: 'checkbox', disabled, checked: picked.has(s.id) && !disabled, 'aria-label': lt('选择 {value}', { value: s.title || s.id }) });
     c.addEventListener('change', () => toggle(s, c.checked));
     return {
-      key: s.id, title: s.title || s.id, details: description, online: s.online, check: c, reason: disabled ? reason || t('已是群员') : '',
+      key: s.id, title: s.title || s.id, details: description, online: s.online, check: c, reason: disabled ? reason || lt('已是群员') : '',
       picked: () => picked.has(s.id), editor: () => (disabled ? null : editorFor(s)),
       name: () => editors.get(s.id)?.name() ?? memberDefaultName({ harness, model: s.model ?? '', taken: takenNames() }),
     };
@@ -4151,10 +4163,10 @@ function harnessForm({ harness, nativeCreate }) {
     if (!path) {
       picked.clear();
       editors.clear();
-      setSessions([], note(t('选一个项目以列出它的已有对话。')));
+      setSessions([], note(lt('选一个项目以列出它的已有对话。')));
       return;
     }
-    setSessions([], note(t('加载中…')));
+    setSessions([], note(lt('加载中…')));
     trackLoad(showSessions(path, mine));
   };
   const showSessions = async (path, mine) => {
@@ -4164,10 +4176,10 @@ function harnessForm({ harness, nativeCreate }) {
       // Drop a picked conversation if it disappeared or became unavailable to this cluster.
       for (const id of picked) if (!list.some((s) => s.id === id && !sessionAvailability(s, addToCluster).disabled)) picked.delete(id);
       setSessions(list.map(sessionEntry), list.length ? null
-        : note(nativeCreate ? t('这个项目里没有已有对话。') : t('这个项目里还没有会话：在桌面应用里新建并发一句话，再点「刷新」。')));
+        : note(nativeCreate ? lt('这个项目里没有已有对话。') : lt('这个项目里还没有会话：在桌面应用里新建并发一句话，再点「刷新」。')));
     } catch (e) {
       if (mine !== request) return;
-      setSessions([], h('p', { class: 'form-error' }, t('对话加载失败：{message}', { message: e.message })));
+      setSessions([], h('p', { class: 'form-error' }, lt('对话加载失败：{message}', { message: e.message })));
     }
   };
   let projectsLoaded = false;
@@ -4208,10 +4220,10 @@ function harnessForm({ harness, nativeCreate }) {
   };
 
   const tick = () => { check.checked = true; check.dispatchEvent(new Event('change')); };
-  const notTicked = h('p', { class: 'hint not-ticked' }, t('未勾选：这里填的内容会保留，但不会提交。'),
-    h('button', { type: 'button', class: 'small', onclick: tick }, t('勾选 {name}', { name: app.name })));
-  const back = h('button', { type: 'button', class: 'small app-back', onclick: () => { $('create-harnesses').classList.remove('show-detail'); pick.focus(); } }, icon('chevron-left', 'ico-sm'), t('应用列表'));
-  const body = h('section', { class: 'harness-body', hidden: true, 'aria-label': t('{name} 的设置', { name: app.name }) },
+  const notTicked = h('p', { class: 'hint not-ticked' }, lt('未勾选：这里填的内容会保留，但不会提交。'),
+    h('button', { type: 'button', class: 'small', onclick: tick }, lt('勾选 {name}', { name: app.name })));
+  const back = h('button', { type: 'button', class: 'small app-back', onclick: () => { $('create-harnesses').classList.remove('show-detail'); pick.focus(); } }, icon('chevron-left', 'ico-sm'), lt('应用列表'));
+  const body = h('section', { class: 'harness-body', hidden: true, 'aria-label': lt('{name} 的设置', { name: app.name }) },
     h('div', { class: 'app-detail-head' }, back, appLogo(), h('h3', {}, app.name)), notTicked, nSec, error);
 
   check.addEventListener('change', () => { update(); focusApp(focusAfterTick(createFocus, harness, check.checked)); });
@@ -4235,7 +4247,7 @@ function harnessForm({ harness, nativeCreate }) {
     (e.target === check ? target.check : target.pick).focus();
   });
   pick.addEventListener('click', () => focusApp(harness, { open: true }));
-  setSessions([], note(t('选一个项目以列出它的已有对话。')));
+  setSessions([], note(lt('选一个项目以列出它的已有对话。')));
   update();
 
   // Shows the app and one of its entries, wide or narrow (a submit error about that entry).
@@ -4247,7 +4259,7 @@ function harnessForm({ harness, nativeCreate }) {
     try { return await editor.value(); } catch (e) { e.reveal = () => reveal(key); throw e; }
   };
   harnessForms.push({
-    harness, check, pick, row, body,
+    harness, check, pick, row, body, sync,
     setShown(on) {
       shown = on;
       body.hidden = !on;
@@ -4466,7 +4478,7 @@ async function removeMember(m) {
   manageError = null;
   manageNotice = '';
   renderManage();
-  const ok = await confirmDialog(removeMemberConfirm(m));
+  const ok = await confirmDialog(liveAsk(() => removeMemberConfirm(m)));
   const origin = document.activeElement;
   if (!ok) { if (canRestoreMemberFocus(m.clusterId, origin)) focusRow(m.id, 'remove'); return; }
   if (removing || S.members.get(m.id)?.removedAt) return;
@@ -4626,7 +4638,7 @@ async function openHandover(memberId) {
     data = await api('GET', `/api/members/${encodeURIComponent(member.id)}/handover`);
   } catch (e) {
     handoverOpening = false;
-    noticeDialog(t('交接包生成失败：{message}', { message: e.message }), t('交接包'));
+    noticeDialog(lt('交接包生成失败：{message}', { message: e.message }), lt('交接包'));
     return;
   }
   handoverOpening = false;   // from here on the dialog itself blocks a second open
@@ -4681,7 +4693,7 @@ async function openHandover(memberId) {
       await api('POST', `/api/clusters/${encodeURIComponent(member.clusterId)}/messages`, { body, to: [target.value], handover: true });
       const to = target.value;
       dialog.close();
-      noticeDialog(t('已把交接包发给 {value}。', { value: nameOf(to) }), t('已发送'));
+      noticeDialog(lt('已把交接包发给 {value}。', { value: nameOf(to) }), lt('已发送'));
     } catch (e) {
       showError(e instanceof TypeError ? t('未能确认是否发送成功，请到群聊里核对后再决定是否重发。') : t('发送失败：{message}', { message: e.message }));
     } finally {
@@ -4730,10 +4742,10 @@ $('message-sync-retry').addEventListener('click', () => { retryMessageMetadata(S
 $('open-task-overview').addEventListener('click', () => { $('app').classList.remove('sidebar-open'); workbench.openAll(); });
 async function deleteCluster(cluster) {
   if (!cluster) return;
-  const ok = await confirmDialog({ title: t('删除群聊？'), message: t('“{name}”会进入回收站，可随时恢复。原生对话、消息和文件保留；未开始的投递取消，已开始的执行可能继续。恢复后旧投递不会自动重发。', { name: cluster.name }), confirmText: t('移入回收站'), danger: true });
+  const ok = await confirmDialog({ title: lt('删除群聊？'), message: lt('“{name}”会进入回收站，可随时恢复。原生对话、消息和文件保留；未开始的投递取消，已开始的执行可能继续。恢复后旧投递不会自动重发。', { name: cluster.name }), confirmText: lt('移入回收站'), danger: true });
   if (!ok) return;
   try { await api('DELETE', `/api/clusters/${encodeURIComponent(cluster.id)}`, {}); await syncPaused().catch(() => {}); }
-  catch (e) { await noticeDialog(t('{message}。请查看回收站确认结果。', { message: e.message }), t('删除未确认')); }
+  catch (e) { await noticeDialog(lt('{message}。请查看回收站确认结果。', { message: e.message }), lt('删除未确认')); }
 }
 $('open-trash').addEventListener('click', () => {
   trashRemoved = openTrash({ api, restored: syncPaused, noticeDialog, closed: () => { trashRemoved = null; } });
@@ -4768,6 +4780,35 @@ $('open-extensions').addEventListener('click', () => {
 
 // "N 分钟前" in the sidebar and on 全部对话 moves on by itself: only those words are rewritten, nothing is redrawn.
 setInterval(() => refreshRelativeTimes(document), 30_000);
+
+// ---- 界面语言: switched in place (settings.js, the desktop shell's event above, another tab) ----
+// Nothing reloads: drafts, attachments, scroll positions, open panels and dialogs, the selection and the filters stay.
+// The marked static text is translated again; everything drawn from data is drawn again (the cached rows' signatures
+// and stableList compare the language); what was built once is rebuilt or relabelled here. S.identity is not touched:
+// it means a member changed, and the member page refills its editor for that, which would drop unsaved edits.
+onLanguageChange(() => {
+  translateStatic(document);
+  translateStatic($('editor-template').content);   // the name/avatar editors cloned later
+  if (connOk !== null) setConn(connOk);
+  fitPanes();   // the dividers' "N 像素"
+  $('chat-filter-panel').replaceChildren();   // built once: renderChatFilter builds it again, the filter itself is kept
+  if (clusterMenu) {   // an open ⋯ menu is built again in the new language, on its (redrawn) trigger
+    const { id } = clusterMenu;
+    closeClusterMenu(false);
+    setTimeout(() => {
+      const trigger = clusterMenuTrigger(id);
+      if (!trigger) return;
+      if (id.startsWith('group:')) openGroupMenu(id.slice('group:'.length), trigger);
+      else openClusterMenu(id, trigger);
+    }, 50);   // after render (16 ms) redrew the list
+  }
+  if (dialog.open) {   // 新建集群 / 添加成员: the inputs stay; the title, the buttons and each app's summary follow
+    $('create-title').textContent = addToCluster ? t('添加成员') : t('新建集群');
+    $('create-submit').textContent = addToCluster ? t('添加') : t('创建');
+    for (const f of harnessForms) f.sync();
+  }
+  render();
+});
 
 // ---- start ----
 

@@ -1,5 +1,5 @@
 import { h } from './ui.js';
-import { t } from './i18n.js';
+import { onLanguageChange, t } from './i18n.js';
 
 const INSTALLS = '/api/plugin-installs';
 const PERMISSIONS = {
@@ -192,10 +192,12 @@ export function mountPluginInstall(container, { api, onInstalled } = {}) {
   }
 
   draw();
+  const stopLanguage = onLanguageChange(() => draw());   // drawn from the state above: what was typed or picked stays
   return {
     hasDraft: () => !installed && Boolean(source.trim() || archive || busy || preview || candidates.length),
     async dispose() {
       disposed = true;
+      stopLanguage();
       container.replaceChildren();
       await active;
       if (preview) await removeStage(preview.id);

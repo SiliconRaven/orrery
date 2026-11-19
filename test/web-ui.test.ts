@@ -461,7 +461,7 @@ test('web ui: a cluster window loads the newest page, older pages in front, and 
   const notices: string[] = [];
   const el = () => ({ addEventListener() {}, classList: { toggle() {} } });
   const context: any = { ...JUMP_HELPERS, jump: null, S: state, PAGE, CHAT_WINDOW_LIMIT: PAGE * 3, chatWindows: windows, render() {}, select() {}, $: el, setText() {},
-    noticeDialog: (text: string) => notices.push(text), msgEls: new Map(), attachEls: new Map(), messageDiffViews: new Map(), receiptTimelines: new Map(),
+    noticeDialog: (text: unknown) => notices.push(String(text)), lt: ui.lt, msgEls: new Map(), attachEls: new Map(), messageDiffViews: new Map(), receiptTimelines: new Map(),
     openReceipts: new Set(), openTaskLinks: new Set(), messageMetadata: new Map(), refMessages: new Map(),
     fillMessages: (list: any[]) => list.map((m) => (state.messages.set(m.id, m), m.id)), ringFloor: 0, Date,
     api: (_method: string, path: string) => new Promise((resolve, reject) => gates.push({ path, open: (data) => resolve({ data, seq: 0 }), fail: () => reject(new Error('gone')) })) };
@@ -1409,9 +1409,9 @@ test('web ui: the page says the Hub keeps running when closed, and "退出 orrer
   assert.match(html, /<button id="quit"[^>]*><span data-i18n="退出 orrery">退出 orrery<\/span><\/button>/);
   assert.match(html, /<div id="quit-screen"[^>]*hidden>\s*<p><span data-i18n="orrery 已退出，可以关闭这个页面。">orrery 已退出，可以关闭这个页面。<\/span><\/p>/);
   // Asked in the page (danger style); cancelling returns before the request.
-  assert.match(app, /const ok = await confirmDialog\(\{[^}]*message: t\('退出后 Hub 停止，群员收不到新消息，直到你再次打开 orrery。'\)[^}]*danger: true,?\s*\}\);\s*if \(!ok\) return;[\s\S]*api\('POST', '\/api\/shutdown', \{\}\)/);
+  assert.match(app, /const ok = await confirmDialog\(\{[^}]*message: lt\('退出后 Hub 停止，群员收不到新消息，直到你再次打开 orrery。'\)[^}]*danger: true,?\s*\}\);\s*if \(!ok\) return;[\s\S]*api\('POST', '\/api\/shutdown', \{\}\)/);
   assert.match(app, /api\('POST', '\/api\/shutdown', \{\}\)/);   // api() sends content-type: application/json
-  assert.match(app, /noticeDialog\(t\('退出失败：\{message\}', \{ message: e\.message \}\)\)/);
+  assert.match(app, /noticeDialog\(lt\('退出失败：\{message\}', \{ message: e\.message \}\)\)/);
   assert.match(app, /function connect\(since, rebuilt = false\) \{\n  if \(quitting \|\| denied\) return;/);
 });
 
@@ -1490,7 +1490,7 @@ test('web ui: a limit form sends a finite integer, or unlimited only with the co
   assert.match(ui.UNLIMITED_WARNING.maxTurnsPerChain, /互相 @ 下去，直到每小时轮次上限或暂停开关让它们停下/);
   // The page asks before sending, and sends nothing when cancelled.
   const app = readFileSync(join(REPO_ROOT, 'src', 'web', 'public', 'app.js'), 'utf8');
-  assert.match(app, /if \(sub\.confirm && !\(await confirmDialog\(sub\.confirm\)\)\) \{[^}]*return;\s*\}[\s\S]*api\('PATCH', '\/api\/settings', sub\.body\)/);
+  assert.match(app, /if \(sub\.confirm && !\(await confirmDialog\(liveAsk\(\(\) => limitSubmission\(f\.setting, input\)\.confirm\)\)\)\) \{[^}]*return;\s*\}[\s\S]*api\('PATCH', '\/api\/settings', sub\.body\)/);
 });
 
 test('web ui: confirm and notice dialogs open one at a time; a later one waits until the earlier has closed', async () => {
@@ -1706,8 +1706,9 @@ test('web ui member list: removing asks in the confirm dialog, says what is kept
     const context: any = {
       removing: false, editingId: 'x', manageError: null, manageNotice: '', managedCluster: member.clusterId,
       S: { members, sel: { cluster: member.clusterId } }, document, panelView: () => 'members',
-      removeMemberConfirm: ui.removeMemberConfirm,
-      confirmDialog: async (o: any) => { asked.push(o); return answer; },
+      removeMemberConfirm: ui.removeMemberConfirm, liveAsk: ui.liveAsk,
+      // The dialog's text as it reads now (liveAsk makes each text field follow a language switch).
+      confirmDialog: async (o: any) => { asked.push(Object.fromEntries(Object.entries(o).map(([k, v]) => [k, v != null && typeof v === 'object' ? String(v) : v]))); return answer; },
       api: async (...args: any[]) => {
         calls.push(args);
         if (moveFocus) document.activeElement = { id: 'composer-input' };
@@ -1849,7 +1850,7 @@ function groupActionsHarness(start: { groups: string[]; clusters: any[]; collaps
     COLLAPSED_GROUPS_KEY: ui.COLLAPSED_GROUPS_KEY, collapsedFromStored: ui.collapsedFromStored, moveGroup: ui.moveGroup, UNGROUPED: ui.UNGROUPED,
     clusterMenu: null, closeClusterMenu: () => {}, groupList: () => ui.clusterGroups([...S.clusters.values()], S.settings.clusterGroups).map((g: any) => g.name).filter(Boolean),
     groupNameDialog: (_title: string, _initial: string, fn: (name: string) => Promise<unknown>) => { save = fn; },
-    confirmDialog: async () => true, noticeDialog: async () => {},
+    confirmDialog: async () => true, noticeDialog: async () => {}, lt: ui.lt,
     api: (method: string, _path: string, body: any) => new Promise<void>((resolve, reject) => {
       // The Hub has done the change when it answers; its events are applied by sse(), separately.
       const apply = () => {
@@ -2608,7 +2609,7 @@ test('web ui: the member list does not repeat the app icon the avatar already sh
   // 恢复默认头像 (member page and list) shows the default avatar; the add dialog's 清除头像 the app's icon.
   assert.match(html, /data-role="reset-avatar"><span data-role="default-avatar"><\/span><span data-i18n="恢复默认头像">恢复默认头像<\/span>/);
   assert.match(app, /part\('default-avatar'\)\.replaceChildren\(avatarEl\(\{ \.\.\.m, avatar: null \}, 'xs'\)\)/);
-  assert.match(app, /harnessApp\(harness\)\.icon \? avatarEl\(\{ name: '', harness, avatar: null \}, 'xs'\) : null, t\('清除头像'\)/);
+  assert.match(app, /harnessApp\(harness\)\.icon \? avatarEl\(\{ name: '', harness, avatar: null \}, 'xs'\) : null, lt\('清除头像'\)/);
   // The workbench's member chips use the same avatar; the tone initials only when there is no picture or emoji.
   const wb = readFileSync(join(pub, 'workbench.js'), 'utf8');
   assert.match(wb, /member && avatarKind\(member\) !== 'initial' \? avatarEl\(member, 'xs'\)/);
@@ -3380,7 +3381,7 @@ test('web ui: hidden members are marked, counted apart from online, listed with 
   const app = readFileSync(join(REPO_ROOT, 'src', 'web', 'public', 'app.js'), 'utf8');
   assert.ok(app.includes("tasks = await allPages((cursor) => api('GET', heldTasksPath(m.clusterId, memberId, cursor)));"), 'every page of the held tasks');
   assert.ok(app.includes("api('POST', `/api/members/${encodeURIComponent(memberId)}/hidden`, { hidden: hide })"), 'the user route');
-  assert.ok(app.includes("confirmDialog({ title: hide ? t('设为隐身') : t('取消隐身'), message: text"), 'confirmed first');
+  assert.ok(app.includes("confirmDialog({ title: hide ? lt('设为隐身') : lt('取消隐身'), message: text"), 'confirmed first');
 });
 
 test('web ui: old acknowledgement receipts stay out of the chat; other messages are shown', () => {

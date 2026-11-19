@@ -29,7 +29,7 @@ import { isAppId, panelBounds, panelStep, pickFor, stripEntries } from './lib/st
 import { dockedPosition, listCandidates, topmostOf } from './lib/windows.mjs';
 import { createWriter } from './lib/writer.mjs';
 import { setLanguage, t } from '../shared/i18n/index.js';
-import { desktopLanguage, desktopPageUrl, isDesktopLanguage } from './ui/language.mjs';
+import { desktopLanguage, desktopPageUrl, isDesktopLanguage, pageLanguage, pageLanguageScript } from './ui/language.mjs';
 
 const HERE = import.meta.dirname;
 /** The tab bar and the "+" panel: the only pages with a desktop interface, each its own. IPC from anything else is refused. */
@@ -317,6 +317,45 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
   wc.session.webRequest.onCompleted((d) => {
     if (d.webContentsId === wc.id && isHubShutdown(hubOrigin(), d)) quit('shutdown');
   });
+  // 界面语言 (docs/desktop.md): the collaboration page switched itself and wrote `uiLang` into its own address
+  // (history.replaceState, an in-page navigation). Adopted only from the main frame of the Hub this shell is bound to,
+  // only zh or en, and only when it differs from the shell's own: a change the shell sent to the page comes back here
+  // with the same value and stops (ui/language.mjs pageLanguage).
+  wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
+    const next = pageLanguage({ hubOrigin: hubOrigin(), url, isMainFrame, current: uiLanguage });
+    if (next) switchLanguage(next, { tellPage: false });
+  });
+  // A page that finished loading with another language than the shell's (a change made while it loaded) is told again.
+  wc.on('did-finish-load', () => {
+    try { if (new URL(wc.getURL()).searchParams.get('uiLang') !== uiLanguage) tellPageLanguage(); } catch { /* not a page */ }
+  });
+  /** The collaboration page gets an event with the language and switches itself, in place (pageLanguageScript). */
+  const tellPageLanguage = () => {
+    if (hub.status !== 'ready' || wc.isDestroyed() || !allowNavigation(hub.origin, wc.getURL(), true)) return;
+    wc.executeJavaScript(pageLanguageScript(uiLanguage)).catch(() => { /* the page is loading: did-finish-load tells it */ });
+  };
+  /**
+   * One language for the shell's pages and the collaboration page, from either side; saved with the tabs, so the next
+   * start (and its collaboration page address) uses it. The shell's own pages switch on their next state (render): no
+   * page is loaded again.
+   */
+  function switchLanguage(value, { tellPage }) {
+    if (!isDesktopLanguage(value) || value === uiLanguage) return;
+    uiLanguage = value;
+    setLanguage(value);
+    notice = null;
+    for (const id of Object.keys(messages)) delete messages[id];
+    persist();
+    settingsWin.setTitle(t('orrery 桌面设置'));
+    if (tellPage) tellPageLanguage();
+    render();
+    // The "+" panel and the settings view switch even while closed (render sends them state only while open), so they
+    // never show the old language for a moment when opened next. Nothing in them is read or drawn from this.
+    if (!strip && !strips.isDestroyed()) strips.send('strip:state', { entries: [], icons: {}, opened: stripOpened, language: uiLanguage });
+    if (!settings && !settingsPage.isDestroyed()) {
+      settingsPage.send('settings:state', { rows: [], icons: {}, opened: settingsOpened, busy: false, language: uiLanguage });
+    }
+  }
 
   /** The dock area in physical pixels on the window's display, and the slit between panes there. */
   const dock = () => {
@@ -694,13 +733,16 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
    * IPC is accepted only from the shell's own fixed local pages, each for its own channels: that page's webContents,
    * its main frame, still showing that page. The tab bar's channels only from the tab bar, the panel's two only from
    * the panel, the settings view's only from the settings view. The collaboration page has no preload, so it cannot
-   * even send; a subframe, a page that was navigated elsewhere, or another page are refused here.
+   * even send; a subframe, a page that was navigated elsewhere, or another page are refused here. The page's address
+   * carries either language: it switches its own `uiLang` in place (ui/language.mjs translateDesktopPage) when its state
+   * says so, and a call sent just before that is still the same page's.
    */
   const fromPage = (event, wc, url) => {
     const f = event.senderFrame;
     const main = wc.isDestroyed() ? null : wc.mainFrame;
     return event.sender === wc && !!f && !!main && f.parent === null
-      && f.processId === main.processId && f.routingId === main.routingId && f.url === desktopPageUrl(url, uiLanguage);
+      && f.processId === main.processId && f.routingId === main.routingId
+      && (f.url === desktopPageUrl(url, 'zh') || f.url === desktopPageUrl(url, 'en'));
   };
   const fromTabBar = (event) => fromPage(event, tabs, TABS_PAGE);
   const fromStrip = (event) => fromPage(event, strips, STRIP_PAGE);
@@ -767,19 +809,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     'settings:use': (req) => { if (settings) useOffer(appOf(req.app), req.token); },
     'settings:pick': (id) => { if (settings) pickProgram(appOf(id)); },
     'settings:clear': (id) => { if (settings) clearPath(appOf(id)); },
-    'settings:language': (value) => {
-      if (!settings || dialogOpen || value === uiLanguage) return;
-      uiLanguage = value;
-      setLanguage(value);
-      notice = null;
-      for (const id of Object.keys(messages)) delete messages[id];
-      persist();
-      settingsWin.setTitle(t('orrery 桌面设置'));
-      win.loadURL(desktopPageUrl(TABS_PAGE, value));
-      panel.loadURL(desktopPageUrl(STRIP_PAGE, value));
-      settingsWin.loadURL(desktopPageUrl(SETTINGS_PAGE, value));
-      render();
-    },
+    'settings:language': (value) => { if (settings && !dialogOpen) switchLanguage(value, { tellPage: true }); },
     'settings:close': () => closeSettings(),
   };
   function listen(table, from) {

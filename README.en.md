@@ -14,7 +14,7 @@ The Beta installer is unsigned. Windows may show an unknown-publisher warning; u
 
 ## Interface, Updates & Plugins
 
-Choose Chinese or English in Settings → Appearance; unsaved work is confirmed before reloading. Desktop settings change the shell immediately. The collaboration page keeps its drafts and uses the new language when next opened or manually refreshed. User messages and names stay in their original language.
+Choose Chinese or English in Settings → Appearance; it applies at once without reloading, and drafts and open panels stay. In the desktop app you can switch here or in desktop settings: the shell and the collaboration page switch together and remember the choice. User messages and names stay in their original language.
 
 Software updates are checked in the background and can also be checked manually in Settings. Detection never silently downloads or runs an installer. A private GitHub release feed may be inaccessible without an account; access failures are shown as errors.
 

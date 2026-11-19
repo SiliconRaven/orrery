@@ -1,4 +1,4 @@
-import { t, language } from './i18n.js';
+import { t, language, onLanguageChange } from './i18n.js';
 // DOM helpers. Untrusted strings (names, message bodies, agent output) only ever become text nodes or
 // attribute values — never HTML.
 import { inlineText, markdownBlocks } from './markdown.js';
@@ -66,15 +66,52 @@ export function memberHealth(report, member) {
   return { connection, problem };
 }
 
-/** h('div', { class: 'x', onclick: fn }, 'text', child) — strings become text nodes. */
+// ---- text that follows a language switch (docs/architecture.md, shared/i18n: nothing reloads) ----
+// What a render pass draws again needs nothing: it calls t() again. Text built once and kept (a dialog's frame, a
+// sheet's labels) is written with lt() instead of t() where h() places it, as a child or an attribute value; a switch
+// rewrites exactly those text nodes and attributes, nothing else in the page (user content is never looked at).
+const LIVE = Symbol('live text');
+const liveTexts = new Set();   // { ref: WeakRef(text node or element), attr: name or null, text }
+let tracked = 0;
+/**
+ * A UI string that stays in the current language: `lt(msgid, params)` (named interpolation as in t(), parameter
+ * values kept as they are; a parameter may itself be an lt()), or `lt(() => text)` for a text made by a function.
+ * Outside h() it is just its translation now (String(value)).
+ */
+export const lt = (msgid, params) => ({ [LIVE]: true, toString: typeof msgid === 'function' ? msgid : () => t(msgid, params) });
+const isLive = (value) => Boolean(value?.[LIVE]);
+function track(target, attr, text) {
+  liveTexts.add({ ref: new WeakRef(target), attr, text });
+  if (++tracked % 1000 === 0) for (const entry of liveTexts) if (!entry.ref.deref()) liveTexts.delete(entry);
+}
+onLanguageChange(() => {
+  for (const entry of liveTexts) {
+    const target = entry.ref.deref();
+    if (!target) { liveTexts.delete(entry); continue; }
+    const value = String(entry.text);
+    if (entry.attr) target.setAttribute(entry.attr, value);
+    else if (target.nodeValue !== value) target.nodeValue = value;
+  }
+});
+
+/** h('div', { class: 'x', onclick: fn }, 'text', child) — strings become text nodes; lt() values follow the language. */
 export function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
     if (v === undefined || v === null || v === false) continue;
     if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else el.setAttribute(k, v === true ? '' : String(v));
+    else {
+      el.setAttribute(k, v === true ? '' : String(v));
+      if (isLive(v)) track(el, k, v);
+    }
   }
-  el.append(...children.flat().filter((c) => c !== null && c !== undefined && c !== false));
+  el.append(...children.flat().filter((c) => c !== null && c !== undefined && c !== false).map((c) => {
+    if (!isLive(c)) return c;
+    const node = document.createTextNode?.(String(c));
+    if (!node) return String(c);   // a minimal stand-in document (tests) keeps plain text
+    track(node, null, c);
+    return node;
+  }));
   return el;
 }
 
@@ -667,7 +704,9 @@ export function oneAtATime(open) {
  * false. Focus starts on cancel (or on the only button), so Enter does not confirm by accident, and goes back to the
  * element that had it when the dialog closes. Text is set as text nodes, never parsed as HTML. A full-trust plugin's
  * dialog (plugin-slots.js) carries its id in `tag` (data-plugin-slot, so detaching closes it) and resolves false at
- * once without opening when `skip()` says the plugin was detached while the dialog waited its turn.
+ * once without opening when `skip()` says the plugin was detached while the dialog waited its turn. orrery's own words
+ * given as lt() (the default buttons, and the callers' titles and messages) follow a language switch while it is open;
+ * plain strings (a plugin's, a server error) stay as they are.
  */
 const showDialog = oneAtATime(({ title, message, confirmText, cancelText, danger, tag = null, skip = null }) => new Promise((resolve) => {
   if (skip?.()) return resolve(false);
@@ -692,14 +731,26 @@ const showDialog = oneAtATime(({ title, message, confirmText, cancelText, danger
   (cancel ?? ok).focus();
 }));
 
+/**
+ * Dialog options made by `build()` (a helper that translates with t(), such as removeMemberConfirm), turned into ones
+ * that follow a language switch while the dialog is open: each text field is read from build() again in the new
+ * language. Text and the other fields stay as build() gave them when the dialog opened.
+ */
+export function liveAsk(build) {
+  const now = build();
+  const out = { ...now };
+  for (const key of ['title', 'message', 'confirmText', 'cancelText']) if (typeof now[key] === 'string') out[key] = lt(() => build()[key]);
+  return out;
+}
+
 /** Replaces window.confirm in the page: resolves true when confirmed, false on cancel or Esc. */
-export function confirmDialog({ title = '', message, confirmText = t('确定'), cancelText = t('取消'), danger = false, tag = null, skip = null }) {
+export function confirmDialog({ title = '', message, confirmText = lt('确定'), cancelText = lt('取消'), danger = false, tag = null, skip = null }) {
   return showDialog({ title, message, confirmText, cancelText, danger, tag, skip });
 }
 
 /** Replaces window.alert in the page: one "确定" button; resolves when closed. `owner`: { tag, skip } as for confirmDialog. */
 export function noticeDialog(message, title = '', { tag = null, skip = null } = {}) {
-  return showDialog({ title, message, confirmText: t('确定'), cancelText: null, danger: false, tag, skip }).then(() => {});
+  return showDialog({ title, message, confirmText: lt('确定'), cancelText: null, danger: false, tag, skip }).then(() => {});
 }
 
 // ---- create dialog: pure helpers (no DOM, so test/web-ui.test.ts can run them in node) ----

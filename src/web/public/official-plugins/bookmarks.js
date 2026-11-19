@@ -1,6 +1,6 @@
 import { t, language } from "../i18n.js";
 // Bookmarks owns the chat affordance and collection tab; the host supplies shared workbench controls.
-import { emptyState, h, icon, noticeDialog } from '../ui.js';
+import { emptyState, h, icon, lt, noticeDialog } from '../ui.js';
 import { formDialog } from '../workbench-form.js';
 
 /** A message can belong to several task bins; only unlinked messages belong to Other. */
@@ -17,7 +17,7 @@ export function register({ api, nameOf, command }) {
   function bookmark(clusterId, message) {
     const previous = (message.bookmarks ?? []).find((item) => item.memberId === 'user');
     const labels = h('input', { value: (previous?.labels ?? []).join(', '), placeholder: t("可选，用逗号分隔") });
-    formDialog(previous ? t("编辑我的收藏") : t("收藏消息"), [h('label', {}, t("收藏标签"), labels)], () => command({
+    formDialog(previous ? lt("编辑我的收藏") : lt("收藏消息"), [h('label', {}, lt("收藏标签"), labels)], () => command({
       action: 'bookmark.set', messageId: message.id,
       labels: [...new Set(labels.value.split(/[,，]/).map((item) => item.trim()).filter(Boolean))],
     }, clusterId));
@@ -32,7 +32,7 @@ export function register({ api, nameOf, command }) {
       h('div', { class: 'workbench-actions' }, h('button', { type: 'button', class: 'small', 'data-star-action': 'edit',
         onclick: () => bookmark(msg.clusterId, msg) }, mine ? t("编辑我的收藏") : t("收藏")),
       mine ? h('button', { type: 'button', class: 'small', 'data-star-action': 'remove', onclick: async () => {
-        try { await command({ action: 'bookmark.remove', messageId: msg.id }, msg.clusterId); } catch (e) { await noticeDialog(e.message, t("取消收藏失败")); }
+        try { await command({ action: 'bookmark.remove', messageId: msg.id }, msg.clusterId); } catch (e) { await noticeDialog(e.message, lt("取消收藏失败")); }
       } }, t("取消我的收藏")) : null));
   }
 
@@ -69,8 +69,8 @@ export function register({ api, nameOf, command }) {
       const since = h('input', { value: filters.since ?? '', placeholder: t("ISO 时间，可留空") });
       const until = h('input', { value: filters.until ?? '', placeholder: t("ISO 时间，可留空") });
       member.value = filters.memberId ?? ''; task.value = filters.taskId ?? ''; sender.value = filters.sender ?? '';
-      const modal = formDialog(t("筛选收藏"), [h('label', {}, t("收藏者"), member), h('label', {}, t("任务"), task), taskPager.more, taskPager.error, h('label', {}, t("发送者"), sender),
-        h('label', {}, t("关键词"), q), h('label', {}, t("收藏标签"), label), h('label', {}, t("从时间"), since), h('label', {}, t("到时间"), until)], () => {
+      const modal = formDialog(lt("筛选收藏"), [h('label', {}, lt("收藏者"), member), h('label', {}, lt("任务"), task), taskPager.more, taskPager.error, h('label', {}, lt("发送者"), sender),
+        h('label', {}, lt("关键词"), q), h('label', {}, lt("收藏标签"), label), h('label', {}, lt("从时间"), since), h('label', {}, lt("到时间"), until)], () => {
         filters = { memberId: member.value, taskId: task.value, sender: sender.value, q: q.value.trim(), label: label.value.trim(),
           since: since.value.trim(), until: until.value.trim() };
         return loadCollections();
@@ -89,7 +89,7 @@ export function register({ api, nameOf, command }) {
     }
 
     return {
-      id: 'bookmarks', label: t("成员收藏"), render: renderTab, load: loadCollections,
+      id: 'bookmarks', label: lt("成员收藏"), render: renderTab, load: loadCollections,   // lt: follows a language switch
       reset() { collection = null; filters = {}; },
       itemRow: (item, memberChip) => h('div', { class: 'wb-row' }, h('span', { class: 'wb-row-key' }, t("收藏")),
         item.bookmarks?.length ? item.bookmarks.flatMap((bookmark) => [

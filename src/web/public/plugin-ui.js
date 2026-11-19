@@ -6,6 +6,7 @@
 // (event.source), never by anything it says; the Hub derives the plugin, cluster and position from the frame id.
 // Plugins granted `marks` also get small host-drawn marks on messages, members and tasks (marksSlot): the plugin gives
 // text, a state and a tip, this page draws them as text nodes in a dashed pill with the third-party icon.
+import { onLanguageChange } from './i18n.js';
 import { h, icon } from './ui.js';
 
 /** No `orrery.ready` from the frame in this long: the host shows the load-timeout placeholder. */
@@ -220,6 +221,11 @@ export function createPluginUi({ api, chipsHost, itemsChanged = () => {} }) {
     for (const record of byId.values()) if (record.ready) send(record, { type: 'orrery.theme', theme });
   };
   new MutationObserver(themeChanged).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  // The language changed (设置 → 外观, or the desktop settings): every ready frame gets the new one, as with the theme.
+  onLanguageChange((value) => {
+    const language = value === 'en' ? 'en' : 'zh-CN';
+    for (const record of byId.values()) if (record.ready) send(record, { type: 'orrery.language', language });
+  });
   addEventListener('focus', themeChanged);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) themeChanged(); });
 

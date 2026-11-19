@@ -1,5 +1,5 @@
-import { t } from './i18n.js';
-import { h } from './ui.js';
+import { onLanguageChange, t } from './i18n.js';
+import { h, lt } from './ui.js';
 
 const statusText = {
   idle: () => t('尚未检查更新。'),
@@ -29,20 +29,20 @@ export function mountUpdates(container, { api, onState = () => {} }) {
   const latest = h('p', { class: 'limit-source' });
   const checked = h('p', { class: 'limit-source muted' });
   const error = h('p', { class: 'error', role: 'alert', hidden: true });
-  const auto = h('input', { type: 'checkbox', role: 'switch', 'aria-label': t('自动检查更新'),
+  const auto = h('input', { type: 'checkbox', role: 'switch', 'aria-label': lt('自动检查更新'),
     onchange: () => request('PATCH', '/api/updates', { autoCheck: auto.checked }) });
-  const check = h('button', { type: 'button', style: 'min-height:44px', onclick: () => request('POST', '/api/updates/check') }, t('立即检查'));
-  const link = h('input', { type: 'text', readonly: true, 'aria-label': t('发行页面地址'),
+  const check = h('button', { type: 'button', style: 'min-height:44px', onclick: () => request('POST', '/api/updates/check') }, lt('立即检查'));
+  const link = h('input', { type: 'text', readonly: true, 'aria-label': lt('发行页面地址'),
     style: 'width:100%;min-width:0;box-sizing:border-box' });
   const copyHint = h('p', { class: 'limit-source muted', role: 'status', 'aria-live': 'polite' });
-  const copy = h('button', { type: 'button', style: 'min-height:44px', onclick: copyLink }, t('复制发行页链接'));
-  const release = h('div', { class: 'plugin-group', hidden: true }, h('label', {}, t('发行页面'), link),
+  const copy = h('button', { type: 'button', style: 'min-height:44px', onclick: copyLink }, lt('复制发行页链接'));
+  const release = h('div', { class: 'plugin-group', hidden: true }, h('label', {}, lt('发行页面'), link),
     h('div', {}, copy), copyHint);
-  container.replaceChildren(h('section', { class: 'settings-card plugin-group', 'aria-label': t('软件更新') },
-    h('div', { class: 'plugin-group-head' }, h('h4', {}, t('软件更新')),
-      h('p', { class: 'muted' }, t('只检查新版本，不会自动下载或安装。'))),
+  container.replaceChildren(h('section', { class: 'settings-card plugin-group', 'aria-label': lt('软件更新') },
+    h('div', { class: 'plugin-group-head' }, h('h4', {}, lt('软件更新')),
+      h('p', { class: 'muted' }, lt('只检查新版本，不会自动下载或安装。'))),
     version, channel, status, latest, checked,
-    h('label', { class: 'plugin-switch', style: 'min-height:44px' }, auto, t('自动检查更新')),
+    h('label', { class: 'plugin-switch', style: 'min-height:44px' }, auto, lt('自动检查更新')),
     h('div', {}, check), error, release));
 
   function draw() {
@@ -98,5 +98,6 @@ export function mountUpdates(container, { api, onState = () => {} }) {
 
   void request('GET', '/api/updates');
   const timer = setInterval(() => { void request('GET', '/api/updates'); }, 60_000);
-  return () => { disposed = true; clearInterval(timer); };
+  const stopLanguage = onLanguageChange(() => { if (!disposed) draw(); });   // the frame above follows by itself (lt)
+  return () => { disposed = true; clearInterval(timer); stopLanguage(); };
 }

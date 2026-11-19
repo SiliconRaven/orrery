@@ -292,7 +292,7 @@ test('page: the 全部标为已知 request is fixed when taken; a later listing 
 test('page: the two writes, the bound of "all", and the events that reload the count', () => {
   // "all" takes its request from the listing before asking and sends exactly that; the one-at-a-time guard keeps any
   // other write (which is what replaces `data`) from running between the question and the send.
-  assert.match(appJs, /dismissAll\.addEventListener\('click', \(\) => exclusive\(async \(\) => \{\n.*\n    const request = dismissAllRequest\(data\);\n    if \(request\.ask && !await confirmDialog\(request\.ask\)\) return;\n    await write\(`\$\{path\}\/dismiss`, request\.body, 0\);/);
+  assert.match(appJs, /dismissAll\.addEventListener\('click', \(\) => exclusive\(async \(\) => \{\n.*\n    const listing = data;\n    const request = dismissAllRequest\(listing\);\n    if \(request\.ask && !await confirmDialog\(liveAsk\(\(\) => dismissAllRequest\(listing\)\.ask\)\)\) return;\n    await write\(`\$\{path\}\/dismiss`, request\.body, 0\);/);
   assert.match(appJs, /const exclusive = async \(action\) => \{\n    if \(busy\) return;\n    busy = true;\n    try \{ await action\(\); \} finally \{ busy = false; \}/);
   assert.match(appJs, /onclick: \(\) => exclusive\(\(\) => write\(`\/api\/clusters\/\$\{encodeURIComponent\(cid\)\}\/deliveries\/\$\{encodeURIComponent\(delivery\.id\)\}\/dismiss`, \{\}, i\)\)/, 'one');
   assert.match(appJs, /data = await api\('GET', path\);/);

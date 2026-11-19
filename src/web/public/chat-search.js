@@ -1,9 +1,9 @@
-import { t, language } from './i18n.js';
+import { t, language, onLanguageChange } from './i18n.js';
 // The chat's history search (docs/collaboration.md「搜索群聊记录」): a side sheet that asks the Hub
 // (GET /api/clusters/:id/messages/search) about the cluster's whole history, and jumps to a result through the page's
 // one jump (app.js openMessage). The pure helpers at the top are what test/web-ui.test.ts checks; createChatSearch
 // builds and drives the sheet.
-import { chatRowState, emptyState, h, icon, isSystemMessage } from './ui.js';
+import { chatRowState, emptyState, h, icon, isSystemMessage, lt } from './ui.js';
 import { SYSTEM_CATEGORY_LABELS, WARNING_LEVEL_LABELS, systemClass } from './system-kinds.js';
 
 export const FIXED_SENDERS = Object.freeze([{ value: 'user', get label() { return t("你"); } }, { value: 'system', get label() { return t("Orrery 系统"); } }]);
@@ -260,35 +260,35 @@ export function createChatSearch(deps) {
   let choicesSig = '';
   let drawnRows = null;
 
-  const q = h('input', { type: 'search', class: 'search-q', placeholder: t("关键词"), 'aria-label': t("关键词"), maxlength: '200', autocomplete: 'off' });
-  const sender = h('select', { 'aria-label': t("发送者") });
-  const category = h('select', { 'aria-label': t("系统消息类别") }, CATEGORY_CHOICES.map((c) => h('option', { value: c.value }, c.label)));
-  const from = h('input', { type: 'date', 'aria-label': t("开始日期") });
-  const to = h('input', { type: 'date', 'aria-label': t("结束日期") });
+  const q = h('input', { type: 'search', class: 'search-q', placeholder: lt("关键词"), 'aria-label': lt("关键词"), maxlength: '200', autocomplete: 'off' });
+  const sender = h('select', { 'aria-label': lt("发送者") });
+  const category = h('select', { 'aria-label': lt("系统消息类别") }, CATEGORY_CHOICES.map((c) => h('option', { value: c.value }, lt(() => c.label))));
+  const from = h('input', { type: 'date', 'aria-label': lt("开始日期") });
+  const to = h('input', { type: 'date', 'aria-label': lt("结束日期") });
   const files = h('input', { type: 'checkbox' });
-  const order = h('button', { type: 'button', class: 'small search-order', title: t("切换结果顺序") });
-  const reset = h('button', { type: 'button', class: 'small' }, t("清空条件"));
+  const order = h('button', { type: 'button', class: 'small search-order', title: lt("切换结果顺序") });
+  const reset = h('button', { type: 'button', class: 'small' }, lt("清空条件"));
   const status = h('p', { class: 'search-status muted', role: 'status' });
-  const list = h('ol', { class: 'search-results', 'aria-label': t("搜索结果") });
+  const list = h('ol', { class: 'search-results', 'aria-label': lt("搜索结果") });
   const more = h('button', { type: 'button', class: 'small search-more', hidden: true });
   const empty = emptyState('');   // its sentence is the search's hint, set on each draw
   empty.hidden = true;
-  const closeButton = h('button', { type: 'button', class: 'icon-button ghost', title: t("关闭搜索"), 'aria-label': t("关闭搜索") }, icon('close'));
+  const closeButton = h('button', { type: 'button', class: 'icon-button ghost', title: lt("关闭搜索"), 'aria-label': lt("关闭搜索") }, icon('close'));
   const body = h('div', { class: 'search-body' }, empty, list, more);
   const sheet = h('section', { id: 'chat-search', class: 'chat-search', role: 'dialog', 'aria-modal': 'false', 'aria-labelledby': 'chat-search-title', hidden: true },
-    h('header', { class: 'search-head' }, h('h2', { id: 'chat-search-title' }, t("搜索群聊记录")), closeButton),
+    h('header', { class: 'search-head' }, h('h2', { id: 'chat-search-title' }, lt("搜索群聊记录")), closeButton),
     h('div', { class: 'search-form' },
       h('div', { class: 'search-q-row' }, icon('search'), q),
       h('div', { class: 'search-grid' },
-        h('label', {}, h('span', {}, t("发送者")), sender),
-        h('label', {}, h('span', {}, t("系统消息")), category),
-        h('label', {}, h('span', {}, t("从")), from),
-        h('label', {}, h('span', {}, t("到")), to)),
+        h('label', {}, h('span', {}, lt("发送者")), sender),
+        h('label', {}, h('span', {}, lt("系统消息")), category),
+        h('label', {}, h('span', {}, lt("从")), from),
+        h('label', {}, h('span', {}, lt("到")), to)),
       h('div', { class: 'search-row' },
-        h('label', { class: 'search-check' }, files, t("只看带附件的")),
+        h('label', { class: 'search-check' }, files, lt("只看带附件的")),
         h('span', { class: 'search-row-end' }, reset, order))),
     status, body,
-    h('p', { class: 'search-foot muted' }, t("名字是成员现在的名字；已移出的成员也能选。")));
+    h('p', { class: 'search-foot muted' }, lt("名字是成员现在的名字；已移出的成员也能选。")));
   document.body.append(sheet);
 
   // Events after which a pending keyword pause must not fire: it would search in a context that has moved on.
@@ -429,6 +429,14 @@ export function createChatSearch(deps) {
     if (e.key !== 'Escape' || e.isComposing || e.defaultPrevented) return;
     e.preventDefault();
     close();
+  });
+
+  // A language switch: the labels above follow by themselves (lt); the sender list, the rows and the status are drawn again.
+  onLanguageChange(() => {
+    choicesSig = '';
+    drawnRows = null;
+    if (state.cid) fillSenders();
+    draw();
   });
 
   return {

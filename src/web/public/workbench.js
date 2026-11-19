@@ -1,6 +1,6 @@
-import { t, language } from "./i18n.js";
+import { t, language, onLanguageChange } from "./i18n.js";
 // The workbench owns only its view state. The Hub validates every task command and owns all durable data.
-import { attachMenu, attachmentNode, avatarEl, avatarKind, confirmDialog, emptyState, h, hiddenMark, icon, noticeDialog } from './ui.js';
+import { attachMenu, attachmentNode, avatarEl, avatarKind, confirmDialog, emptyState, h, hiddenMark, icon, lt, noticeDialog } from './ui.js';
 import { createTaskDiffView } from './task-diff-view.js';
 import { combobox } from './workbench-combobox.js';
 import { filesField, formDialog } from './workbench-form.js';
@@ -573,16 +573,18 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   let collectionTabs = [];
   const tasksEnabled = () => pluginIds === null || pluginIds.includes('tasks');
   const coordinatorEnabled = () => pluginIds === null || pluginIds.includes('coordinator');
-  const title = h('h2', {}, t("任务工作台"));
+  const title = h('h2', {}, lt("任务工作台"));
   const content = h('div', { class: 'workbench-content' });
   // A third-party plugin's tab (docs/external-plugins.md「网页界面」) shows its frame here, outside `content`: render()
   // rebuilds `content`, and a frame moved in the page would reload. Only shown, hidden and filled by pluginUi.
   const pluginPane = h('div', { class: 'wb-plugin-pane', hidden: true });
-  const dialog = h('dialog', { class: 'workbench', 'aria-label': t("任务工作台") },
+  const dialog = h('dialog', { class: 'workbench', 'aria-label': lt("任务工作台") },
     h('div', { class: 'workbench-shell' }, h('header', { class: 'workbench-head' },
-      h('div', { class: 'workbench-title' }, h('span', { class: 'workbench-badge' }, t("工作区")), title),
-      h('button', { class: 'icon', type: 'button', 'aria-label': t("关闭任务工作台"), onclick: () => dialog.close() }, icon('close'))), content, pluginPane));
+      h('div', { class: 'workbench-title' }, h('span', { class: 'workbench-badge' }, lt("工作区")), title),
+      h('button', { class: 'icon', type: 'button', 'aria-label': lt("关闭任务工作台"), onclick: () => dialog.close() }, icon('close'))), content, pluginPane));
   document.body.append(dialog);
+  // A language switch draws the open workbench again; its view (tab, filters, selected task, scroll places) is kept.
+  onLanguageChange(() => { taskBar.relabel(); if (dialog.open) render(); });
   const view = { clusterId: null, workspace: null, workspaceKey: null, taskId: null, detail: null, context: null, request: 0, error: null, tab: 'tasks',
     collectionMode: 'public', collectionTask: null, collectionContext: null, collectionDetail: null, publicFilters: {}, collectionRequest: 0,
     overview: false, allGroups: [], allRequest: 0, taskFilters: {}, taskSort: DEFAULT_TASK_SORT, quickView: '', loadingTasks: null,
@@ -797,33 +799,33 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   const taskBar = (() => {
     let timer = null;
     let composing = false;
-    const search = h('input', { type: 'search', class: 'wb-fb-control wb-fb-input', placeholder: t("搜索 #编号、标题、内容或 ID"),
-      'aria-label': t("搜索任务（#编号、标题、内容或 ID）"), autocomplete: 'off', spellcheck: 'false' });
-    const status = h('select', { class: 'wb-fb-control wb-fb-select', 'aria-label': t("按状态筛选"),
+    const search = h('input', { type: 'search', class: 'wb-fb-control wb-fb-input', placeholder: lt("搜索 #编号、标题、内容或 ID"),
+      'aria-label': lt("搜索任务（#编号、标题、内容或 ID）"), autocomplete: 'off', spellcheck: 'false' });
+    const status = h('select', { class: 'wb-fb-control wb-fb-select', 'aria-label': lt("按状态筛选"),
       onchange: () => setTaskFilters({ ...view.taskFilters, status: status.value }) },
-    h('option', { value: '' }, t("全部状态")), Object.entries(STATUS).map(([id, caption]) => h('option', { value: id }, t(caption))));
-    const member = h('select', { class: 'wb-fb-control wb-fb-select', 'aria-label': t("按成员筛选"),
+    h('option', { value: '' }, lt("全部状态")), Object.entries(STATUS).map(([id, caption]) => h('option', { value: id }, lt(caption))));
+    const member = h('select', { class: 'wb-fb-control wb-fb-select', 'aria-label': lt("按成员筛选"),
       onchange: () => setTaskFilters({ ...view.taskFilters, memberId: member.value }) });
-    const sort = h('select', { class: 'wb-fb-control wb-fb-select wb-fb-sort', 'aria-label': t("排序"), onchange: () => setTaskSort(sort.value) },
-      TASK_SORTS.map(([id, caption]) => h('option', { value: id }, t(caption))));
-    const sortBox = h('span', { class: 'wb-fb-sortbox' }, h('span', { class: 'wb-fb-sortcap', 'aria-hidden': 'true' }, t("排序")), sort);
-    const triggerText = h('span', { class: 'wb-fb-trigger-text' }, t("标签"));
+    const sort = h('select', { class: 'wb-fb-control wb-fb-select wb-fb-sort', 'aria-label': lt("排序"), onchange: () => setTaskSort(sort.value) },
+      TASK_SORTS.map(([id, caption]) => h('option', { value: id }, lt(caption))));
+    const sortBox = h('span', { class: 'wb-fb-sortbox' }, h('span', { class: 'wb-fb-sortcap', 'aria-hidden': 'true' }, lt("排序")), sort);
+    const triggerText = h('span', { class: 'wb-fb-trigger-text' }, lt("标签"));
     const triggerCount = h('span', { class: 'wb-fb-badge', hidden: true });
     const trigger = h('button', { type: 'button', class: 'wb-fb-control wb-fb-select wb-fb-trigger', 'aria-haspopup': 'listbox',
       'aria-expanded': 'false', 'aria-controls': 'wb-fb-label-list' }, triggerText, triggerCount);
     const list = h('div', { class: 'wb-fb-menu', id: 'wb-fb-label-list', role: 'listbox', 'aria-multiselectable': 'true',
-      'aria-label': t("按标签筛选（需同时满足）"), hidden: true });
+      'aria-label': lt("按标签筛选（需同时满足）"), hidden: true });
     const picker = h('div', { class: 'wb-fb-labels' }, trigger, list);
     // Quick views toggle on and off; at most one is on. Their counts are of the loaded list, so they show only once it is whole.
     const quickViews = QUICK_VIEWS.map(([id, caption]) => {
       const count = h('span', { class: 'wb-fb-qcount', hidden: true });
-      return { id, caption: t(caption), count, button: h('button', { type: 'button', class: 'wb-fb-control wb-fb-quick-btn', 'aria-pressed': 'false',
-        onclick: () => setQuickView(view.quickView === id ? '' : id) }, h('span', {}, t(caption)), count) };
+      return { id, caption: lt(caption), count, button: h('button', { type: 'button', class: 'wb-fb-control wb-fb-quick-btn', 'aria-pressed': 'false',
+        onclick: () => setQuickView(view.quickView === id ? '' : id) }, h('span', {}, lt(caption)), count) };
     });
-    const quickGroup = h('span', { class: 'wb-fb-quick', role: 'group', 'aria-label': t("快捷视图") }, quickViews.map((item) => item.button));
-    const chipRow = h('div', { class: 'wb-active-filters', 'aria-label': t("当前筛选") });
+    const quickGroup = h('span', { class: 'wb-fb-quick', role: 'group', 'aria-label': lt("快捷视图") }, quickViews.map((item) => item.button));
+    const chipRow = h('div', { class: 'wb-active-filters', 'aria-label': lt("当前筛选") });
     const countText = h('span', { class: 'wb-fb-total' });
-    const el = h('div', { class: 'wb-filterbar', role: 'search', 'aria-label': t("筛选和排序任务") },
+    const el = h('div', { class: 'wb-filterbar', role: 'search', 'aria-label': lt("筛选和排序任务") },
       h('div', { class: 'wb-fb-controls' }, h('span', { class: 'wb-fb-search' }, search), quickGroup, status, picker, member, sortBox),
       h('div', { class: 'wb-fb-summary' }, chipRow, countText));
 
@@ -973,6 +975,8 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       busy: () => composing,
       focusSearch: () => search.focus(),
       reset() { clearTimeout(timer); timer = null; close(false); search.value = ''; labelKey = memberKey = chipKey = null; },
+      /** After a language switch: the lists drawn from data are drawn again at the next sync (the rest follows by lt). */
+      relabel() { labelKey = memberKey = chipKey = null; },
     };
   })();
   const taskTitleNodes = (task) => (task.number != null ? [h('span', { class: 'wb-task-num' }, `#${task.number}`), ' ', task.title] : [task.title]);
@@ -1051,20 +1055,20 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
           page = await api('GET', `/api/clusters/${encodeURIComponent(clusterId)}/workspace?cursor=${encodeURIComponent(page.nextCursor)}`);
           for (const task of page.tasks) add(task.id, taskLabel(task));
           more.hidden = !page.nextCursor;
-        } catch (e) { await noticeDialog(e.message, t("加载任务失败")); }
+        } catch (e) { await noticeDialog(e.message, lt("加载任务失败")); }
         finally { more.disabled = false; }
       } }, t("加载更多任务"));
       more.hidden = !page.nextCursor;
       const reason = h('input', { placeholder: t("解除已有关系时必填") });
-      formDialog(t("关联任务"), [h('p', { class: 'muted' }, t("按住 Ctrl 可多选；未加载的现有关联会保留。")),
-        h('label', {}, t("关联的任务"), select), more, persisted ? h('label', {}, t("解除关联的原因"), reason) : null], async () => {
+      formDialog(lt("关联任务"), [h('p', { class: 'muted' }, lt("按住 Ctrl 可多选；未加载的现有关联会保留。")),
+        h('label', {}, lt("关联的任务"), select), more, persisted ? h('label', {}, lt("解除关联的原因"), reason) : null], async () => {
         const next = [...select.selectedOptions].map((option) => option.value);
         const addedIds = next.filter((id) => !selectedIds.includes(id));
         const removedIds = selectedIds.filter((id) => !next.includes(id));
-        if (persisted && removedIds.length && !reason.value.trim()) throw new Error(t("解除关联时请填写原因。"));
+        if (persisted && removedIds.length && !reason.value.trim()) throw new Error(lt("解除关联时请填写原因。"));
         await onSave(next, addedIds, removedIds, reason.value.trim());
       });
-    } catch (e) { await noticeDialog(e.message, t("加载任务失败")); }
+    } catch (e) { await noticeDialog(e.message, lt("加载任务失败")); }
   }
 
   // A burst of collaboration events refreshes once. If a request is in flight, remember one trailing refresh.
@@ -1306,7 +1310,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
         item.taskIds?.length ? item.taskIds.map((id) => h('span', { class: `wb-tag wb-tone-${toneIndex(id)}`, title: taskName(id) },
           h('span', { class: 'wb-role-dot', 'aria-hidden': 'true' }), taskName(id))) : h('span', { class: 'muted' }, t("其他"))),
       collectionTabs.map((tab) => tab.itemRow?.(item, memberChip)),
-      h('div', { class: 'workbench-actions' }, h('button', { type: 'button', class: 'small', onclick: () => noticeDialog(message.body || t("这条消息没有文字正文。"), t("消息原文")) }, t("查看原文")),
+      h('div', { class: 'workbench-actions' }, h('button', { type: 'button', class: 'small', onclick: () => noticeDialog(message.body || lt("这条消息没有文字正文。"), lt("消息原文")) }, t("查看原文")),
         h('button', { type: 'button', class: 'small', onclick: () => { dialog.close(); showMessage(view.clusterId, message.id); } }, t("查看群聊上下文与附件"))));
   }
 
@@ -1463,8 +1467,8 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const since = h('input', { value: filters.since ?? '', placeholder: t("ISO 时间，可留空") });
     const until = h('input', { value: filters.until ?? '', placeholder: t("ISO 时间，可留空") });
     sender.value = filters.sender ?? '';
-    formDialog(t("筛选任务资料"), [h('label', {}, t("发送者"), sender), h('label', {}, t("关键词"), q),
-      h('label', {}, t("从时间"), since), h('label', {}, t("到时间"), until)], () => {
+    formDialog(lt("筛选任务资料"), [h('label', {}, lt("发送者"), sender), h('label', {}, lt("关键词"), q),
+      h('label', {}, lt("从时间"), since), h('label', {}, lt("到时间"), until)], () => {
       view.publicFilters = { sender: sender.value, q: q.value.trim(), since: since.value.trim(), until: until.value.trim() };
       return loadPublic(view.collectionTask);
     });
@@ -1474,7 +1478,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const body = h('textarea', { required: true });
     const recipients = h('select', { multiple: true, 'aria-label': t("明确通知成员") },
       getMembers(view.clusterId).map((member) => h('option', { value: member.id }, member.name)));
-    formDialog(t("任务留言"), [h('label', {}, t("留言"), body), h('label', {}, t("明确通知成员（可多选）"), recipients)], async () => {
+    formDialog(lt("任务留言"), [h('label', {}, lt("留言"), body), h('label', {}, lt("明确通知成员（可多选）"), recipients)], async () => {
       const to = [...recipients.selectedOptions].map((option) => option.value);
       await api('POST', path('/messages'), { body: body.value, taskIds: [task.id], ...(to.length ? { to } : {}) });
       await refresh();
@@ -1485,7 +1489,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const summary = h('textarea', { required: true }); summary.value = context?.summary?.content ?? '';
     const through = h('input', { type: 'number', min: '0', value: String(context?.events?.at(-1)?.seq ?? context?.summary?.throughEventId ?? 0), required: true });
     const sources = h('input', { value: (context?.summary?.sourceMessageIds ?? []).join(', '), placeholder: t("消息 ID，用逗号分隔") });
-    formDialog(t("更新任务摘要"), [h('label', {}, t("摘要"), summary), h('label', {}, t("覆盖到事件序号"), through), h('label', {}, t("来源消息 ID"), sources)],
+    formDialog(lt("更新任务摘要"), [h('label', {}, lt("摘要"), summary), h('label', {}, lt("覆盖到事件序号"), through), h('label', {}, lt("来源消息 ID"), sources)],
       () => command({ action: 'task.summary', taskId: task.id, expectedRevision: task.revision, summary: summary.value.trim(),
         throughEventId: Number(through.value), sourceMessageIds: sources.value.split(/[,，]/).map((id) => id.trim()).filter(Boolean) }));
   }
@@ -1553,9 +1557,9 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     member.addEventListener('change', () => { bypass.checked = policy?.memberId === member.value && policy.taskPlanningRoleBypass === true; });
     updateBypass();
     const bypassField = h('label', { class: 'workbench-check wb-task-planning-bypass' }, bypass,
-      t("建任务不受群级角色限制"));
-    formDialog(t("设置协调授权"), [h('p', { class: 'muted' }, t("必须明确选择现有成员并保存才启用。协调员不能修改自己的授权或代替验收。")),
-      h('label', {}, t("协调员"), member), h('label', {}, t("模式"), mode),
+      lt("建任务不受群级角色限制"));
+    formDialog(lt("设置协调授权"), [h('p', { class: 'muted' }, lt("必须明确选择现有成员并保存才启用。协调员不能修改自己的授权或代替验收。")),
+      h('label', {}, lt("协调员"), member), h('label', {}, lt("模式"), mode),
       ...checks.flatMap((item) => item.key === 'taskPlanning' ? [item.el, bypassField] : [item.el])], () => command({
       action: 'coordinator.set', memberId: member.value, enabled: true, mode: mode.value,
       permissions: Object.fromEntries(checks.map((item) => [item.key, item.input.checked])),
@@ -1565,7 +1569,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   }
 
   async function revokeCoordinator(policy) {
-    const ok = await confirmDialog({ title: t("撤销协调授权？"), message: t("任务和资料会保留；协调员将不能继续使用这些委托权限。"), confirmText: t("撤销授权"), danger: true });
+    const ok = await confirmDialog({ title: lt("撤销协调授权？"), message: lt("任务和资料会保留；协调员将不能继续使用这些委托权限。"), confirmText: lt("撤销授权"), danger: true });
     if (!ok) return;
     try { await command({ action: 'coordinator.set', memberId: policy.memberId, enabled: false, mode: policy.mode,
       permissions: policy.permissions, generation: policy.generation }); }
@@ -1575,15 +1579,15 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   function editInstruction(item = null) {
     const text = h('textarea', { required: true, maxLength: 500 });
     if (item) text.value = item.text;
-    formDialog(item ? t("编辑用户长期要求") : t("新增用户长期要求"),
-      [h('p', { class: 'muted' }, t("最多 500 字；换任时会随交接摘要一起交给新协调员，协调员按它继续执行。")),
-        h('label', {}, t("内容"), text)],
+    formDialog(item ? lt("编辑用户长期要求") : lt("新增用户长期要求"),
+      [h('p', { class: 'muted' }, lt("最多 500 字；换任时会随交接摘要一起交给新协调员，协调员按它继续执行。")),
+        h('label', {}, lt("内容"), text)],
       () => command({ action: item ? 'coordinator.instruction.edit' : 'coordinator.instruction.add',
         ...(item ? { instructionId: item.id } : {}), instructionText: text.value.trim() }));
   }
 
   async function deleteInstruction(item) {
-    const ok = await confirmDialog({ title: t("删除长期要求？"), message: item.text, confirmText: t("删除"), danger: true });
+    const ok = await confirmDialog({ title: lt("删除长期要求？"), message: item.text, confirmText: lt("删除"), danger: true });
     if (!ok) return;
     try { await command({ action: 'coordinator.instruction.remove', instructionId: item.id }); }
     catch (e) { view.error = e.message; render(); }
@@ -1592,28 +1596,28 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   function createRole() {
     const name = h('input', { required: true });
     const description = h('textarea', { placeholder: t("这个角色负责什么、什么时候该找它（可留空）") });
-    formDialog(t("新增业务角色"), [h('label', {}, t("角色名称"), name), h('label', {}, t("角色描述"), description)],
+    formDialog(lt("新增业务角色"), [h('label', {}, lt("角色名称"), name), h('label', {}, lt("角色描述"), description)],
       () => command({ action: 'role.create', name: name.value.trim(), description: description.value.trim() }));
   }
 
   async function ensureDefaultRoles() {
     try {
       await command({ action: 'role.ensure_defaults' });
-      await noticeDialog(t("已补全缺失的默认角色和空描述，已有描述保持不变。"), t("默认角色已检查"));
+      await noticeDialog(lt("已补全缺失的默认角色和空描述，已有描述保持不变。"), lt("默认角色已检查"));
     } catch (e) { view.error = e.message; render(); }
   }
 
   function editRole(role) {
     const description = h('textarea', { placeholder: t("这个角色负责什么、什么时候该找它") });
     description.value = role.description ?? '';
-    formDialog(t("编辑角色描述 · {name}", { name: role.name }), [
-      h('p', { class: 'muted' }, t("成员读取任务时会看到这段描述。留空保存即清除描述。")),
-      h('label', {}, t("角色描述"), description)],
+    formDialog(lt("编辑角色描述 · {name}", { name: role.name }), [
+      h('p', { class: 'muted' }, lt("成员读取任务时会看到这段描述。留空保存即清除描述。")),
+      h('label', {}, lt("角色描述"), description)],
     () => command({ action: 'role.edit', roleId: role.id, description: description.value.trim() }));
   }
 
   async function deleteRole(role) {
-    const ok = await confirmDialog({ title: t("删除角色？"), message: t("删除“{name}”前请确认没有任务或成员继续使用。", { name: role.name }), confirmText: t("删除"), danger: true });
+    const ok = await confirmDialog({ title: lt("删除角色？"), message: lt("删除“{name}”前请确认没有任务或成员继续使用。", { name: role.name }), confirmText: lt("删除"), danger: true });
     if (!ok) return;
     try { await command({ action: 'role.delete', roleId: role.id }); }
     catch (e) { view.error = e.message; render(); }
@@ -1627,14 +1631,14 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
         h('span', { class: 'wb-check-text' }, roleChip(role),
           h('span', { class: 'wb-role-description' }, role.description || t("暂无描述")))) };
     });
-    formDialog(t("设置 {name} 的角色", { name: member.name }), checks.length ? checks.map((item) => item.el) : [h('p', { class: 'muted' }, t("尚未创建业务角色。"))],
+    formDialog(lt("设置 {name} 的角色", { name: member.name }), checks.length ? checks.map((item) => item.el) : [h('p', { class: 'muted' }, lt("尚未创建业务角色。"))],
       () => command({ action: 'member.roles', memberId: member.id, roleIds: checks.filter((item) => item.input.checked).map((item) => item.role.id) }));
   }
 
   // ---- 角色与协调: a section rail beside one column of same-shaped cards (docs/collaboration.md「角色与协调页」) ----
   // [id, rail label, belongs to the coordinator plugin]
-  const SETTINGS_SECTIONS = [['coordinator', t("协调员"), true], ['instructions', t("长期要求"), true], ['roles', t("业务角色")],
-    ['member-roles', t("成员角色")], ['task-permissions', t("任务权限")], ['labels', t("标签组")], ['cluster', t("本群设置")]];
+  const SETTINGS_SECTIONS = [['coordinator', lt("协调员"), true], ['instructions', lt("长期要求"), true], ['roles', lt("业务角色")],
+    ['member-roles', lt("成员角色")], ['task-permissions', lt("任务权限")], ['labels', lt("标签组")], ['cluster', lt("本群设置")]];
   const settingsSections = () => SETTINGS_SECTIONS.filter(([, , coordinator]) => !coordinator || coordinatorEnabled());
   const railButtons = new Map();   // section id -> rail button of the page on screen
   const sectionCards = new Map();  // section id -> its card
@@ -1770,7 +1774,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const groups = view.workspace?.labelLibrary?.groups ?? [];
     const toggle = async (group, selected) => {
       try { await command({ action: 'label.select_group', groupId: group.id, selected }); }
-      catch (e) { await noticeDialog(e.message, t("没有完成")); render(); }
+      catch (e) { await noticeDialog(e.message, lt("没有完成")); render(); }
     };
     return settingsCard('labels', t("本群使用的标签组"), {
       actions: [rowButton(t("管理标签库"), openLabels)],
@@ -1794,7 +1798,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     };
     const allowTakeover = async (checked) => {
       try { await command({ action: 'tasks.settings', takeoverSelfReview: checked }); }
-      catch (e) { await noticeDialog(e.message, t("没有完成")); render(); }
+      catch (e) { await noticeDialog(e.message, lt("没有完成")); render(); }
     };
     return settingsCard('cluster', t("本群设置"), { sub: t("这里的开关点一下立即生效。") },
       settingsRow(h('span', { id: 'wb-rp-delivery-title' }, t("本群投递")),
@@ -1811,9 +1815,10 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const roles = view.workspace?.roles ?? [];
     const byId = new Map(roles.map((role) => [role.id, role]));
     const permissions = view.workspace?.taskPermissions ?? {};
-    const rows = [['createRoleIds', t("建任务")], ['executeRoleIds', t("执行任务")], ['reviewRoleIds', t("验收任务")]];
+    // Titles and the description are functions: the card reads them now, the open dialog keeps them live (lt).
+    const rows = [['createRoleIds', () => t("建任务")], ['executeRoleIds', () => t("执行任务")], ['reviewRoleIds', () => t("验收任务")]];
     const allMembers = t("所有成员");
-    const description = t("一项未选角色时，所有成员均可操作。选了角色后，成员至少要有其中一个。");
+    const description = () => t("一项未选角色时，所有成员均可操作。选了角色后，成员至少要有其中一个。");
     const describeRole = (id) => byId.get(id)?.name ?? t("已移除角色：{id}", { id });
     const edit = () => {
       const fields = rows.map(([key, title]) => {
@@ -1822,24 +1827,24 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
         const options = ids.map((id) => {
           const input = h('input', { type: 'checkbox', value: id });
           input.checked = selected.includes(id);
-          return { input, el: h('label', { class: 'workbench-check' }, input, h('span', {}, describeRole(id))) };
+          return { input, el: h('label', { class: 'workbench-check' }, input, h('span', {}, lt(() => describeRole(id)))) };
         });
         return { key, options, el: h('fieldset', { class: 'wb-task-permission-group', 'data-task-permission': key },
-          h('legend', {}, title), h('div', { class: 'wb-task-permission-options' },
-            options.length ? options.map(({ el }) => el) : h('p', { class: 'muted' }, t("尚未创建业务角色。")))) };
+          h('legend', {}, lt(title)), h('div', { class: 'wb-task-permission-options' },
+            options.length ? options.map(({ el }) => el) : h('p', { class: 'muted' }, lt("尚未创建业务角色。")))) };
       });
       const cid = view.clusterId;
-      formDialog(t("修改任务权限"), [h('p', { class: 'muted' }, description),
+      formDialog(lt("修改任务权限"), [h('p', { class: 'muted' }, lt(description)),
         ...fields.map(({ el }) => el)], () =>
         command({ action: 'tasks.permissions',
           taskPermissions: Object.fromEntries(fields.map(({ key, options }) => [key,
             options.filter(({ input }) => input.checked).map(({ input }) => input.value)])),
         }, cid));
     };
-    return settingsCard('task-permissions', t("任务权限"), { sub: description, actions: [rowButton(t("修改任务权限"), edit)] },
+    return settingsCard('task-permissions', t("任务权限"), { sub: description(), actions: [rowButton(t("修改任务权限"), edit)] },
       ...rows.map(([key, title]) => {
         const ids = permissions[key] ?? [];
-        return settingsRow(title, ids.length ? ids.map(describeRole).join('、') : allMembers, []);
+        return settingsRow(title(), ids.length ? ids.map(describeRole).join('、') : allMembers, []);
       }));
   }
 
@@ -1866,7 +1871,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   function reviewerSelect(task) {
     const members = getMembers(view.clusterId);
     const current = task?.reviewer?.kind === 'member' ? task.reviewer.memberId : task?.reviewer?.kind === 'self' ? 'self' : 'user';
-    const select = h('select', {}, h('option', { value: 'user' }, t("用户")), h('option', { value: 'self' }, t("自查")),
+    const select = h('select', {}, h('option', { value: 'user' }, lt("用户")), h('option', { value: 'self' }, lt("自查")),
       members.map((member) => h('option', { value: member.id }, member.name)),
       task?.reviewer?.kind === 'member' && !members.some((member) => member.id === current) ? h('option', { value: current }, nameOf(current)) : null);
     select.value = current;
@@ -1878,7 +1883,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   function changeReviewer(task) {
     const select = reviewerSelect(task);
     const before = select.value;
-    formDialog(t("更换验收人"), [h('p', { class: 'muted' }, t("只换验收人，不打断执行；待验收的结果改由新验收人验收。")), h('label', {}, t("验收者"), select)],
+    formDialog(lt("更换验收人"), [h('p', { class: 'muted' }, lt("只换验收人，不打断执行；待验收的结果改由新验收人验收。")), h('label', {}, lt("验收者"), select)],
       async () => {
         if (select.value === before) return;
         await command({ action: 'task.edit', taskId: task.id, expectedRevision: task.revision, reviewer: reviewerOf(select.value) });
@@ -1892,18 +1897,18 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const scope = area(task?.scope);
     const acceptance = area(task?.acceptance);
     const labels = labelPicker(view.workspace?.labelLibrary, task?.labels ?? [], labelTone);
-    const priority = h('select', {}, Object.entries(PRIORITY).map(([id, label]) => h('option', { value: id }, label)));
+    const priority = h('select', {}, Object.entries(PRIORITY).map(([id, label]) => h('option', { value: id }, lt(label))));
     priority.value = task?.priority ?? 'normal';
     const reviewer = reviewerSelect(task);
-    const executor = h('select', {}, h('option', { value: '' }, t("不指定")),
+    const executor = h('select', {}, h('option', { value: '' }, lt("不指定")),
       getMembers(view.clusterId).map((member) => h('option', { value: member.id }, member.name)));
     const requiresApproval = h('input', { type: 'checkbox', checked: task?.requiresApproval === true });
     const mergeRequired = h('input', { type: 'checkbox', checked: task ? task.mergeRequired === true : true });
     // A new task may go into an open batch that has no review yet: it takes the batch reviewer and needs a merge.
     const openBatches = task ? [] : (view.workspace?.batches ?? []).filter((item) => !item.reviewedAt && !item.cancelledAt);
-    const batch = h('select', { 'aria-label': t("验收批次") }, h('option', { value: '' }, t("不放进批次")),
+    const batch = h('select', { 'aria-label': lt("验收批次") }, h('option', { value: '' }, lt("不放进批次")),
       openBatches.map((item) => h('option', { value: item.id }, `B${item.number} · ${item.title}`)));
-    const batchHint = h('p', { class: 'muted', hidden: true }, t("批次里的任务由批次的验收者验收，并且需要合并。"));
+    const batchHint = h('p', { class: 'muted', hidden: true }, lt("批次里的任务由批次的验收者验收，并且需要合并。"));
     batch.addEventListener('change', () => {
       const chosen = openBatches.find((item) => item.id === batch.value);
       reviewer.disabled = Boolean(chosen); mergeRequired.disabled = Boolean(chosen); batchHint.hidden = !chosen;
@@ -1924,16 +1929,16 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const depPager = taskOptionsPager(view.clusterId, deps, task?.id);
     const clusterId = view.clusterId;
     const files = filesField(savedFiles, (file, name) => uploadFile(clusterId, file, name));
-    const modal = formDialog(task ? t("编辑任务") : t("新建任务"), [h('label', {}, t("标题"), title), h('label', {}, t("范围与目标"), scope),
-      files.el, h('label', {}, t("验收条件"), acceptance), h('label', {}, t("优先级"), priority),
-      h('div', { class: 'wb-form-field', role: 'group', 'aria-label': t("标签") }, h('span', { class: 'wb-form-caption' }, t("标签")), labels.el),
-      task ? null : h('label', {}, t("执行者"), executor), openBatches.length ? h('label', {}, t('验收批次'), batch) : null, batchHint,
-      h('label', {}, t("验收者"), reviewer),
-      h('label', { class: 'workbench-check' }, requiresApproval, h('span', {}, t("需要用户批准后才能开工"))),
-      h('label', { class: 'workbench-check' }, mergeRequired, h('span', {}, t("需要合并"))),
-      h('p', { class: 'muted' }, t("可多选；未加载的前置任务会保留。")), h('label', {}, t("前置任务"), deps),
+    const modal = formDialog(task ? lt("编辑任务") : lt("新建任务"), [h('label', {}, lt("标题"), title), h('label', {}, lt("范围与目标"), scope),
+      files.el, h('label', {}, lt("验收条件"), acceptance), h('label', {}, lt("优先级"), priority),
+      h('div', { class: 'wb-form-field', role: 'group', 'aria-label': lt("标签") }, h('span', { class: 'wb-form-caption' }, lt("标签")), labels.el),
+      task ? null : h('label', {}, lt("执行者"), executor), openBatches.length ? h('label', {}, lt('验收批次'), batch) : null, batchHint,
+      h('label', {}, lt("验收者"), reviewer),
+      h('label', { class: 'workbench-check' }, requiresApproval, h('span', {}, lt("需要用户批准后才能开工"))),
+      h('label', { class: 'workbench-check' }, mergeRequired, h('span', {}, lt("需要合并"))),
+      h('p', { class: 'muted' }, lt("可多选；未加载的前置任务会保留。")), h('label', {}, lt("前置任务"), deps),
       depPager.more, depPager.error,
-      h('label', {}, t("执行所需角色"), executeRoles), h('label', {}, t("验收所需角色"), reviewRoles)], async () => {
+      h('label', {}, lt("执行所需角色"), executeRoles), h('label', {}, lt("验收所需角色"), reviewRoles)], async () => {
       if (files.problem()) throw new Error(files.problem());
       const fields = { title: title.value, scope: scope.value, acceptance: acceptance.value, priority: priority.value,
         labels: labels.value(),
@@ -1956,13 +1961,13 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const select = h('select', {}, h('option', { value: '' }, t("不指定")),
       getMembers(view.clusterId).map((member) => h('option', { value: member.id }, member.name)));
     select.value = task.assignedMemberId ?? '';
-    formDialog(t("分配执行者"), [h('p', { class: 'muted' }, t("分配后由该成员直接开工。")), h('label', {}, t("执行者"), select)],
+    formDialog(lt("分配执行者"), [h('p', { class: 'muted' }, lt("分配后由该成员直接开工。")), h('label', {}, lt("执行者"), select)],
       () => command({ action: 'task.assign', taskId: task.id, expectedRevision: task.revision, memberId: select.value || null }));
   }
 
   function review(task, verdict) {
     const reason = h('textarea', verdict === 'reject' ? { required: true } : {});
-    formDialog(verdict === 'approve' ? t("验收通过") : t("退回结果"), [h('label', {}, t("说明"), reason)], () => command({
+    formDialog(verdict === 'approve' ? lt("验收通过") : lt("退回结果"), [h('label', {}, lt("说明"), reason)], () => command({
       action: 'task.review', taskId: task.id, expectedRevision: task.revision, submissionId: task.latestSubmissionId,
       verdict, ...(reason.value.trim() ? { reason: reason.value.trim() } : {}),
     }));
@@ -1970,10 +1975,10 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
 
   function approveTask(task, verdict) {
     const reason = h('textarea', verdict === 'reject' ? { required: true } : {});
-    formDialog(verdict === 'approve' ? t("批准任务") : t("退回任务"), [h('label', {}, verdict === 'reject' ? t("退回意见（必填）") : t("批准说明（可选）"), reason)],
+    formDialog(verdict === 'approve' ? lt("批准任务") : lt("退回任务"), [h('label', {}, verdict === 'reject' ? lt("退回意见（必填）") : lt("批准说明（可选）"), reason)],
       () => {
         const value = reason.value.trim();
-        if (verdict === 'reject' && !value) throw new Error(t("请填写退回意见"));
+        if (verdict === 'reject' && !value) throw new Error(lt("请填写退回意见"));
         return command({ action: 'task.approve', taskId: task.id, expectedRevision: task.revision, verdict,
           ...(value ? { reason: value } : {}) });
       });
@@ -1983,8 +1988,8 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const commitSha = h('input', { required: true, pattern: '[0-9a-fA-F]{7,40}', minlength: '7', maxlength: '40',
       placeholder: t("合并提交号（7～40 位十六进制）") });
     const reason = h('textarea');
-    formDialog(t("记录合并"), [h('p', { class: 'muted' }, t("只在 ship 已经合并却没能上报时使用；Hub 会用 git 核实这个提交。")),
-      h('label', {}, t("合并提交号"), commitSha), h('label', {}, t("说明（可选）"), reason)],
+    formDialog(lt("记录合并"), [h('p', { class: 'muted' }, lt("只在 ship 已经合并却没能上报时使用；Hub 会用 git 核实这个提交。")),
+      h('label', {}, lt("合并提交号"), commitSha), h('label', {}, lt("说明（可选）"), reason)],
       () => command({ action: 'task.merge', taskId: task.id, expectedRevision: task.revision, commitSha: commitSha.value.trim(),
         ...(reason.value.trim() ? { reason: reason.value.trim() } : {}) }));
   }
@@ -1996,13 +2001,13 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const needsStop = task.currentAssignmentId && (['working', 'review'].includes(task.status)
       || detail.assignments?.some((assignment) => assignment.id === task.currentAssignmentId && assignment.startedAt));
     const stopped = needsStop ? h('input', { type: 'checkbox', required: true }) : null;
-    formDialog(merged ? t("标记为已合并") : t("标记为已完成"), [
-      h('p', { class: 'muted' }, merged ? t("此操作登记任务状态。代码合并请在 Git 中完成。") : t("任务历史会记下这次手动标记。")),
-      task.dependenciesReady === false ? h('p', { class: 'muted' }, t("前置任务尚未就绪。就绪后请重新标记。")) : null,
-      !merged && task.mergeRequired ? h('p', { class: 'muted' }, t("需要合并的任务在标记为已合并后才能放行下游。")) : null,
-      commitSha ? h('label', {}, t("合并提交号（可选）"), commitSha) : null,
-      h('label', {}, t("说明（可选）"), reason),
-      stopped ? h('label', { class: 'workbench-check' }, stopped, t("我已确认原执行停止，可以结束当前派工")) : null,
+    formDialog(merged ? lt("标记为已合并") : lt("标记为已完成"), [
+      h('p', { class: 'muted' }, merged ? lt("此操作登记任务状态。代码合并请在 Git 中完成。") : lt("任务历史会记下这次手动标记。")),
+      task.dependenciesReady === false ? h('p', { class: 'muted' }, lt("前置任务尚未就绪。就绪后请重新标记。")) : null,
+      !merged && task.mergeRequired ? h('p', { class: 'muted' }, lt("需要合并的任务在标记为已合并后才能放行下游。")) : null,
+      commitSha ? h('label', {}, lt("合并提交号（可选）"), commitSha) : null,
+      h('label', {}, lt("说明（可选）"), reason),
+      stopped ? h('label', { class: 'workbench-check' }, stopped, lt("我已确认原执行停止，可以结束当前派工")) : null,
     ], () => {
       const note = reason.value.trim();
       const sha = commitSha?.value.trim();
@@ -2024,13 +2029,13 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const branches = combobox(branch, { noun: t("分支"), label: t("本地分支候选") });
     const field = (caption, input, combo) => h('div', { class: 'wb-combo-field' },
       h('label', { for: input.getAttribute('id') }, caption), combo.el);
-    const modal = formDialog(task.gitBranch ? t("更改 Git 分支") : t("关联 Git 分支"), [
-      field(t("本地仓库或 worktree 路径"), repository, repositories), repoStatus,
-      field(t("Git 分支"), branch, branches), branchStatus,
+    const modal = formDialog(task.gitBranch ? lt("更改 Git 分支") : lt("关联 Git 分支"), [
+      field(lt("本地仓库或 worktree 路径"), repository, repositories), repoStatus,
+      field(lt("Git 分支"), branch, branches), branchStatus,
     ], () => {
       const repositoryPath = repository.value.trim();
       const name = branch.value.trim();
-      if (!repositoryPath || !name) throw new Error(t("请填写仓库路径和分支名。"));
+      if (!repositoryPath || !name) throw new Error(lt("请填写仓库路径和分支名。"));
       return command({ action: 'task.set_git_branch', taskId: task.id, expectedRevision: task.revision,
         gitBranch: { repositoryPath, branch: name } }, cid);
     }, (busy) => {
@@ -2078,8 +2083,8 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   /** Delete a cancelled task for good after the page-level confirmation; only the user's page sends task.delete. */
   async function deleteTask(task) {
     const linked = Number.isSafeInteger(view.detail?.linkedMessageCount) ? view.detail.linkedMessageCount : 0;
-    const confirmed = await confirmDialog({ title: t("永久删除任务"), message: taskDeleteWarning(task, linked),
-      confirmText: t("永久删除"), danger: true });
+    const confirmed = await confirmDialog({ title: lt("永久删除任务"), message: lt(() => taskDeleteWarning(task, linked)),
+      confirmText: lt("永久删除"), danger: true });
     if (!confirmed) return;
     try {
       await command({ action: 'task.delete', taskId: task.id, expectedRevision: task.revision });
@@ -2095,9 +2100,12 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   }
 
   function lifecycle(task, action) {
-    const captions = { 'task.cancel': t("取消任务"), 'task.reopen': t("重开任务"), 'task.release': t("释放派工"), 'task.handoff': t("安排接手") };
+    const captions = { 'task.cancel': lt("取消任务"), 'task.reopen': lt("重开任务"), 'task.release': lt("释放派工"), 'task.handoff': lt("安排接手") };
     const cancel = action === 'task.cancel';
-    const reasonCaption = h('span', {}, cancel ? t("说明（可选）") : t("原因"));
+    // Captions that change with the chosen reason: a text node that follows a language switch, put in again on a change.
+    const liveText = (fn) => h('span', {}, lt(fn)).firstChild;
+    const reasonText = () => (!cancel ? t("原因") : cancelReasonRequired(kind.value) ? t("说明") : t("说明（可选）"));
+    const reasonCaption = h('span', {}, cancel ? lt("说明（可选）") : lt("原因"));
     const reason = h('textarea', { required: !cancel });
     const target = h('select', { required: true }, h('option', { value: '' }, t("选择成员")),
       getMembers(view.clusterId).map((member) => h('option', { value: member.id }, member.name)));
@@ -2105,7 +2113,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const needsStop = Boolean(task.currentAssignmentId && ['working', 'review'].includes(task.status));
     // Cancel: why, and for 重复 / 被取代 a searchable task picker (including closed tasks); only "其他" forces prose.
     const kind = h('select', { onchange: () => syncCancelFields() },
-      Object.entries(CLOSE_REASONS).map(([value, label]) => h('option', { value }, t(label))));
+      Object.entries(CLOSE_REASONS).map(([value, label]) => h('option', { value }, lt(label))));
     const relatedCaption = h('span');
     let modal = null;
     const relatedPicker = cancel ? createRelatedTaskPicker({
@@ -2124,18 +2132,18 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       relatedField.hidden = !phrase;
       const needReason = cancelReasonRequired(kind.value);
       reason.required = needReason;
-      reasonCaption.textContent = needReason ? t("说明") : t("说明（可选）");
+      reasonCaption.replaceChildren(liveText(reasonText));
       if (!phrase) return;
-      relatedCaption.textContent = phrase.pick;
+      relatedCaption.replaceChildren(liveText(() => relatedReason(kind.value)?.pick ?? ''));
       relatedPicker.start();
     }
     if (cancel) syncCancelFields();
-    modal = formDialog(captions[action], [cancel ? h('label', {}, t("原因"), kind) : null, relatedField,
+    modal = formDialog(captions[action], [cancel ? h('label', {}, lt("原因"), kind) : null, relatedField,
       h('label', {}, reasonCaption, reason),
-      action === 'task.handoff' ? h('label', {}, t("新候选成员"), target) : null,
-      needsStop ? h('label', { class: 'workbench-check' }, stopped, t("我已确认原执行停止")) : null,
-      needsStop ? h('p', { class: 'muted' }, t("活动观察、离线和取消投递都不能证明原执行已停止。")) : null], () => {
-      if (cancel && relatedReason(kind.value) && !relatedPicker.value()) throw new Error(t("请选择关联任务"));
+      action === 'task.handoff' ? h('label', {}, lt("新候选成员"), target) : null,
+      needsStop ? h('label', { class: 'workbench-check' }, stopped, lt("我已确认原执行停止")) : null,
+      needsStop ? h('p', { class: 'muted' }, lt("活动观察、离线和取消投递都不能证明原执行已停止。")) : null], () => {
+      if (cancel && relatedReason(kind.value) && !relatedPicker.value()) throw new Error(lt("请选择关联任务"));
       return command({
         action, taskId: task.id, expectedRevision: task.revision, ...(task.currentAssignmentId ? { assignmentId: task.currentAssignmentId } : {}),
         reason: reason.value.trim(), ...(action === 'task.handoff' ? { memberId: target.value } : {}), ...(needsStop ? { confirmStopped: stopped.checked } : {}),
@@ -2168,24 +2176,24 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
         h('span', { class: 'wb-check-text' }, h('b', {}, caption), h('span', { class: 'wb-role-description' }, hint)));
     };
     const mode = () => radios.find(([, input]) => input.checked)?.[0] ?? 'user';
-    formDialog(t("交给验收者"), [
-      h('p', { class: 'muted' }, t("{reviewer} 将成为执行者；原执行者的派工结束{stopNotice}", { reviewer: reviewerName, stopNotice: task.status === 'working' ? t("，如果还在做会收到停手通知") : '' })
-        + t("{submissionNotice}。之前的提交和验收记录都保留，验收轮次接着数。", { submissionNotice: task.status === 'review' ? t("，待验收的提交标为已取代") : '' })),
-      h('fieldset', { class: 'wb-takeover-modes' }, h('legend', {}, t("之后谁来验收")),
-        option('user', t("用户验收（默认）"), t("由你在网页上验收。")),
-        option('member', t("指定成员验收"), t("由一位没参与过这个任务的成员验收。")),
-        h('label', { class: 'wb-takeover-member' }, t("成员"), memberSelect),
-        option('self', t("自查"), t("{reviewerName} 自己检查后直接完成，不再有独立验收。", { reviewerName }))),
+    formDialog(lt("交给验收者"), [
+      h('p', { class: 'muted' }, lt(() => t("{reviewer} 将成为执行者；原执行者的派工结束{stopNotice}", { reviewer: reviewerName, stopNotice: task.status === 'working' ? t("，如果还在做会收到停手通知") : '' })
+        + t("{submissionNotice}。之前的提交和验收记录都保留，验收轮次接着数。", { submissionNotice: task.status === 'review' ? t("，待验收的提交标为已取代") : '' }))),
+      h('fieldset', { class: 'wb-takeover-modes' }, h('legend', {}, lt("之后谁来验收")),
+        option('user', lt("用户验收（默认）"), lt("由你在网页上验收。")),
+        option('member', lt("指定成员验收"), lt("由一位没参与过这个任务的成员验收。")),
+        h('label', { class: 'wb-takeover-member' }, lt("成员"), memberSelect),
+        option('self', lt("自查"), lt("{reviewerName} 自己检查后直接完成，不再有独立验收。", { reviewerName }))),
     ], async () => {
       const body = takeoverCommand(task, mode(), memberSelect.value);
-      if (!body) throw new Error(t("请选择验收的成员"));
+      if (!body) throw new Error(lt("请选择验收的成员"));
       if (mode() === 'self') {
-        const ok = await confirmDialog({ title: t("改为自查？"), message: t("{reviewerName} 接手后自己检查并直接完成，不再有独立验收。这次改动会记在任务上，并在群里发一条提醒。", { reviewerName }),
-          confirmText: t("改为自查"), danger: true });
-        if (!ok) throw new Error(t("没有改为自查，任务未改动"));
+        const ok = await confirmDialog({ title: lt("改为自查？"), message: lt("{reviewerName} 接手后自己检查并直接完成，不再有独立验收。这次改动会记在任务上，并在群里发一条提醒。", { reviewerName }),
+          confirmText: lt("改为自查"), danger: true });
+        if (!ok) throw new Error(lt("没有改为自查，任务未改动"));
       }
       await command(body);
-    }, undefined, t("交给验收者"));
+    }, undefined, lt("交给验收者"));
   }
 
   function attention(task, item = null) {
@@ -2193,9 +2201,9 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const kind = h('input', { value: 'question', required: true });
     const target = h('select', {}, h('option', { value: '' }, t("未指定")),
       getMembers(view.clusterId).map((member) => h('option', { value: member.id }, member.name)));
-    formDialog(item ? t("解决待处理事项") : t("新增待处理事项"), item
-      ? [h('p', {}, item.question), h('label', {}, t("解决说明与证据"), question)]
-      : [h('label', {}, t("类型"), kind), h('label', {}, t("问题或受阻原因"), question), h('label', {}, t("需要谁处理"), target)],
+    formDialog(item ? lt("解决待处理事项") : lt("新增待处理事项"), item
+      ? [h('p', {}, item.question), h('label', {}, lt("解决说明与证据"), question)]
+      : [h('label', {}, lt("类型"), kind), h('label', {}, lt("问题或受阻原因"), question), h('label', {}, lt("需要谁处理"), target)],
     () => command(item ? { action: 'task.resolve_attention', taskId: task.id, expectedRevision: task.revision,
       attentionId: item.id, resolution: question.value.trim() }
       : { action: 'task.attention', taskId: task.id, expectedRevision: task.revision, kind: kind.value.trim(), question: question.value.trim(), targetMemberId: target.value || null }));
@@ -2211,7 +2219,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       markCompleted: [t("标记为已完成"), () => markTask(task, detail, false)], markMerged: [t("标记为已合并"), () => markTask(task, detail, true)],
       gitBranch: [task.gitBranch ? t("更改 Git 分支") : t("关联 Git 分支"), () => editGitBranch(task)],
       clearGitBranch: [t("解除 Git 分支关联"), () => command({ action: 'task.set_git_branch', taskId: task.id, expectedRevision: task.revision,
-        gitBranch: null }).catch((e) => noticeDialog(e.message, t("解除 Git 分支关联失败")))],
+        gitBranch: null }).catch((e) => noticeDialog(e.message, lt("解除 Git 分支关联失败")))],
       edit: [t("编辑任务"), () => editTask(task, detail.attachments ?? [])], reviewer: [t("更换验收人"), () => changeReviewer(task)],
       release: [t("释放派工"), () => lifecycle(task, 'task.release')], handoff: [t("安排接手"), () => lifecycle(task, 'task.handoff')],
       takeover: [t("交给验收者"), () => takeoverTask(task, detail)],
@@ -2399,17 +2407,17 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
 
   function cancelBatch(batch) {
     const reason = h('textarea', { required: true });
-    formDialog(t('取消批次 B{number}', batch), [h('p', { class: 'muted' }, t('批次里的任务回到普通任务，进度和记录都保留；之后各自验收、各自 ship。')),
-      h('label', {}, t('原因'), reason)], () => command({ action: 'batch.cancel', batchId: batch.id, reason: reason.value }), () => {}, t('取消批次'));
+    formDialog(lt('取消批次 B{number}', batch), [h('p', { class: 'muted' }, lt('批次里的任务回到普通任务，进度和记录都保留；之后各自验收、各自 ship。')),
+      h('label', {}, lt('原因'), reason)], () => command({ action: 'batch.cancel', batchId: batch.id, reason: reason.value }), () => {}, lt('取消批次'));
   }
 
   function createBatch() {
     const title = h('input', { required: true });
     const reviewer = h('select', {}, h('option', { value: 'user' }, t('用户')),
       getMembers(view.clusterId).map((member) => h('option', { value: member.id }, member.name)));
-    formDialog(t('新建验收批次'), [h('p', { class: 'muted' }, t('批次里的任务全部提交后，验收者只被叫醒一次，逐个给结论；全部通过后一次合并整批。批次内的下游在上游提交后就能开工。')),
-      h('label', {}, t('标题'), title), h('label', {}, t('验收者'), reviewer)],
-    () => command({ action: 'batch.create', title: title.value, reviewer: reviewerOf(reviewer.value) }), () => {}, t('创建'));
+    formDialog(lt('新建验收批次'), [h('p', { class: 'muted' }, lt('批次里的任务全部提交后，验收者只被叫醒一次，逐个给结论；全部通过后一次合并整批。批次内的下游在上游提交后就能开工。')),
+      h('label', {}, lt('标题'), title), h('label', {}, lt('验收者'), reviewer)],
+    () => command({ action: 'batch.create', title: title.value, reviewer: reviewerOf(reviewer.value) }), () => {}, lt('创建'));
   }
 
   /** Note the attachments the loaded contexts carry and read the evidence messages they do not reach (paging), once each. */
@@ -2571,7 +2579,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       if (view.overview) return;
       if (view.clusterId !== clusterId || !dialog.open) return;
       dialog.close();
-      noticeDialog(t("该群聊已移入回收站，可恢复后继续使用。"), t("群聊已删除"));
+      noticeDialog(lt("该群聊已移入回收站，可恢复后继续使用。"), lt("群聊已删除"));
     },
     clustersChanged() { if (view.overview && dialog.open) scheduleRefresh(); },
     /** The plugin UIs this cluster offers changed (pluginUi read them): the tab bar follows. */

@@ -1,9 +1,9 @@
-import { t } from './i18n.js';
+import { onLanguageChange, t } from './i18n.js';
 // The 插件 section of the settings dialog (docs/plugins.md): one card per plugin, official and third-party in two groups.
 // Everything a plugin's manifest says (name, description, details, commands) reaches the page only as text nodes, and
 // its icon only as an <img src> the Hub serves; nothing from a plugin is ever parsed as HTML.
 import { markdownBlocks } from './markdown.js';
-import { confirmDialog, emptyState, h, noticeDialog } from './ui.js';
+import { confirmDialog, emptyState, h, liveAsk, noticeDialog } from './ui.js';
 
 const RATES = [
   { key: 'perMinute', get label() { return t("每分钟上限"); } },
@@ -645,7 +645,7 @@ export function createPluginSettings(api, list, configure) {
   /** Confirm (after the dialog) or revoke trust in a full-trust plugin; effective at the next start. */
   async function setTrust(plugin, trusted) {
     const focus = `[data-key="trust:${plugin.id}"]`;
-    if (trusted && !(await confirmDialog(trustConfirmText(plugin)))) { list.querySelector(focus)?.focus(); return; }
+    if (trusted && !(await confirmDialog(liveAsk(() => trustConfirmText(plugin))))) { list.querySelector(focus)?.focus(); return; }
     const body = trusted ? { trusted: true, entry: plugin.trust.entry } : { trusted: false };
     return run(() => api('PUT', `/api/plugins/${encodeURIComponent(plugin.id)}/trust`, body), trusted ? '确认信任失败' : '撤销信任失败', focus);
   }
@@ -663,6 +663,16 @@ export function createPluginSettings(api, list, configure) {
     }
     await run(() => api('PATCH', `/api/plugins/${encodeURIComponent(plugin.id)}/write-settings`, body), t("保存插件发言设置失败"), selector);
   }
+
+  // A language switch draws the cards again; what is typed or ticked in them (unsaved speaking settings) is put back.
+  onLanguageChange(() => {
+    if (!installed.length && !skippedRegistrations.length) return;
+    const fields = () => [...list.querySelectorAll('input, select, textarea')];
+    const kept = fields().map((el) => ({ value: el.value, checked: el.checked }));
+    draw(busy);
+    const now = fields();
+    if (now.length === kept.length) now.forEach((el, i) => { if (el.type !== 'file') { el.value = kept[i].value; el.checked = kept[i].checked; } });
+  });
 
   return { load: () => run(() => api('GET', '/api/plugins'), t('读取插件失败')), applyState };
 }

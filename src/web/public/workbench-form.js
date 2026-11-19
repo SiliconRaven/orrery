@@ -1,14 +1,16 @@
 import { t } from "./i18n.js";
-import { fileUrl, h, icon, isImage, MAX_FILES, pastedFiles, pendingFileNode, pickFiles } from './ui.js';
+import { fileUrl, h, icon, isImage, lt, MAX_FILES, pastedFiles, pendingFileNode, pickFiles } from './ui.js';
 
 /**
  * A modal form keeps its inputs across background workbench refreshes. `setBusy(true)` runs before `submit` reads
  * anything and `setBusy(false)` once the save has ended, for a field that must not change while a save is in flight.
+ * orrery's own words (title, labels, buttons) given as lt() follow a language switch while the form is open; the
+ * fields and what is typed in them stay as they are.
  */
-export function formDialog(title, fields, submit, setBusy = () => {}, saveText = t("保存")) {
+export function formDialog(title, fields, submit, setBusy = () => {}, saveText = lt("保存")) {
   const error = h('p', { class: 'form-error', role: 'alert', hidden: true });
   const save = h('button', { type: 'submit', class: 'primary' }, saveText);
-  const cancel = h('button', { type: 'button', onclick: () => dialog.close() }, t("取消"));
+  const cancel = h('button', { type: 'button', onclick: () => dialog.close() }, lt("取消"));
   const form = h('form', { class: 'workbench-form' }, h('h2', {}, title), fields, error,
     h('div', { class: 'row end' }, cancel, save));
   const dialog = h('dialog', {}, form);

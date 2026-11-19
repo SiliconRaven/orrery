@@ -118,5 +118,5 @@ export default {
   '关闭应用位置设置': 'Close desktop settings',
   '界面语言': 'Interface language',
   '同时切换桌面与协作页。': 'Applies to the desktop and collaboration page.',
-  '桌面立即切换；协作页下次打开或刷新时生效，当前内容不会重新加载。': 'The desktop changes now. The collaboration page changes when next opened or refreshed; its current content is not reloaded.',
+  '桌面和协作页立即一起切换，不会重新加载。': 'The desktop and the collaboration page switch together right away, without reloading.',
 };

@@ -286,5 +286,5 @@ test('settings dialog: every element app.js looks up by id still exists, the set
   const tabs = [...dialog.matchAll(/role="tab" aria-controls="([\w-]+)"/g)].map((m) => m[1]);
   assert.deepEqual(tabs, ['settings-panel-appearance', 'settings-panel-limits', 'settings-panel-alerts', 'settings-panel-plugins', 'settings-panel-delivery']);
   for (const panel of tabs) assert.match(dialog, new RegExp(`<section id="${panel}" [^>]*role="tabpanel"`));
-  assert.match(app, /const settingsFrame = initSettings\(settingsDialog, undefined, \{ beforeLanguageChange: confirmLanguageReload \}\);/);
+  assert.match(app, /const settingsFrame = initSettings\(settingsDialog\);/);
 });

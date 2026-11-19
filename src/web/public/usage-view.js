@@ -1,4 +1,4 @@
-import { t } from './i18n.js';
+import { language, t } from './i18n.js';
 import { emptyState, fmtTime, fmtTokens, h } from './ui.js';
 
 /** Cached member-page usage blocks; the page supplies data, elements and message navigation. */
@@ -9,7 +9,7 @@ export function createUsageRenderer({ element, nameOf, showMessage }) {
    */
   const usageSigs = new Map();
   function draw(id, what, build, { perMinute = true, preserveOpen = false } = {}) {
-    const sig = JSON.stringify([what, perMinute ? Math.floor(Date.now() / 60_000) : null]);
+    const sig = JSON.stringify([language(), what, perMinute ? Math.floor(Date.now() / 60_000) : null]);   // a language switch redraws it
     if (usageSigs.get(id) === sig) return;
     usageSigs.set(id, sig);
     const open = preserveOpen && element(id).querySelector('details')?.open;

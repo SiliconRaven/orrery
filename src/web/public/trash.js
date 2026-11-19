@@ -1,7 +1,7 @@
-import { t } from './i18n.js';
+import { onLanguageChange, t } from './i18n.js';
 // The recycle bin dialog (docs/architecture.md「回收站与永久删除」): restore a cluster, or tick several and delete them for
 // good after typing a confirmation. The pure helpers at the top run in node (test/trash-ui.test.ts).
-import { emptyState, h } from './ui.js';
+import { emptyState, h, lt } from './ui.js';
 
 /** What the user types to confirm: the cluster's name for one, `永久删除 N 个群` for several. */
 export function purgePhrase(clusters) {
@@ -51,22 +51,26 @@ export function purgeOutcome(answer) {
 function confirmPurge(clusters) {
   return new Promise((resolve) => {
     const trigger = document.activeElement;
-    const phrase = purgePhrase(clusters);
+    // The phrase to type follows a language switch too, and so does the check (purgeConfirmed reads it in the language now).
+    const phrase = lt(() => purgePhrase(clusters));
     const single = clusters.length === 1;
-    const ok = h('button', { type: 'submit', value: 'confirm', class: 'primary danger', disabled: true }, t("永久删除"));
+    const ok = h('button', { type: 'submit', value: 'confirm', class: 'primary danger', disabled: true }, lt("永久删除"));
     const input = h('input', { id: 'purge-confirm-input', type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-describedby': 'purge-what purge-kept' });
-    input.addEventListener('input', () => { ok.disabled = !purgeConfirmed(clusters, input.value); });
+    const check = () => { ok.disabled = !purgeConfirmed(clusters, input.value); };
+    input.addEventListener('input', check);
+    const stopLanguage = onLanguageChange(check);
     const dialog = h('dialog', { class: 'ask purge-confirm', role: 'alertdialog', 'aria-labelledby': 'purge-title', 'aria-describedby': 'purge-undo' },
       h('form', { method: 'dialog' },
-        h('h2', { id: 'purge-title' }, single ? t("永久删除群聊“{name}”？", { name: clusters[0].name }) : t("永久删除这 {length} 个群聊？", { length: clusters.length })),
-        h('ul', { class: 'purge-list' }, clusters.map((c) => h('li', {}, h('strong', {}, c.name), h('span', { class: 'muted' }, purgeCounts(c))))),
-        h('p', { id: 'purge-undo', class: 'purge-warning' }, t("这一步不能撤销，删除后无法恢复。")),
-        h('p', { id: 'purge-what', class: 'ask-message' }, t("会删除：群里的全部消息、任务、投递记录、上传的文件，以及成员在群里的记录（已读、收藏、用量等）。")),
-        h('p', { id: 'purge-kept', class: 'ask-message muted' }, t("不会动：各应用里的对话本身、工作文件夹、之前做的备份。")),
+        h('h2', { id: 'purge-title' }, single ? lt("永久删除群聊“{name}”？", { name: clusters[0].name }) : lt("永久删除这 {length} 个群聊？", { length: clusters.length })),
+        h('ul', { class: 'purge-list' }, clusters.map((c) => h('li', {}, h('strong', {}, c.name), h('span', { class: 'muted' }, lt(() => purgeCounts(c)))))),
+        h('p', { id: 'purge-undo', class: 'purge-warning' }, lt("这一步不能撤销，删除后无法恢复。")),
+        h('p', { id: 'purge-what', class: 'ask-message' }, lt("会删除：群里的全部消息、任务、投递记录、上传的文件，以及成员在群里的记录（已读、收藏、用量等）。")),
+        h('p', { id: 'purge-kept', class: 'ask-message muted' }, lt("不会动：各应用里的对话本身、工作文件夹、之前做的备份。")),
         h('label', { for: 'purge-confirm-input', class: 'purge-type' },
-          h('span', {}, t("请输入 "), h('strong', { class: 'purge-phrase' }, phrase), t(" 确认")), input),
-        h('div', { class: 'row end' }, h('button', { type: 'button', onclick: () => dialog.close('cancel') }, t("取消")), ok)));
+          h('span', {}, lt("请输入 "), h('strong', { class: 'purge-phrase' }, phrase), lt(" 确认")), input),
+        h('div', { class: 'row end' }, h('button', { type: 'button', onclick: () => dialog.close('cancel') }, lt("取消")), ok)));
     dialog.addEventListener('close', () => {
+      stopLanguage();
       dialog.remove();
       if (trigger?.isConnected) trigger.focus();
       resolve(dialog.returnValue === 'confirm' && purgeConfirmed(clusters, input.value));
@@ -84,11 +88,14 @@ function confirmPurge(clusters) {
 export function openTrash({ api, restored, noticeDialog, closed }) {
   const list = h('div', { class: 'trash-list' }, t("正在加载…"));
   const results = h('div', { class: 'trash-results', role: 'status', 'aria-live': 'polite' });
-  const purgeButton = h('button', { type: 'button', class: 'danger', disabled: true }, t("永久删除所选"));
-  const box = h('dialog', { class: 'trash-dialog', 'aria-labelledby': 'trash-title' }, h('div', { class: 'workbench-form' }, h('h2', { id: 'trash-title' }, t("回收站")),
-    h('p', { class: 'muted' }, t("恢复群聊不会重发旧投递，也不会更改原生对话。勾选后可以永久删除，永久删除不能撤销。")), results, list,
-    h('div', { class: 'row end' }, purgeButton, h('button', { type: 'button', onclick: () => box.close() }, t("关闭")))));
-  box.addEventListener('close', () => { box.remove(); closed?.(); });
+  const purgeButton = h('button', { type: 'button', class: 'danger', disabled: true }, lt("永久删除所选"));
+  const box = h('dialog', { class: 'trash-dialog', 'aria-labelledby': 'trash-title' }, h('div', { class: 'workbench-form' }, h('h2', { id: 'trash-title' }, lt("回收站")),
+    h('p', { class: 'muted' }, lt("恢复群聊不会重发旧投递，也不会更改原生对话。勾选后可以永久删除，永久删除不能撤销。")), results, list,
+    h('div', { class: 'row end' }, purgeButton, h('button', { type: 'button', onclick: () => box.close() }, lt("关闭")))));
+  // A language switch draws the loaded list again (the ticks stay); the frame above follows by itself (lt).
+  let loaded = false;
+  const stopLanguage = onLanguageChange(() => { if (box.open && loaded) draw(); });
+  box.addEventListener('close', () => { stopLanguage(); box.remove(); closed?.(); });
   document.body.append(box); box.showModal();
   let clusters = [];
   let busy = false;
@@ -108,7 +115,7 @@ export function openTrash({ api, restored, noticeDialog, closed }) {
           const button = event.currentTarget;
           button.disabled = true;
           try { await api('POST', `/api/clusters/${encodeURIComponent(cluster.id)}/restore`, {}); ticked.delete(cluster.id); await restored(); await load(); }
-          catch (e) { await noticeDialog(e.message, t("恢复失败")); button.disabled = false; }
+          catch (e) { await noticeDialog(e.message, lt("恢复失败")); button.disabled = false; }
         } }, t("恢复")));
     }) : [emptyState(t("回收站为空。"))]));
     update();
@@ -119,6 +126,7 @@ export function openTrash({ api, restored, noticeDialog, closed }) {
       const rows = await api('GET', '/api/clusters?deleted=true');
       if (!box.open || request !== loading) return;
       clusters = rows.filter((c) => !removed.has(c.id));
+      loaded = true;
       for (const id of ticked) if (!clusters.some((c) => c.id === id)) ticked.delete(id);
       draw();
     } catch (e) {

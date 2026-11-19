@@ -1034,7 +1034,7 @@ test('desktop: the + panel is the shell\'s own trusted page: fixed, sandboxed, n
   assert.match(shell, /win\.on\('closed', \(\) => \{ if \(!panel\.isDestroyed\(\)\) panel\.destroy\(\); \}\);/, 'and it never outlives the shell');
   assert.match(panel, /webPreferences: \{ preload: STRIP_PRELOAD, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, spellcheck: false \}/);
   assert.match(shell, /panel\.loadURL\(desktopPageUrl\(STRIP_PAGE, uiLanguage\)\);/);
-  assert.equal((shell.match(/panel\.loadURL\(/g) ?? []).length, 2, 'initial load and explicit trusted language change');
+  assert.equal((shell.match(/panel\.loadURL\(/g) ?? []).length, 1, 'loaded once; a language switch redraws it in place');
   assert.match(shell, /panel\.removeMenu\(\);/);
   // The same guards as the tab bar: no navigation, no webview, no new window; F5 / Ctrl+R never reload it.
   assert.match(shell, /for \(const page of \[tabs, strips, settingsPage\]\) \{\n {4}page\.on\('will-navigate', \(e\) => e\.preventDefault\(\)\);\n {4}page\.on\('will-frame-navigate', \(e\) => e\.preventDefault\(\)\);\n {4}page\.on\('will-attach-webview', \(e\) => e\.preventDefault\(\)\);\n {4}page\.setWindowOpenHandler\(\(\) => \(\{ action: 'deny' \}\)\);\n {2}\}/);
@@ -1071,7 +1071,7 @@ function ipcSenders(shell: string) {
   assert.match(shell, /const fromStrip = \(event\) => fromPage\(event, strips, STRIP_PAGE\);/);
   assert.match(shell, /const fromSettings = \(event\) => fromPage\(event, settingsPage, SETTINGS_PAGE\);/);
   assert.match(shell, /const settingsPage = settingsWin\.webContents;/);
-  assert.match(shell, /return event\.sender === wc && !!f && !!main && f\.parent === null\n {6}&& f\.processId === main\.processId && f\.routingId === main\.routingId && f\.url === desktopPageUrl\(url, uiLanguage\);/);
+  assert.match(shell, /return event\.sender === wc && !!f && !!main && f\.parent === null\n {6}&& f\.processId === main\.processId && f\.routingId === main\.routingId\n {6}&& \(f\.url === desktopPageUrl\(url, 'zh'\) \|\| f\.url === desktopPageUrl\(url, 'en'\)\);/);
   assert.match(shell, /const tabs = win\.webContents;/);
   assert.match(shell, /const strips = panel\.webContents;/);
   // The panel's table: exactly its two channels; neither is in the tab bar's table, and the tab bar's are not in it.

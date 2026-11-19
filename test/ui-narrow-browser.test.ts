@@ -85,28 +85,31 @@ test('375 px: chat, workbench tasks, roles and settings have no sideways scroll;
         assert.equal(new Set(tops).size, 1, `the four theme options are on one row: ${tops}`);
       }
     }
-    // Switching languages with a draft shows the page confirmation, and cancelling leaves the composer as it was.
+    // Switching languages with a draft switches in place: no confirmation, no reload; the draft and the open settings stay.
     const draft = '待发送草稿';
     await page.evaluate(`document.getElementById('settings-tab-appearance').click();
-      document.getElementById('composer-input').value = ${JSON.stringify(draft)};`);
-    const chooseEnglish = `(() => {
+      document.getElementById('composer-input').value = ${JSON.stringify(draft)};
+      window.__sameDocument = true;`);
+    await page.evaluate(`(() => {
       const language = document.getElementById('ui-language');
       language.value = 'en';
       language.dispatchEvent(new Event('change'));
-    })()`;
-    await page.evaluate(chooseEnglish);
-    await page.waitFor(`document.querySelector('dialog.ask[open] #ask-title')?.textContent === '切换语言并刷新页面？'`, 'language change confirmation');
-    await page.evaluate(`document.querySelector('dialog.ask[open] button[value=cancel]').click()`);
-    await page.waitFor(`document.getElementById('ui-language').value === 'zh'`, 'the original language selection');
-    assert.equal(await page.evaluate(`document.getElementById('composer-input').value`), draft);
-    assert.equal(await page.evaluate(`document.documentElement.lang`), 'zh-CN');
+    })()`);
+    await page.waitFor(`document.documentElement.lang === 'en' && document.getElementById('open-settings').title === 'Settings'`, 'the English interface, switched in place');
+    assert.equal(await page.evaluate(`window.__sameDocument === true`), true, 'the page did not reload');
+    assert.equal(await page.evaluate(`Boolean(document.querySelector('dialog.ask[open]'))`), false, 'no confirmation');
+    assert.equal(await page.evaluate(`document.getElementById('composer-input').value`), draft, 'the draft stays');
+    assert.equal(await page.evaluate(`document.getElementById('settings-dialog').open`), true, 'the settings dialog stays open');
     await page.evaluate(`document.getElementById('composer-input').value = '';`);
-    await page.evaluate(chooseEnglish);
-    await page.waitFor(`document.documentElement.lang === 'en' && document.getElementById('open-settings').title === 'Settings'`, 'the reloaded English interface');
-    await page.evaluate(`document.getElementById('open-settings').click()`);
-    await page.waitFor(`document.getElementById('settings-dialog').open`, 'English settings');
     await noSideScroll(page, 'English appearance settings', '#settings-dialog .settings-panels');
     await page.evaluate(`document.getElementById('settings-dialog').close(); document.getElementById('open-workbench').click()`);
+    // No reload: the workbench opens again on the tab it was left on (Roles, now in English); then go back to Tasks.
+    // The roles tab is "Roles and coordination" whenever the coordinator plugin is on, appointed or not.
+    const tabButton = (label: string) => `[...document.querySelectorAll('dialog[open] .workbench-tabs button')].find((b) => b.textContent === ${JSON.stringify(label)})`;
+    const currentTab = `document.querySelector('dialog[open] .workbench-tabs button[aria-current="true"]')?.textContent`;
+    await page.waitFor(`['Roles', 'Roles and coordination'].includes(${currentTab})`, 'the roles tab kept, in English');
+    await page.evaluate(`${tabButton('Task')}.click()`);
+    await page.waitFor(`${tabButton('Task')}?.getAttribute('aria-current') === 'true'`, 'the English Tasks tab');
     await checkBatchDetails(page, 'Batch B1', 'Batch B1 · Browser fixture', 'Still needed: #1 待开工, #2 待开工');
     assert.deepEqual(browser.problems().exceptions, []);
   } finally {

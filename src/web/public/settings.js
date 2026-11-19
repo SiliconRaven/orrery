@@ -1,4 +1,4 @@
-import { language, forcedLanguage, setLanguage, t } from './i18n.js';
+import { language, languageInAddress, onLanguageChange, setLanguage, t } from './i18n.js';
 // The settings dialog's frame: its section tabs and the theme choice (外观). The settings themselves are wired in
 // app.js and plugins.js by element id; nothing here reads or writes the Hub.
 
@@ -19,7 +19,7 @@ export function nextTab(tabs, current, key) {
  * land on (focus stays on the tab, Tab then goes into the section). The section last shown is remembered per browser.
  * `theme` is theme.js's globalThis.orreryTheme.
  */
-export function initSettings(dialog, theme = globalThis.orreryTheme, { beforeLanguageChange = () => true } = {}) {
+export function initSettings(dialog, theme = globalThis.orreryTheme) {
   const tabs = [...dialog.querySelectorAll('[role="tab"]')];
   const show = (tab, focus = false) => {
     for (const t of tabs) {
@@ -57,31 +57,22 @@ export function initSettings(dialog, theme = globalThis.orreryTheme, { beforeLan
   for (const radio of radios) radio.addEventListener('change', () => { if (radio.checked) theme?.set(radio.value); });
   mark();
   globalThis.addEventListener?.('storage', mark);   // another tab changed it (theme.js applies it, this shows it)
+  // 界面语言: switched in place, nothing reloads (i18n.js setLanguage; app.js redraws on onLanguageChange). In the desktop
+  // app the page's own address carries the language, and the desktop shell follows it (docs/desktop.md「界面语言」).
   const choice = dialog.querySelector('#ui-language');
   const languageNote = dialog.querySelector('#language-note');
   const markLanguage = () => {
     if (!choice) return;
     choice.value = language();
-    choice.disabled = Boolean(forcedLanguage());
-    if (languageNote) languageNote.textContent = t(forcedLanguage()
-      ? '语言由桌面版控制，请在桌面设置中修改。'
-      : '语言保存在这个浏览器里，切换后会重新加载页面。');
+    if (languageNote) languageNote.textContent = t(languageInAddress()
+      ? '在这里或桌面设置里切换都可以，桌面版会一起切换并记住。'
+      : '语言保存在这个浏览器里，切换后立即生效。');
   };
-  let changingLanguage = false;
-  choice?.addEventListener('change', async () => {
-    const next = choice.value;
-    if (changingLanguage || forcedLanguage() || next === language()) { markLanguage(); return; }
-    changingLanguage = true;
-    choice.disabled = true;
-    try {
-      if (!await beforeLanguageChange()) return;
-      setLanguage(next);
-      globalThis.location?.reload();
-    } finally {
-      changingLanguage = false;
-      markLanguage();
-    }
+  choice?.addEventListener('change', () => {
+    if (choice.value === 'zh' || choice.value === 'en') setLanguage(choice.value);
+    markLanguage();
   });
+  onLanguageChange(markLanguage);   // also a change from the desktop settings or another tab
   markLanguage();
   return { opened: () => { mark(); markLanguage(); } };
 }

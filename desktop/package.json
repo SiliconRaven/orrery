@@ -16,6 +16,7 @@
     "test:strip": "electron test/strip-check.mjs",
     "test:win32": "electron test/win32-check.mjs",
     "test:launch": "electron test/launch-check.mjs",
+    "test:language": "electron test/language-check.mjs",
     "prepare:resources": "node scripts/prepare-resources.mjs",
     "pack": "npm run prepare:resources && electron-builder --dir --win --x64",
     "dist": "npm run prepare:resources && electron-builder --win nsis --x64",
