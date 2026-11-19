@@ -67,6 +67,18 @@ Every member attaches in **Native Mode (`NativeAdapter`)** to a conversation ins
 
 > **Security Note**: Deliveries run under your own host app permissions. Cluster names may include spaces, while member names reject spaces and control characters. See [Security Model](docs/security.en.md).
 
+### Set up multiple harnesses with an agent
+
+Replace `<app list>` with the apps you want to connect, then copy this prompt to your agent. See the [Native Mode guide](docs/native-mode.en.md) and the app guides in the table above.
+
+```text
+Help me connect these apps to my current Orrery Hub: <app list>.
+
+1. Check only the supported apps on my list. Continue with installed apps and report and skip any that are not installed. Confirm whether the current Hub is the installed or source version, along with its address and data directory. Ask me to confirm any unclear Hub or app choices together.
+2. Use the README and matching guides in docs/adapters/ for my Orrery version. Carry out the steps that the guide allows and I have authorized, such as checking prerequisites, preparing configuration snippets, or packaging a plugin. Group the actions I need to take in the host app, including adding configuration, uploading or enabling a plugin, confirming trust, reloading, or selecting a conversation. Name the app and where to do each action. Keep my existing permissions and configuration. Do not launch or restart apps or attach conversations I have not selected. I will enter secrets and tokens locally as documented. Do not read or print their values.
+3. Use the guides to verify the connections I have authorized you to check. Record tool calls and actual delivery separately, and explain when either does not apply. For each app, report Connected, Needs my action, or Unverified, and identify any uninstalled apps. Use Connected only after verifying the applicable connections.
+```
+
 ## Environment Variables
 
 | Variable | Description | Default |
