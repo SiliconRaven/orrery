@@ -12,7 +12,7 @@ import { PluginHost } from '../src/core/plugin.ts';
 import { Store } from '../src/core/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
 import { gitRead } from '../src/core/projects.ts';
-import { setBranchLookup, type GitRunner } from '../src/plugins/tasks/package/hub/branch-link.mts';
+import { BRANCH_LOOKUP_BUDGET_MS, setBranchLookup, type GitRunner } from '../src/plugins/tasks/package/hub/branch-link.mts';
 import { shipForRunner, verifyShip } from '../src/plugins/tasks/package/hub/ship.mts';
 import { MIGRATIONS } from '../src/plugins/tasks/package/hub/store.mts';
 import { startTestHub, tempDir } from './helpers.ts';
@@ -322,10 +322,12 @@ test('immediate takeover notices: working wakes old executor + supersedes queued
   } finally { await app.close(); }
 });
 
-test('post-takeover submit sends infoOnly notice when product code changes or cannot verify, and skips when only docs/tests change', async () => {
+test('post-takeover submit sends infoOnly notice for product code changes and skips docs/tests and clean merges', { timeout: 120_000 }, async (t) => {
   const f = await fixture('product-diff');
   const { app, b, c, as, dir } = f;
-  setBranchLookup({ budgetMs: 60_000 });
+  // This test exercises the real Git results. The Hub prepare, lookup and individual Git deadlines use the clock
+  // here, so a slow process cannot turn a known diff into "unverified". The separate test advances the deadline.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, windowsHide: true, stdio: 'pipe', encoding: 'utf8' }).trim();
   const commit = (cwd: string, msg: string) => {
     git(cwd, '-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-m', msg);
@@ -382,7 +384,7 @@ test('post-takeover submit sends infoOnly notice when product code changes or ca
     // Clean merge from main + evil merge product edit both run without git show / --remerge-diff
     const seenArgs: string[][] = [];
     const spyRunner: GitRunner = (cwd, args, signal) => { seenArgs.push(args); return gitRead(cwd, args, signal); };
-    setBranchLookup({ budgetMs: 60_000, runner: spyRunner });
+    setBranchLookup({ runner: spyRunner });
     git(repo, 'checkout', '-qb', 'main', 'HEAD~2');
     writeFileSync(join(repo, 'src', 'main-only.ts'), 'export const fromMain = 1;\n');
     git(repo, 'add', '.');
@@ -417,12 +419,55 @@ test('post-takeover submit sends infoOnly notice when product code changes or ca
     const evilMergeSha = commit(repo, 'evil merge touching src/app.ts');
     const subEvil = await f.sendAsync(as(c), { action: 'task.submit', taskId: tMergeProd.id, expectedRevision: f.rev(tMergeProd.id),
       assignmentId: f.task(tMergeProd.id).currentAssignmentId, summary: 'c merge fix', commitSha: evilMergeSha });
-    const evilDiffMsg = f.noticesOf(subEvil.eventId).find((m) => /产品代码|未能只读核对/.test(m.body))!;
+    const evilDiffMsg = f.noticesOf(subEvil.eventId).find((m) => m.body.includes('产品代码'))!;
     assert.ok(evilDiffMsg, 'evil merge product edit still emits infoOnly notice');
+    assert.match(evilDiffMsg.body, /src\/app\.ts/);
     assert.deepEqual(evilDiffMsg.mentions, [b.id]);
     assert.deepEqual(f.woken(evilDiffMsg.id), []);
     assert.equal(seenArgs.some((args) => args.includes('--remerge-diff') || args[0] === 'show'), false);
-  } finally { setBranchLookup(); await app.close(); }
+  } finally {
+    setBranchLookup();
+    t.mock.timers.reset();
+    await app.close();
+  }
+});
+
+test('post-takeover submit sends infoOnly notice when Git verification times out', { timeout: 30_000 }, async (t) => {
+  const f = await fixture('product-diff-timeout');
+  const { app, b, c, as } = f;
+  try {
+    const task = f.create({ mergeRequired: false });
+    f.start(task.id, b);
+    f.submit(task.id, b, 'abcdef0123');
+    f.takeover(as(c), task.id);
+
+    const started = Promise.withResolvers<AbortSignal>();
+    setBranchLookup({ runner: (_cwd, _args, signal) => {
+      started.resolve(signal);
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('Git lookup aborted')), { once: true });
+      });
+    } });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const submitted = f.sendAsync(as(c), { action: 'task.submit', taskId: task.id, expectedRevision: f.rev(task.id),
+      assignmentId: f.task(task.id).currentAssignmentId, summary: 'c fix', commitSha: 'abcdef0456' });
+    const signal = await started.promise;
+    assert.equal(signal.aborted, false);
+    t.mock.timers.tick(BRANCH_LOOKUP_BUDGET_MS);
+    const result = await submitted;
+    assert.equal(signal.aborted, true, 'the production lookup budget aborts the stalled read');
+    assert.equal(result.task.status, 'completed');
+    const notices = f.noticesOf(result.eventId);
+    assert.equal(notices.length, 2);
+    const diffNotice = notices.find((message) => message.body.includes('未能只读核对'))!;
+    assert.ok(diffNotice, 'the timeout emits an unverified-change notice');
+    assert.deepEqual(diffNotice.mentions, [b.id]);
+    assert.deepEqual(f.woken(diffNotice.id), [], 'the timeout notice does not wake the original executor');
+  } finally {
+    setBranchLookup();
+    t.mock.timers.reset();
+    await app.close();
+  }
 });
 
 test('atomic reject+takeover on task_action review: single transaction, keeps rejected submission, wakes nobody, enforces gates', async () => {
