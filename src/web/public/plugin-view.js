@@ -3,7 +3,8 @@
 // attachments, scroll positions and open panels are never touched), and closing it gives the chat back with its focus.
 // One view is open at a time. Its `unmount` is called once per opening, whatever ends it: closing, switching to another
 // view, a failed mount, or its full-trust plugin being released (plugin-slots.js release calls `release(id)` after
-// reading what was typed into the view and before the plugin's cleanup functions).
+// reading what was typed into the view and before the plugin's cleanup functions). The user leaving a view that holds
+// typed input (back button, Esc, its entry button, another view's, ctx.openChat) is asked first (`confirmLeave`).
 import { t } from './i18n.js';
 import { isInactive, trackTypedInput, typedInput } from './plugin-slots.js';
 
@@ -21,15 +22,19 @@ const warnOf = (label) => (error) => { console.warn(`plugin UI failed in ${label
  * accessibility tree; the host's banners are not among them). On close, focus goes back to where it was if that is
  * still there, `canFocus(node)` (the page's own check: shown and on screen) and not part of a released plugin;
  * otherwise to the first such element of `fallbackFocus()`.
+ * `confirmLeave()`: the page's confirm dialog (a promise of true or false), asked before the user leaves a view that
+ * holds input typed and not submitted (typedInput); a view's own ctx.close() is its decision and is not asked.
  */
 export function createViewHost({ doc = globalThis.document, app, layer, heading, back, before, api, clusterId, openChat, theme,
-  onChange = () => {}, covered = () => [], canFocus = () => true, fallbackFocus = () => [] }) {
+  onChange = () => {}, covered = () => [], canFocus = () => true, fallbackFocus = () => [], confirmLeave = async () => true }) {
   let views = [];   // the page's slots.view
   const buttons = new Map();   // view entry -> its entry button
   /** The open view: { entry, el, listeners, reads (its AbortController), returnFocus }; null when none is. */
   let open = null;
   /** The covered elements this host made inert (one already inert stays so on close). */
   let inerted = [];
+  /** The opening a leave is being asked about (one question at a time); null when none is. */
+  let asking = null;
 
   const label = (entry) => (entry.trusted ? t('第三方插件：{title}', { title: entry.title() }) : entry.title());
 
@@ -45,7 +50,7 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
     use.setAttribute('href', `#i-${entry.icon}`);
     svg.append(use);
     button.append(svg);
-    button.addEventListener('click', () => (open?.entry === entry ? close() : show(entry)));
+    button.addEventListener('click', () => (open?.entry === entry ? leave() : open ? leave(() => show(entry)) : show(entry)));
     return button;
   }
 
@@ -104,6 +109,23 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
     onChange();
   }
 
+  /**
+   * The user leaves the open view: `proceed` (closing it by default) runs at once when nothing typed there would be
+   * lost; otherwise only after `confirmLeave()` says yes and the same opening is still the open one.
+   */
+  function leave(proceed = close) {
+    const session = open;
+    if (!session || asking === session) return;
+    if (!typedInput([session.el]).length) { proceed(); return; }
+    asking = session;
+    let answer;
+    try { answer = confirmLeave(); } catch { answer = false; }
+    Promise.resolve(answer).catch(() => false).then((ok) => {
+      asking = null;
+      if (ok === true && open === session && !isInactive(session.entry.pluginId)) proceed();
+    });
+  }
+
   /** What a view gets: each function works only while this opening is the open view and its plugin is not released. */
   function contextFor(session) {
     const id = session.entry.pluginId;
@@ -119,9 +141,7 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
       },
       clusterId: clusterId() ?? null,
       openChat(cluster) {
-        if (!live()) return;
-        close();
-        openChat(cluster);
+        if (live()) leave(() => { close(); openChat(cluster); });
       },
       close() { if (live()) close(); },
       onEvent(fn) {
@@ -163,15 +183,15 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
     onChange();
   }
 
-  back.addEventListener('click', close);
-  // Esc closes the view unless an input method is composing or the view used it itself (preventDefault on its
-  // container or the document, which run before this). Only from inside the view or with nothing focused: an Esc in
-  // the sidebar or a host dialog is theirs.
+  back.addEventListener('click', () => leave());
+  // Esc leaves the view (asking first when typed input would be lost) unless an input method is composing or the view
+  // used it itself (preventDefault on its container or the document, which run before this). Only from inside the view
+  // or with nothing focused: an Esc in the sidebar or a host dialog is theirs.
   doc.defaultView?.addEventListener('keydown', (e) => {
     if (!open || e.key !== 'Escape' || e.isComposing || e.defaultPrevented) return;
     if (e.target !== doc.body && e.target !== doc.documentElement && !layer.contains(e.target)) return;
     e.preventDefault();
-    close();
+    leave();
   });
 
   return {

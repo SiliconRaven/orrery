@@ -47,3 +47,26 @@ test('demo mock: it is the mock of ORRERY_MOCK=1 and nothing else registers it',
   assert.equal(demo.harness, 'mock');
   assert.equal(demo.replies, true, 'answers in the chat as its member');
 });
+
+test('demo mock: its conversation reads back as a transcript, a delivery shown as the verified orrery delivery, paged by cursor', async () => {
+  const app = await startTestHub({ nativeAdapters: { mock: createDemoMockAdapter() } });
+  try {
+    const { cluster, members: [a] } = await app.api('POST', '/api/clusters', { name: 'demo', members: [
+      { harness: 'mock', sessionId: 'mock-session-1', name: 'A' }] });
+    await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@A star map test' });
+    await waitFor(async () => (await app.messages(cluster.id)).length === 2 && app.settled(cluster.id), 'the reply');
+    const page = await app.hub.memberTranscript(a.id, { limit: 200 });
+    assert.equal(page.status, 'ok');
+    assert.deepEqual(page.items.map((i) => i.kind), ['user', 'thinking', 'tool_call', 'tool_result', 'assistant', 'orrery_delivery', 'assistant']);
+    const delivery = page.items[5];
+    assert.equal(delivery.parts?.[0]?.body, '@A star map test', 'the Hub matched the delivery id to the real message');
+    assert.ok(page.items.every((i) => !('source' in i)), 'adapter evidence never leaves the Hub');
+    const latest = await app.hub.memberTranscript(a.id, { limit: 2 });
+    assert.deepEqual(latest.items.map((i) => i.kind), ['orrery_delivery', 'assistant']);
+    assert.equal(latest.hasMore, true);
+    const older = await app.hub.memberTranscript(a.id, { cursor: latest.before, direction: 'before', limit: 2 });
+    assert.deepEqual(older.items.map((i) => i.kind), ['tool_result', 'assistant']);
+  } finally {
+    await app.close();
+  }
+});

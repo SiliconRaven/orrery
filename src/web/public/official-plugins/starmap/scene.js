@@ -1685,7 +1685,6 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       const again = sats.find((x) => x.key === s.key && !x.dying);
       if (again) openNcard(again);
     }
-    try { windows?.satellitesChanged?.(cid); } catch (error) { console.warn('star map windows: satellitesChanged failed', error); }
   }
 
   // ---- breadcrumb, the cluster's name under its system, the one-time hint ----
@@ -1910,7 +1909,18 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
     refreshOverview();
     updateChrome();
     finder.refresh();
+    syncWindowSatellites();
     requestRender();
+  }
+  /** The chat windows tag the system lines whose satellites still circle (windows.js setSatellites). Before the windows
+   *  exist (the first model is built during mount) there is nothing to tag; they are synced once right after. */
+  function syncWindowSatellites() {
+    let w;
+    try { w = windows; } catch { return; }   // still in its temporal dead zone during the first refresh
+    if (!w?.setSatellites || !model) return;
+    for (const [cid, system] of model.systems) {
+      try { w.setSatellites(cid, system.satellites.map((sat) => sat.id)); } catch (error) { console.warn('star map windows: setSatellites failed', error); }
+    }
   }
   let refreshTimer = 0, trashTimer = 0, recountTimer = 0;
   const refreshSoon = () => { cancel(refreshTimer); refreshTimer = later(refreshModel, 150); };
@@ -1977,6 +1987,7 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
   let windows = null;
   if (typeof windowsModule?.createWindows === 'function') {
     try { windows = windowsModule.createWindows({ root: winRoot, ctx }); } catch (error) { console.warn('star map windows did not start', error); }
+    syncWindowSatellites();
   }
   function openHub(cid) {
     if (windows) { try { windows.open({ kind: 'hub', clusterId: cid }); return; } catch (error) { console.warn('star map windows: open failed', error); } }

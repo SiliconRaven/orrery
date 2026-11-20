@@ -4827,7 +4827,10 @@ const viewHost = createViewHost({ app: $('app'), layer: $('plugin-view'), headin
   covered: () => [...[...$('chat').children].filter((node) => !node.matches('#update-banner, #trust-banner, #safe-mode-banner')), $('panel-divider'), $('member-panel')],
   // Shown, and not in the narrow screen's closed sidebar drawer (opening a view closes it).
   canFocus: (node) => node.getClientRects().length > 0 && !(innerWidth <= 900 && !$('app').classList.contains('sidebar-open') && $('sidebar').contains(node)),
-  fallbackFocus: () => [$('open-settings'), $('open-sidebar')] });
+  fallbackFocus: () => [$('open-settings'), $('open-sidebar')],
+  // Leaving a view that holds typed input (its drafts are lost with it): asked first, as a reload is.
+  confirmLeave: () => confirmDialog({ title: lt('离开这个页面？'), message: lt('这里还有没发送或没保存的内容，离开后会丢失。可以先发送或复制它们。'),
+    confirmText: lt('离开'), danger: true }) });
 
 // ---- start ----
 

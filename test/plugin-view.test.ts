@@ -263,6 +263,89 @@ test('view host: entries, open, switch, Esc, close and a failed mount each unmou
   assert.equal(host.hasTypedInput(), false);
 });
 
+test('view host: leaving a view that holds typed input asks first; no keeps it, yes leaves the way the user asked', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  const calls: string[] = [];
+  const views: Record<string, any> = { alpha: sampleView('alpha', calls), beta: sampleView('beta', calls) };
+  const ids = Object.keys(views);
+  const slots = await loadPluginSlots({ frontend: ids, plugins: ids.map((id) => ({ id })) }, {},
+    async (id: string) => ({ register: () => ({ view: views[id] }) }), undefined, hasIcon);
+  const { doc, app, head, settings, layer, back, heading } = page(t);
+  const answers: PromiseWithResolvers<boolean>[] = [];
+  const opened: string[] = [];
+  const host = createViewHost({ doc, app, layer, heading, back, before: settings, api: async () => ({}), clusterId: () => 'c1',
+    openChat: (id: string) => { calls.push(`openChat ${id}`); opened.push(id); }, theme: () => 'dark',
+    confirmLeave: () => { calls.push('asked'); const answer = Promise.withResolvers<boolean>(); answers.push(answer); return answer.promise; } });
+  host.setViews(slots.view);
+  const [alphaButton, betaButton] = head.children.slice(0, 2);
+  const settle = () => new Promise((resolve) => { setImmediate(resolve); });
+  const answer = async (ok: boolean) => { answers.at(-1)!.resolve(ok); await settle(); };
+  const esc = (target: FakeElement) => target.dispatch('keydown', { key: 'Escape', target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } });
+  /** The user types into the open view (a draft in one of its windows). */
+  const type = (el: FakeElement) => {
+    const control = doc.createElement('textarea');
+    control.type = 'textarea';
+    el.append(control);
+    el.dispatch('focusin', { isTrusted: true, target: control });
+    control.value = 'unsent draft';
+    el.dispatch('input', { isTrusted: true, target: control });
+    return control;
+  };
+
+  // Nothing typed: the back button leaves at once, nothing is asked.
+  alphaButton.dispatch('click', {});
+  back.dispatch('click', {});
+  assert.deepEqual(calls, ['alpha.mount', 'alpha.unmount']);
+
+  alphaButton.dispatch('click', {});
+  const { el, ctx } = sampleView.last;
+  const control = type(el);
+  assert.equal(host.hasTypedInput(), true);
+  calls.length = 0;
+  // Each way out asks; "no" leaves the view, its container and the draft where they are.
+  back.dispatch('click', {});
+  back.dispatch('click', {});   // one question at a time
+  await answer(false);
+  esc(doc.body);
+  await answer(false);
+  alphaButton.dispatch('click', {});   // its own entry button
+  await answer(false);
+  betaButton.dispatch('click', {});   // switching to another view
+  await answer(false);
+  ctx.openChat('c2');
+  await answer(false);
+  assert.deepEqual(calls, ['asked', 'asked', 'asked', 'asked', 'asked']);
+  assert.equal(layer.hidden, false);
+  assert.equal(el.parent, layer);
+  assert.equal(control.value, 'unsent draft');
+  assert.deepEqual(opened, []);
+
+  // "Yes" to ctx.openChat: the view closes, then the chat opens.
+  calls.length = 0;
+  ctx.openChat('c2');
+  await answer(true);
+  assert.deepEqual(calls, ['asked', 'alpha.unmount', 'openChat c2']);
+  assert.equal(layer.hidden, true);
+
+  // "Yes" to switching: the other view mounts in its place.
+  calls.length = 0;
+  alphaButton.dispatch('click', {});
+  type(sampleView.last.el);
+  betaButton.dispatch('click', {});
+  await answer(true);
+  assert.deepEqual(calls, ['alpha.mount', 'asked', 'alpha.unmount', 'beta.mount']);
+
+  // An answer that comes after the view ended some other way changes nothing.
+  calls.length = 0;
+  type(sampleView.last.el);
+  back.dispatch('click', {});
+  sampleView.last.ctx.close();   // the view's own close is its decision: not asked
+  alphaButton.dispatch('click', {});
+  await answer(true);
+  assert.deepEqual(calls, ['asked', 'beta.unmount', 'alpha.mount']);
+  assert.equal(layer.hidden, false, 'the view opened since stays open');
+});
+
 test('view host: releasing a full-trust plugin keeps the typed input, unmounts once, closes, then runs onDispose', async (t) => {
   t.mock.method(console, 'warn', () => {});
   const calls: string[] = [];
