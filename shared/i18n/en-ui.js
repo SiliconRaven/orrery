@@ -566,5 +566,11 @@ export default {
   "有 {left} 个上传文件没能从磁盘删掉（文件夹异常或被占用）": "{left} uploaded files could not be removed from disk (folder unavailable or in use)",
   "插件 {plugins} 这次没有运行，它们的数据表里可能还留着这个群的数据": "plugins {plugins} did not run and their tables may still contain this cluster’s data",
   "已永久删除，但{notes}": "Permanently deleted, but {notes}",
-  "没有删除：插件 {plugins} 这次没有运行，它们的数据表可能还存着这个群的数据，很可能就是删不掉的原因。重新信任或打开它们并重启 Hub 后再删，或先手动清理它们的表": "Nothing was deleted. Plugins {plugins} did not run and their tables may still contain this cluster’s data. Restore their trust or enable them, then restart the Hub and retry. You can also clean up their tables before retrying."
+  "没有删除：插件 {plugins} 这次没有运行，它们的数据表可能还存着这个群的数据，很可能就是删不掉的原因。重新信任或打开它们并重启 Hub 后再删，或先手动清理它们的表": "Nothing was deleted. Plugins {plugins} did not run and their tables may still contain this cluster’s data. Restore their trust or enable them, then restart the Hub and retry. You can also clean up their tables before retrying.",
+  "界面模式": "View mode",
+  "标准界面": "Standard view",
+  "第三方": "3rd-party",
+  "星图面板": "Star Map panel",
+  "星图面板（在星图悬浮窗里显示）": "Star Map panel (shown in a Star Map floating window)",
+  "关闭后，这个插件在群聊标题栏、任务工作台和星图里的界面立即移除，已打开的界面地址失效。": "When turned off, this plugin’s panels in the chat title bar, task workbench, and Star Map are removed immediately and open frame URLs expire."
 };

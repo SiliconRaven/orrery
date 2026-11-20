@@ -1,8 +1,8 @@
-# Plugins (`v0.10.0-beta.3`)
+# Plugins (`v0.10.0-beta.4`)
 
 Language: [中文](plugins.md) | **English**
 
-> **Beta Notice**: Plugins ship with **v0.10.0-beta.3 (Beta pre-release)**, not a final stable release; MCP tools, events, and slot APIs may change.
+> **Beta Notice**: Plugins ship with **v0.10.0-beta.4 (Beta pre-release)**, not a final stable release; MCP tools, events, and slot APIs may change.
 
 The orrery core only handles clusters, members, native chat delivery, message storage, permissions and loop protection; the pause switch and loop limits always stay in the core. Task workflows, coordinator supervision and bookmarks live in official plugins under `src/plugins/`. The repository's top-level `plugins/` folder holds bridges for the native apps and is unrelated to the Hub plugins described here.
 
@@ -16,7 +16,7 @@ The orrery core only handles clusters, members, native chat delivery, message st
 
 ## Update Official Plugins
 
-Orrery Beta 0.10.0-beta.3 can update Star Map, Tasks, Bookmarks, and Coordinator individually. When an update is available, follow these steps.
+Orrery Beta 0.10.0-beta.4 can update Star Map, Tasks, Bookmarks, and Coordinator individually. When an update is available, follow these steps.
 
 1. On the collaboration page, open **Settings → Plugins** and select **Check official plugin updates** under Official plugins.
 2. Select **Review update** on the plugin card. Check the version and migration details, then select **Confirm update**. The card shows the **version after restart** while the current version continues to run.
@@ -44,7 +44,8 @@ A module exports `register(host)` and returns the slots it uses. `host` provides
 | `composer` | Returns a control placed between the chat composer and the send button |
 | `workbench` | Returns the ID, label (accepts live text `lt`), render and load functions of a workbench library tab |
 | `settings` | Returns a node placed below the plugin list in Settings |
-| `view` | Full-page view `{ id, title, icon, mount(el, ctx), unmount() }` |
+| `view` | Full-page or fullscreen view `{ id, title, icon, fullscreen?, mount(el, ctx), unmount() }` |
+| `panel` | Same-page panel embedded into fullscreen views (such as the Star Map 2.0 HUD Dock and floating windows); see [Embedding Plugins into Star Map](starmap-plugins.en.md) |
 
 If a module or slot callback fails, the page logs the reason to the console and other slots and the page keep working.
 
@@ -58,7 +59,7 @@ If a module or slot callback fails, the page logs the reason to the console and 
 3. **`bookmarks` (Cluster Knowledge Base)**:
    - Lets members (`bookmark_message`, `list_bookmarks`) and users archive tagged chat notes and decisions across long conversations.
 
-4. **`starmap` (Star map)** is off by default. When enabled, it registers an authenticated route for reading a member's bound conversation without caching the response.
+4. **`starmap` (Star Map 2.0)** is off by default. When enabled, it adds a prominent Standard / Star Map switcher in the sidebar and opens a fullscreen 3D HUD where Tasks, Coordinator, Bookmarks, and third-party plugins mount as floating panels, member windows support 1-on-1 private DMs, and Luna / Astra / Sol themes style both scene and UI; transcript responses disable caching. See [Embedding Plugins into Star Map](starmap-plugins.en.md).
 
 All three declare their own event types (tasks, bookmarks, coordinator), which third-party plugins can subscribe to with a grant; see [Third-party plugins, "Event subscription and publishing"](external-plugins.en.md#event-subscription-and-publishing).
 

@@ -16,7 +16,7 @@ function marked(text, q) {
  * `onOpen()` before it opens (other popups close), `choose(row)` with a searchSky row; `signal` ends its listeners.
  * Returns { el, open, close(refocus = true), toggle, isOpen, refresh }.
  */
-export function createFinder({ button, model, trashCount, current, onOpen, choose, signal }) {
+export function createFinder({ button, model, trashCount, current, activityOf = null, onOpen, choose, signal }) {
   const input = h('input', { type: 'search', class: 'sm-fq', placeholder: lt('搜索群聊、分组或群员'), 'aria-label': lt('搜索群聊、分组或群员'),
     autocomplete: 'off', spellcheck: 'false', 'aria-controls': 'sm-flist' });
   const list = h('div', { class: 'sm-flist', id: 'sm-flist', role: 'listbox', 'aria-label': lt('群聊') });
@@ -27,11 +27,11 @@ export function createFinder({ button, model, trashCount, current, onOpen, choos
 
   function render() {
     const raw = input.value.trim(), q = raw.toLocaleLowerCase('zh-CN');
-    const found = searchSky(model(), raw, t('回收站'));
+    const found = searchSky(model(), raw, t('回收站'), activityOf);
     rows = found.rows;
     active = found.active;
     const out = [];
-    let group = null;
+    let group = null, activeHeader = false;
     nodes = rows.map((r, i) => {
       const id = `sm-fr${i}`;
       if (r.type === 'trash') {
@@ -47,16 +47,30 @@ export function createFinder({ button, model, trashCount, current, onOpen, choos
           h('span', { class: `sm-st sm-st-${r.planet.status}`, title: { online: t('在线'), busy: t('工作中'), offline: t('离线') }[r.planet.status] }));
       }
       const s = system.stats;
+      const act = r.activity ?? activityOf?.(system.cluster.id) ?? { rate: 0, level: 'quiet' };
+      const showGroup = Boolean((q || r.section === 'active') && r.group);
       const summary = [t('{count} 名群员', { count: s.n }), s.busy ? t('{count} 工作中', { count: s.busy }) : '',
         system.cluster.unread ? t('未读 {count}', { count: system.cluster.unread }) : '',
-        s.notices ? t('{count} 条通知', { count: s.notices }) : '', !q || !r.group ? '' : galaxyLabel(r.group)].filter(Boolean).join(' · ');
-      return h('div', { class: 'sm-fr', role: 'option', id, 'aria-selected': 'false' }, h('span', { class: 'sm-hubav' }),
-        h('span', { class: 'sm-fn' }, h('b', {}, ...marked(system.cluster.name, q)), current() === system.cluster.id ? h('i', {}, t('当前')) : null, h('small', {}, summary)));
+        s.notices ? t('{count} 条通知', { count: s.notices }) : '', showGroup ? galaxyLabel(r.group) : ''].filter(Boolean).join(' · ');
+      const rateBadge = act.rate > 0
+        ? h('span', { class: `sm-fr-rate sm-fr-rate-${act.level}` }, t('{rate} 条/分', { rate: act.rate }))
+        : null;
+      return h('div', { class: `sm-fr${act.level === 'burst' ? ' sm-fr-burst' : ''}`, role: 'option', id, 'aria-selected': 'false' },
+        h('span', { class: 'sm-hubav' }),
+        h('span', { class: 'sm-fn' }, h('b', {}, ...marked(system.cluster.name, q)), current() === system.cluster.id ? h('i', {}, t('当前')) : null, h('small', {}, summary)),
+        rateBadge);
     });
     for (const [i, r] of rows.entries()) {
-      if (!q && r.type === 'cluster' && r.group !== group) {
-        group = r.group;
-        out.push(h('div', { class: 'sm-fgroup', role: 'presentation' }, galaxyLabel(group), group ? null : h('small', {}, t('没有分组的群聊'))));
+      if (!q && r.type === 'cluster') {
+        if (r.section === 'active') {
+          if (!activeHeader) {
+            activeHeader = true;
+            out.push(h('div', { class: 'sm-fgroup sm-fgroup-active', role: 'presentation' }, t('活跃与未读'), h('small', {}, t('按消息速率排序'))));
+          }
+        } else if (r.group !== group) {
+          group = r.group;
+          out.push(h('div', { class: 'sm-fgroup', role: 'presentation' }, galaxyLabel(group), group ? null : h('small', {}, t('没有分组的群聊'))));
+        }
       }
       out.push(nodes[i]);
     }

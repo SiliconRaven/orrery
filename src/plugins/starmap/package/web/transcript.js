@@ -27,6 +27,10 @@ export function transcriptPath(clusterId, memberId, request = {}) {
 export const messagesPath = (clusterId, before = null) =>
   `/api/clusters/${enc(clusterId)}/messages?limit=${HUB_PAGE}${before ? `&before=${enc(before)}` : ''}`;
 
+/** The user's private DM history route for a member in a cluster. */
+export const privateMessagesPath = (clusterId, memberId, before = null) =>
+  `/api/clusters/${enc(clusterId)}/messages?privateWith=${enc(memberId)}&limit=${HUB_PAGE}${before ? `&before=${enc(before)}` : ''}`;
+
 /**
  * Two runs of transcript items in file order, `older` first, as one run. A later record with the same id replaces the
  * earlier one and takes its place, as the Hub's reader does within one page; items without an id are kept as they are.
@@ -162,8 +166,13 @@ export function transcriptEntries(items) {
   return entries;
 }
 
+/** Whether a transcript delivery entry consists exclusively of private Orrery DMs (rendered as expanded DM bubbles). */
+export const isPrivateDeliveryEntry = (entry) => entry?.type === 'delivery'
+  && Array.isArray(entry.item?.parts) && entry.item.parts.length > 0
+  && entry.item.parts.every((part) => part?.private === true);
+
 /** Whether an entry is one of the compact orrery cards the header button opens and closes together. */
-export const isCard = (entry) => entry.type === 'delivery' || entry.type === 'post';
+export const isCard = (entry) => (entry.type === 'delivery' && !isPrivateDeliveryEntry(entry)) || entry.type === 'post';
 
 /** Whether every card is open (false when there are none): the header button then offers to close them all. */
 export function allCardsOpen(entries, open) {
@@ -215,7 +224,7 @@ export function prependMessages(list, older) {
 /** The message a stream event brings to cluster `clusterId`'s chat (with its attachments, which the event carries apart), or null. */
 export function eventMessage(event, clusterId) {
   const message = event?.kind === 'message' ? event.payload?.message : null;
-  if (!message || message.clusterId !== clusterId || typeof message.id !== 'string') return null;
+  if (!message || message.privateTo || message.clusterId !== clusterId || typeof message.id !== 'string') return null;
   const attachments = event.payload.attachments;
   return Array.isArray(attachments) && attachments.length ? { ...message, attachments } : message;
 }
@@ -256,4 +265,55 @@ export const isGoneError = (error) => error?.status === 400 && error?.data?.erro
 export function readTarget(messages, readId, lastSent) {
   const latest = messages.at(-1)?.id ?? null;
   return latest && latest !== readId && latest !== lastSent ? latest : null;
+}
+
+// ---- member private DM helpers ----
+
+/** Extracts a private DM for `memberId` in `clusterId` from a stream `message` event (with its deliveries), or null. */
+export function eventPrivateMessage(event, clusterId, memberId) {
+  const message = event?.kind === 'message' ? event.payload?.message : null;
+  if (!message || message.clusterId !== clusterId || message.privateTo !== memberId || typeof message.id !== 'string') return null;
+  const deliveries = Array.isArray(event.payload?.deliveries) ? event.payload.deliveries : [];
+  return { ...message, deliveries };
+}
+
+/** Updates one delivery inside a private DM list when a `delivery` stream event arrives; returns the list unchanged if none matched. */
+export function applyPrivateDeliveryEvent(list, event) {
+  const delivery = event?.kind === 'delivery' ? event.payload?.delivery : null;
+  if (!delivery || typeof delivery.messageId !== 'string') return list;
+  const idx = list.findIndex((m) => m.id === delivery.messageId);
+  if (idx < 0) return list;
+  const msg = list[idx];
+  const prev = Array.isArray(msg.deliveries) ? msg.deliveries : [];
+  const nextDeliveries = prev.some((d) => d.id === delivery.id)
+    ? prev.map((d) => (d.id === delivery.id ? delivery : d))
+    : [...prev, delivery];
+  const out = [...list];
+  out[idx] = { ...msg, deliveries: nextDeliveries };
+  return out;
+}
+
+/** Message IDs of private DMs already attributed inside the loaded native transcript entries (used to deduplicate the DM status strip). */
+export function transcriptPrivateIds(entries) {
+  const ids = new Set();
+  for (const entry of entries ?? []) {
+    if (entry?.type !== 'delivery' || !Array.isArray(entry.item?.parts)) continue;
+    for (const part of entry.item.parts) {
+      if (part?.private === true && typeof part.messageId === 'string') ids.add(part.messageId);
+    }
+  }
+  return ids;
+}
+
+/** Computes a private DM's display state and whether same-binding resend is allowed. */
+export function dmStatusOf(message, memberBindingGen) {
+  const delivery = Array.isArray(message?.deliveries) ? message.deliveries[message.deliveries.length - 1] ?? null : null;
+  const stale = Number.isInteger(memberBindingGen) && Number.isInteger(message?.privateBindingGen)
+    && message.privateBindingGen !== memberBindingGen;
+  const status = delivery?.state ?? delivery?.status ?? 'unknown';
+  const outcome = delivery?.outcome ?? null;
+  const unresolved = status !== 'superseded'
+    && (status === 'failed' || status === 'offline' || status === 'blocked' || outcome === 'unknown');
+  const canResend = !stale && Boolean(delivery?.id) && unresolved;
+  return { status, outcome, delivery, stale, canResend };
 }

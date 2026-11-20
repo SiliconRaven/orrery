@@ -558,11 +558,16 @@ export function taskGraph(tasks) {
   return { layers, edges };
 }
 
-export function createWorkbench({ api, getMembers, getHistoryMembers, getClusters, nameOf, messageName, showMessage, selectCluster, getActivity,
-  renderMarkdown = (value) => [value], workspaceChanged = () => {}, openImage = () => {}, uploadFile, stalled = null, pluginUi = null }) {
+export function createWorkbench(options) {
+  const { api, getMembers, getHistoryMembers, getClusters, nameOf, messageName, showMessage, selectCluster, getActivity,
+    renderMarkdown = (value) => [value], workspaceChanged = () => {}, openImage = () => {}, uploadFile, stalled = null, pluginUi = null, embedded = null } = options;
   let pluginIds = null;   // Before the registry is known, keep the existing task and coordinator views.
+  let lastPlugins = null;
+  let lastTabs = [];
   let collectionTabs = [];
   let renderedPluginTabs = null;
+  let disposed = false;
+  const embeddedChildren = embedded ? null : new Set();
   const tasksEnabled = () => pluginIds === null || pluginIds.includes('tasks');
   const coordinatorEnabled = () => pluginIds === null || pluginIds.includes('coordinator');
   const title = h('h2', {}, lt("任务工作台"));
@@ -570,13 +575,18 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   // A third-party plugin's tab (docs/external-plugins.md「网页界面」) shows its frame here, outside `content`: render()
   // rebuilds `content`, and a frame moved in the page would reload. Only shown, hidden and filled by pluginUi.
   const pluginPane = h('div', { class: 'wb-plugin-pane', hidden: true });
-  const dialog = h('dialog', { class: 'workbench', 'aria-label': lt("任务工作台") },
-    h('div', { class: 'workbench-shell' }, h('header', { class: 'workbench-head' },
+  const shell = embedded
+    ? h('div', { class: 'workbench-shell wb-embedded' }, content, pluginPane)
+    : h('div', { class: 'workbench-shell' }, h('header', { class: 'workbench-head' },
       h('div', { class: 'workbench-title' }, h('span', { class: 'workbench-badge' }, lt("工作区")), title),
-      h('button', { class: 'icon', type: 'button', 'aria-label': lt("关闭任务工作台"), onclick: () => dialog.close() }, icon('close'))), content, pluginPane));
-  document.body.append(dialog);
+      h('button', { class: 'icon', type: 'button', 'aria-label': lt("关闭任务工作台"), onclick: () => dialog.close() }, icon('close'))), content, pluginPane);
+  const dialog = embedded ? null : h('dialog', { class: 'workbench', 'aria-label': lt("任务工作台") }, shell);
+  if (dialog) document.body.append(dialog);
+  else embedded.container.replaceChildren(shell);
+  const isOpen = () => (embedded ? !disposed && shell.isConnected : dialog.open);
+  const closeWorkbench = () => { if (embedded) embedded.onClose?.(); else dialog.close(); };
   // A language switch draws the open workbench again; its view (tab, filters, selected task, scroll places) is kept.
-  onLanguageChange(() => { taskBar.relabel(); if (dialog.open) render(); });
+  const unsubLanguage = onLanguageChange(() => { taskBar.relabel(); if (isOpen()) render(); });
   const view = { clusterId: null, workspace: null, workspaceKey: null, taskId: null, detail: null, context: null, request: 0, error: null, tab: 'tasks',
     collectionMode: 'public', collectionTask: null, collectionContext: null, collectionDetail: null, publicFilters: {}, collectionRequest: 0,
     overview: false, allGroups: [], allRequest: 0, taskFilters: {}, taskSort: DEFAULT_TASK_SORT, quickView: '', loadingTasks: null,
@@ -592,15 +602,15 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   const attachmentEls = new Map();     // built once and moved into each redraw, so thumbnails neither reload nor flicker
   const graphCanvas = createGraphCanvas({ onOpen: (id) => chooseTask(id), rerender: () => render(), settled: () => redraws.settle() });
   // Replacing the nodes would end a graph drag, throw away the open 更多 menu, or swallow the click being pressed.
-  const redraws = redrawGate(dialog, () => render(), () => graphCanvas.busy() || taskBar.busy() || Boolean(content.querySelector('.wb-menu:not([hidden])')));
+  const redraws = redrawGate(embedded ? shell : dialog, () => render(), () => graphCanvas.busy() || taskBar.busy() || Boolean(content.querySelector('.wb-menu:not([hidden])')));
   const path = (suffix) => `/api/clusters/${encodeURIComponent(view.clusterId)}${suffix}`;
   // Keeps --wb-tabs-height (render measures it) right when the tab bar wraps or unwraps on a resize. One observer for the
   // workbench's life, watching only the tab bar on screen: render moves it to the new bar, closing the workbench stops it.
   const tabsObserver = typeof ResizeObserver === 'function' ? new ResizeObserver((entries) => {
     const bar = entries.at(-1).target;
-    if (dialog.open && bar.isConnected) content.style.setProperty('--wb-tabs-height', `${bar.offsetHeight}px`);
+    if (isOpen() && bar.isConnected) content.style.setProperty('--wb-tabs-height', `${bar.offsetHeight}px`);
   }) : null;
-  dialog.addEventListener('close', () => { tabsObserver?.disconnect(); pluginUi?.hideWorkbench(); pluginPane.hidden = true; });
+  dialog?.addEventListener('close', () => { tabsObserver?.disconnect(); pluginUi?.hideWorkbench(); pluginPane.hidden = true; });
 
   // Colour and identity chips: the same id always gets the same tone, in every view and every refresh.
   // `clusterId`: the cluster the member belongs to; views that list several clusters (全部任务) pass each row's own.
@@ -628,7 +638,10 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const name = member?.name ?? nameOf(createdBy);
     if (!member || member.removedAt) return h('span', {}, member ? t("{name}（已移出）", { name }) : name);
     return h('button', { type: 'button', class: 'mention link wb-creator', title: t("查看 {name}", { name }),
-      onclick: () => { dialog.close(); selectCluster(view.clusterId, createdBy); } }, name);
+      onclick: () => {
+        if (embedded?.onOpenMember) embedded.onOpenMember(view.clusterId, createdBy);
+        else { closeWorkbench(); selectCluster(view.clusterId, createdBy); }
+      } }, name);
   };
   const roleChip = (role) => h('span', { class: `wb-role wb-tone-${toneIndex(role.id)}`, title: role.description || undefined },
     h('span', { class: 'wb-role-dot', 'aria-hidden': 'true' }), h('span', {}, role.name));
@@ -848,7 +861,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
         const numHits = numVal !== null ? page.tasks.filter((task) => task.number === numVal) : [];
         const idHits = isHex ? page.tasks.filter((task) => String(task.id).toLowerCase().replace(/-/g, '').startsWith(normalized)) : [];
         const hits = numHits.length ? numHits : idHits;
-        if (hits.length === 1 && cid === view.clusterId && dialog.open) chooseTask(hits[0].id);
+        if (hits.length === 1 && cid === view.clusterId && isOpen()) chooseTask(hits[0].id);
       } catch { /* the filter still applies */ }
     });
 
@@ -1071,7 +1084,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   const watchers = { ticket: 0, shown: 0, afterLoad: null };
   const scheduleRefresh = coalesce(() => {
     if (refreshing) refreshAgain = true;
-    else if (view.overview && dialog.open) void loadAll();
+    else if (view.overview && isOpen()) void loadAll();
     else void refresh();
   }, REFRESH_COALESCE_MS);
   const finishRefresh = () => {
@@ -1081,7 +1094,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   };
 
   async function refresh() {
-    if (!dialog.open || !view.clusterId || view.overview) return;
+    if (!isOpen() || !view.clusterId || view.overview) return;
     refreshing++;
     const request = ++view.request;
     const cid = view.clusterId;
@@ -1092,7 +1105,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     const filtered = hasTaskFilters(filters);
     const watchersTicket = ++watchers.ticket;
     const stale = () => request !== view.request || cid !== view.clusterId || tab !== view.tab || page.key !== taskPageSpec().key
-      || (tab === 'tasks' && taskId !== view.taskId) || !dialog.open;
+      || (tab === 'tasks' && taskId !== view.taskId) || !isOpen();
     try {
       const [workspace, detail, context] = await Promise.all([
         workspacePage(page.filters),
@@ -1153,7 +1166,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
         try { return { cluster, data: await api('GET', `/api/clusters/${encodeURIComponent(cluster.id)}/workspace?pageOnly=1`), error: null }; }
         catch (e) { return { cluster, data: null, error: e.message }; }
       }));
-      if (request === view.allRequest && view.overview && dialog.open) { view.allGroups = groups; render(); }
+      if (request === view.allRequest && view.overview && isOpen()) { view.allGroups = groups; render(); }
     } finally { finishRefresh(); }
   }
 
@@ -1175,10 +1188,10 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       h('button', { type: 'button', class: 'small', title: t("所有群共用的标签和标签组"), onclick: openLabels }, t("标签库"))),
       stalledBanner(stalled?.visible() ?? [], clusterName),
       view.allGroups.length ? view.allGroups.map((group) => h('section', { class: 'workbench-detail workbench-overview-group' },
-        h('div', { class: 'workbench-bar' }, h('h3', {}, group.cluster.name), h('button', { type: 'button', class: 'small', onclick: () => { selectCluster(group.cluster.id); open(group.cluster.id); } }, t("打开群工作台"))),
+        h('div', { class: 'workbench-bar' }, h('h3', {}, group.cluster.name), h('button', { type: 'button', class: 'small', onclick: () => { if (embedded?.onOpenCluster) embedded.onOpenCluster(group.cluster.id); else selectCluster(group.cluster.id); open(group.cluster.id); } }, t("打开群工作台"))),
         group.error ? h('p', { class: 'form-error' }, t("加载失败：{error}", { error: group.error })) : null,
         group.data?.tasks?.length ? group.data.tasks.map((task) => h('button', { type: 'button', class: `workbench-member-task wb-task-${task.status}`,
-          onclick: () => { selectCluster(group.cluster.id); open(group.cluster.id, task.id); } },
+          onclick: () => { if (embedded?.onOpenCluster) embedded.onOpenCluster(group.cluster.id); else selectCluster(group.cluster.id); open(group.cluster.id, task.id); } },
         h('span', { class: 'wb-task-title' }, ...taskTitleNodes(task)), statusChip(task), mergeBadge(task), priorityChip(task), dependencyChip(task),
         stalledChip(task, stalled?.taskMap(group.cluster.id) ?? new Map()), ...hiddenChips(task, group.cluster.id), task.assignedMemberId ? memberChip(task.assignedMemberId, group.cluster.id) : null))
           : group.data ? emptyState(t("暂无任务"), { compact: true }) : h('p', { class: 'muted' }, t("正在加载…")),
@@ -1195,7 +1208,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       const next = await workspacePage(page.filters, cursor);
       // Appends to whatever is on screen now, in the same step as this check, so it never drops what a refresh committed
       // meanwhile; a page for an older list (other cursor or filters) is dropped instead.
-      if (!dialog.open || view.overview || cid !== view.clusterId || page.key !== taskPageSpec().key || cursor !== view.workspace?.nextCursor) return;
+      if (!isOpen() || view.overview || cid !== view.clusterId || page.key !== taskPageSpec().key || cursor !== view.workspace?.nextCursor) return;
       view.workspace = { ...view.workspace, tasks: [...view.workspace.tasks, ...next.tasks], nextCursor: next.nextCursor };
       view.error = null;
     } catch (e) { if (cid === view.clusterId) view.error = e.message; }
@@ -1228,8 +1241,18 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   }
 
   function chooseTab(tab) {
-    if (view.tab === tab) return;
+    if (tab === 'all' && embedded && view.clusterId) {
+      if (view.overview) return;
+      view.overview = true;
+      view.allGroups = [];
+      view.request++;
+      render();
+      void loadAll();
+      return;
+    }
+    if (!view.overview && view.tab === tab) return;
     if (view.tab === 'collections') view.collectionRequest++;
+    view.overview = false;
     view.tab = tab;
     view.loadingTasks = null;
     render();
@@ -1303,11 +1326,11 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
           h('span', { class: 'wb-role-dot', 'aria-hidden': 'true' }), taskName(id))) : h('span', { class: 'muted' }, t("其他"))),
       collectionTabs.map((tab) => tab.itemRow?.(item, memberChip)),
       h('div', { class: 'workbench-actions' }, h('button', { type: 'button', class: 'small', onclick: () => noticeDialog(message.body || lt("这条消息没有文字正文。"), lt("消息原文")) }, t("查看原文")),
-        h('button', { type: 'button', class: 'small', onclick: () => { dialog.close(); showMessage(view.clusterId, message.id); } }, t("查看群聊上下文与附件"))));
+        h('button', { type: 'button', class: 'small', onclick: () => { closeWorkbench(); showMessage(view.clusterId, message.id); } }, t("查看群聊上下文与附件"))));
   }
 
   function messageLink(id, label = t("查看来源消息")) {
-    return h('button', { type: 'button', class: 'small', onclick: () => { dialog.close(); showMessage(view.clusterId, id); } }, `${label} ${id.slice(0, 8)}`);
+    return h('button', { type: 'button', class: 'small', onclick: () => { closeWorkbench(); showMessage(view.clusterId, id); } }, `${label} ${id.slice(0, 8)}`);
   }
 
   /** Markdown that folds past about 12 lines (fitLongText decides after each redraw); 展开/收起 survives redraws. */
@@ -1690,7 +1713,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     railPinned = true;
     card.scrollIntoView({ block: 'start', behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
   }
-  const onSettingsPage = () => !view.overview && view.tab === 'settings' && dialog.open;
+  const onSettingsPage = () => !view.overview && view.tab === 'settings' && isOpen();
   content.addEventListener('scroll', () => { if (onSettingsPage() && !railPinned) { const id = sectionInView(); if (id && id !== view.settingsSection) markSection(id); } }, { passive: true });
   content.addEventListener('scrollend', () => { railPinned = false; });
   // The user taking over the scroll (wheel, touch, keys, the scrollbar) ends the pin at once: a rail click that did not need
@@ -2503,11 +2526,11 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       try { messageFiles.set(id, (await api('GET', `/api/clusters/${encodeURIComponent(cid)}/messages/${encodeURIComponent(id)}`)).attachments ?? []); }
       catch { messageFiles.set(id, []); }
       evidenceLoading.delete(id);
-    })).then(() => { if (cid === view.clusterId && dialog.open) render(); });
+    })).then(() => { if (cid === view.clusterId && isOpen()) render(); });
   }
 
   function render() {
-    if (dialog.open && !redraws.request()) return;
+    if (isOpen() && !redraws.request()) return;
     rememberEvidenceFiles();
     const active = content.contains(document.activeElement) && document.activeElement?.closest('.task-diff, .wb-filterbar') ? document.activeElement : null;
     const selection = typeof active?.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
@@ -2517,27 +2540,40 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       detail: content.querySelector('.wb-task-detail')?.scrollTop ?? 0, task: content.querySelector('.wb-task-detail')?.dataset.taskId,
       rail: content.querySelector('.wb-rp-rail')?.scrollLeft ?? 0 };
     // A plugin tab that is no longer offered (its grant ended, another cluster) falls back to the task list.
-    const pluginTabs = !view.overview ? (pluginUi?.workbenchTabs(view.clusterId) ?? []) : [];
+    const pluginTabs = !embedded && !view.overview ? (pluginUi?.workbenchTabs(view.clusterId) ?? []) : [];
     renderedPluginTabs = view.overview ? null : JSON.stringify([view.clusterId, pluginTabs.map((tab) => [tab.id, tab.name])]);
     if (view.tab.startsWith('plugin:') && !pluginTabs.some((tab) => `plugin:${tab.id}` === view.tab)) view.tab = 'tasks';
-    const pluginTab = !view.overview && view.tab.startsWith('plugin:') ? view.tab.slice('plugin:'.length) : null;
+    const pluginTab = !embedded && !view.overview && view.tab.startsWith('plugin:') ? view.tab.slice('plugin:'.length) : null;
     content.classList.toggle('wb-split', !view.overview && view.tab === 'tasks');
     content.classList.toggle('wb-plugin-tab', Boolean(pluginTab));
     pluginPane.hidden = !pluginTab;
-    if (pluginTab) pluginUi.showWorkbench(view.clusterId, pluginTab, pluginPane); else pluginUi?.hideWorkbench();
+    if (!embedded) {
+      if (pluginTab) pluginUi.showWorkbench(view.clusterId, pluginTab, pluginPane); else pluginUi?.hideWorkbench();
+    }
     stalledTasks = view.clusterId && stalled ? stalled.taskMap(view.clusterId) : new Map();
     tabsObserver?.disconnect();
-    if (view.overview) { title.textContent = t("全部任务"); content.replaceChildren(overviewView()); return; }
+    const tabs = [['tasks', t("任务")], ['graph', t("依赖图")], ['members', t("成员工作")], ['collections', t("资料库")], ['settings', coordinatorEnabled() ? t("角色与协调") : t("角色")],
+      ...(embedded && view.clusterId ? [['all', t("全部任务")]] : []),
+      ...pluginTabs.map((tab) => [`plugin:${tab.id}`, tab.name, true])];
+    const tabBar = h('nav', { class: 'workbench-tabs', 'aria-label': t('工作台视图') }, tabs.map(([id, label, external]) => h('button', {
+      type: 'button', 'aria-current': String(view.overview ? id === 'all' : view.tab === id), onclick: () => chooseTab(id), 'data-wb-plugin-tab': external ? id.slice('plugin:'.length) : null,
+      title: external ? t('{label}（第三方插件）', { label }) : null, class: external ? 'wb-plugin-tab-button' : null,
+    }, external ? [icon('layers', 'ico-xs'), h('span', { class: 'sr-only' }, t('第三方插件：'))] : null, label)));
+    if (view.overview) {
+      title.textContent = t("全部任务");
+      if (embedded && view.clusterId) {
+        content.replaceChildren(tabBar, overviewView());
+        content.style.setProperty('--wb-tabs-height', `${tabBar.offsetHeight}px`);
+        tabsObserver?.observe(tabBar);
+      } else {
+        content.replaceChildren(overviewView());
+      }
+      return;
+    }
     title.textContent = t("任务工作台 · {group}", { group: getClusters().find((cluster) => cluster.id === view.clusterId)?.name ?? t("未知群") });
     const page = taskPageSpec();
     const loaded = view.workspaceKey === page.key && view.workspace;
     const tasks = quickViewTasks(loaded?.tasks ?? [], view.quickView);
-    const tabs = [['tasks', t("任务")], ['graph', t("依赖图")], ['members', t("成员工作")], ['collections', t("资料库")], ['settings', coordinatorEnabled() ? t("角色与协调") : t("角色")],
-      ...pluginTabs.map((tab) => [`plugin:${tab.id}`, tab.name, true])];
-    const tabBar = h('nav', { class: 'workbench-tabs', 'aria-label': t('工作台视图') }, tabs.map(([id, label, external]) => h('button', {
-      type: 'button', 'aria-current': String(view.tab === id), onclick: () => chooseTab(id), 'data-wb-plugin-tab': external ? id.slice('plugin:'.length) : null,
-      title: external ? t('{label}（第三方插件）', { label }) : null, class: external ? 'wb-plugin-tab-button' : null,
-    }, external ? [icon('layers', 'ico-xs'), h('span', { class: 'sr-only' }, t('第三方插件：'))] : null, label)));
     if (pluginTab) {
       content.replaceChildren(tabBar);
       content.style.setProperty('--wb-tabs-height', `${tabBar.offsetHeight}px`);
@@ -2586,7 +2622,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     } else if (focusKey) content.querySelector(`[data-wb-focus="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
   }
 
-  function open(clusterId, taskId) {
+  function open(clusterId, taskId, initial = null) {
       view.overview = false;
       view.allRequest++;
       if (view.clusterId !== clusterId) {
@@ -2598,11 +2634,13 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
         messageFiles.clear();
         attachmentEls.clear();
       }
+      if (initial?.tab) view.tab = initial.tab;
+      if (initial?.collectionMode) view.collectionMode = initial.collectionMode;
       if (taskId !== undefined) Object.assign(view, { taskId, detail: null, context: null, tab: 'tasks' });
       view.error = null;
       view.loadingTasks = null;
       render();
-      if (!dialog.open) dialog.showModal();
+      if (dialog && !dialog.open) dialog.showModal();
       if (view.tab === 'collections') collectionTabs.find((tab) => tab.id === view.collectionMode)?.load();
       refresh();
   }
@@ -2620,8 +2658,33 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     } catch { /* the next refresh of the detail shows them */ }
   }
 
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    view.request++;
+    view.allRequest++;
+    unsubLanguage?.();
+    tabsObserver?.disconnect();
+    shell.remove();
+  }
+
+  const eachChild = (fn) => { if (embeddedChildren) for (const child of embeddedChildren) fn(child); };
+
   return {
     open,
+    dispose,
+    /** Mounts an independent embedded workbench inside a floating panel container (e.g. Star Map). */
+    mountEmbedded(container, { clusterId = null, overview = false, tab = 'tasks', collectionMode = 'public', onClose = null, onOpenMember = null, onOpenCluster = null } = {}) {
+      const child = createWorkbench({ ...options, embedded: { container, onClose, onOpenMember, onOpenCluster } });
+      if (lastPlugins !== null || lastTabs.length) child.setPlugins(lastPlugins, lastTabs);
+      if (overview) child.openAll();
+      else if (clusterId) child.open(clusterId, undefined, { tab, collectionMode });
+      embeddedChildren?.add(child);
+      return {
+        setCluster(nextId) { if (nextId) child.open(nextId, undefined, { tab, collectionMode }); },
+        unmount() { embeddedChildren?.delete(child); child.dispose(); },
+      };
+    },
     /**
      * A watch or unwatch of `taskId` (no `taskId`: a member was removed): the open detail of that task, or for a removal the
      * open detail of the cluster whatever it shows now (a read in flight may already carry the removed member), re-reads its
@@ -2629,43 +2692,57 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
      * reference cache.
      */
     watchersChanged(clusterId, { taskId = null } = {}) {
-      if (!dialog.open || view.overview || view.clusterId !== clusterId || view.tab !== 'tasks' || !view.taskId) return;
+      eachChild((child) => child.watchersChanged(clusterId, { taskId }));
+      if (!isOpen() || view.overview || view.clusterId !== clusterId || view.tab !== 'tasks' || !view.taskId) return;
       if (taskId && taskId !== view.taskId) return;
       if (view.detail?.task?.id !== view.taskId) { watchers.afterLoad = view.taskId; return; }
       void reloadWatchers(clusterId, view.taskId);
     },
-    openAll() { view.overview = true; view.allGroups = []; view.request++; render(); if (!dialog.open) dialog.showModal(); loadAll(); },
+    openAll() { view.overview = true; view.allGroups = []; view.request++; render(); if (dialog && !dialog.open) dialog.showModal(); loadAll(); },
     changed(event) {
+      eachChild((child) => child.changed(event));
       // The library changed (from any cluster, MCP or the global route): the manager and this cluster's labels reload.
       if (isLibrarySignal(event)) { labelManager?.reload(); if (!view.overview) scheduleRefresh(); return; }
-      if (view.overview && dialog.open) { scheduleRefresh(); return; }
+      if (view.overview && isOpen()) { scheduleRefresh(); return; }
       if (event.clusterId !== view.clusterId) return;
       scheduleRefresh();
-      if (dialog.open && view.tab === 'collections') {
+      if (isOpen() && view.tab === 'collections') {
         if (view.collectionMode === 'public') { if (view.collectionTask) loadPublic(view.collectionTask); }
         else collectionTabs.find((tab) => tab.id === view.collectionMode)?.load();
       }
     },
     removed(clusterId) {
+      eachChild((child) => child.removed(clusterId));
       if (view.overview) return;
-      if (view.clusterId !== clusterId || !dialog.open) return;
+      if (view.clusterId !== clusterId || !isOpen()) return;
+      if (embedded) { embedded.onClose?.(); return; }
       dialog.close();
       noticeDialog(lt("该群聊已移入回收站，可恢复后继续使用。"), lt("群聊已删除"));
     },
-    clustersChanged() { if (view.overview && dialog.open) scheduleRefresh(); },
+    clustersChanged() {
+      eachChild((child) => child.clustersChanged());
+      if (view.overview && isOpen()) scheduleRefresh();
+    },
     /** The plugin UIs this cluster offers changed (pluginUi read them): redraw only if the tab bar actually changed. */
     pluginTabsChanged(clusterId) {
-      if (!dialog.open || view.overview || view.clusterId !== clusterId) return;
+      eachChild((child) => child.pluginTabsChanged(clusterId));
+      if (embedded || !isOpen() || view.overview || view.clusterId !== clusterId) return;
       const tabs = pluginUi?.workbenchTabs(clusterId) ?? [];
       if (JSON.stringify([clusterId, tabs.map((tab) => [tab.id, tab.name])]) !== renderedPluginTabs) render();
     },
     /** The visible stalled-member hints changed: redraw through the gate. */
-    stalledChanged() { if (dialog.open) render(); },
+    stalledChanged() {
+      eachChild((child) => child.stalledChanged());
+      if (isOpen()) render();
+    },
     openTask: open,
     lookup,
     pickTasks,
     /** The answer of GET /api/plugins; null when it could not be read. */
     setPlugins(result, tabs) {
+      lastPlugins = result;
+      lastTabs = tabs;
+      eachChild((child) => child.setPlugins(result, tabs));
       pluginIds = result ? result.plugins.map((plugin) => plugin.id) : null;
       collectionTabs = tabs.map((createTab) => createTab({
         getClusterId: () => view.clusterId, getHistoryMembers, taskOptionsPager, itemCard, render, beginCollectionRequest,
@@ -2679,13 +2756,14 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
      * workbench, the tab buttons included; an open one falls back to the public materials.
      */
     detachPlugins(ids) {
+      eachChild((child) => child.detachPlugins(ids));
       collectionTabs = collectionTabs.filter((tab) => !ids.includes(tab.pluginId));
       if (view.collectionMode !== 'public' && !collectionTabs.some((tab) => tab.id === view.collectionMode)) {
         view.collectionMode = 'public';
         view.collectionRequest++;   // a late answer to the removed tab's load is no longer current
-        if (dialog.open && view.tab === 'collections' && view.collectionTask) loadPublic(view.collectionTask);
+        if (isOpen() && view.tab === 'collections' && view.collectionTask) loadPublic(view.collectionTask);
       }
-      if (dialog.open) render();
+      if (isOpen()) render();
     },
     tasksEnabled,
     coordinatorEnabled,

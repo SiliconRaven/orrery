@@ -139,6 +139,7 @@ test('Hub chat helpers: merging by id, older pages, stream events, member activi
   assert.deepEqual(T.prependMessages([b], [a, b]).map((m: any) => m.id), ['a', 'b']);
   const event = { kind: 'message', clusterId: 'c', payload: { message: a, deliveries: [{ memberId: 'm' }], attachments: [{ id: 'f' }] } };
   assert.deepEqual(T.eventMessage(event, 'c'), { ...a, attachments: [{ id: 'f' }] });
+  assert.equal(T.eventMessage({ ...event, payload: { ...event.payload, message: { ...a, privateTo: 'm' } } }, 'c'), null);
   assert.equal(T.eventMessage(event, 'other'), null);
   assert.equal(T.eventMessage({ kind: 'delivery', payload: {} }, 'c'), null);
   assert.equal(T.isMemberActivity(event, 'm'), true, 'a delivery to the member');
@@ -516,11 +517,17 @@ test("manager: a window closed and opened again for the same target ignores the 
     const member = layer.children[0];
     const reads = () => f.calls.filter((c) => c.path.includes('/transcript')).length;
     assert.equal(reads(), 2);
-    held[2].resolve(ok([item('stale-entry')], { after: 'A0', hasMore: true }));
+    const transcriptHeld = held.filter((h) => h.path.includes('/transcript'));
+    const dmHeld = held.filter((h) => h.path.includes('privateWith=m'));
+    assert.equal(transcriptHeld.length, 2);
+    assert.equal(dmHeld.length, 2);
+    transcriptHeld[0].resolve(ok([item('stale-entry')], { after: 'A0', hasMore: true }));
+    dmHeld[0].resolve([{ id: 'stale-dm', clusterId: 'c', from: 'user', privateTo: 'm', body: 'stale-dm-body', deliveries: [] }]);
     await flush();
     assert.equal(reads(), 2, 'no next page for a closed window');
-    assert.doesNotMatch(member.textContent, /stale-entry/);
-    held[3].resolve(ok([item('fresh-entry')], { after: 'A1' }));
+    assert.doesNotMatch(member.textContent, /stale-entry|stale-dm-body/);
+    transcriptHeld[1].resolve(ok([item('fresh-entry')], { after: 'A1' }));
+    dmHeld[1].resolve([]);
     await flush();
     assert.match(member.textContent, /fresh-entry/);
     windows.closeAll();
@@ -635,4 +642,503 @@ test('rendering safety: the window files never parse HTML, load no URL from cont
   // Markdown comes only from the host's public helper, which re-exports markdown.js itself.
   assert.match(windows, /^import \{[^}]*\bmarkdownBlocks\b[^}]*\} from '\/plugin-host\/v1\.js';/m);
   assert.match(readFileSync(join(REPO_ROOT, 'src/web/public/plugin-host/v1.js'), 'utf8'), /^export \{ markdownBlocks \} from '\.\.\/markdown\.js';/m);
+});
+
+test('private DM helpers: path, expanded delivery distinction, SSE updates, deduplication, and stale bindingGen', () => {
+  assert.equal(T.privateMessagesPath('c 1', 'm/2'), '/api/clusters/c%201/messages?privateWith=m%2F2&limit=50');
+  assert.equal(T.privateMessagesPath('c', 'm', 'id 1'), '/api/clusters/c/messages?privateWith=m&limit=50&before=id%201');
+
+  const entries = T.transcriptEntries([
+    item('d-group', 'orrery_delivery', { parts: [{ messageId: 'm1', from: 'user', body: 'hi group' }] }),
+    item('d-dm', 'orrery_delivery', { parts: [{ messageId: 'm2', from: 'user', body: 'hi dm', private: true }] }),
+  ]);
+  assert.equal(T.isPrivateDeliveryEntry(entries[0]), false);
+  assert.equal(T.isPrivateDeliveryEntry(entries[1]), true);
+  assert.equal(T.isCard(entries[0]), true, 'group delivery stays a collapsible card');
+  assert.equal(T.isCard(entries[1]), false, 'private DM renders expanded, not as a collapsible card');
+  assert.deepEqual([...T.transcriptPrivateIds(entries)], ['m2']);
+
+  const dm = T.eventPrivateMessage({ kind: 'message', payload: { message: { id: 'dm1', clusterId: 'c', privateTo: 'm', privateBindingGen: 2, body: 'secret' },
+    deliveries: [{ id: 'del1', messageId: 'dm1', status: 'queued' }] } }, 'c', 'm');
+  assert.equal(dm?.id, 'dm1');
+  assert.equal(T.eventPrivateMessage({ kind: 'message', payload: { message: { id: 'pub1', clusterId: 'c', body: 'public' } } }, 'c', 'm'), null);
+
+  const updated = T.applyPrivateDeliveryEvent([dm], { kind: 'delivery', payload: { delivery: { id: 'del1', messageId: 'dm1', status: 'failed', reason: 'timeout' } } });
+  assert.deepEqual(T.dmStatusOf(updated[0], 2), {
+    status: 'failed',
+    outcome: null,
+    delivery: { id: 'del1', messageId: 'dm1', status: 'failed', reason: 'timeout' },
+    stale: false,
+    canResend: true,
+  });
+  assert.deepEqual(T.dmStatusOf(updated[0], 3), {
+    status: 'failed',
+    outcome: null,
+    delivery: { id: 'del1', messageId: 'dm1', status: 'failed', reason: 'timeout' },
+    stale: true,
+    canResend: false,
+  });
+  assert.deepEqual(T.dmStatusOf({ id: 'dm2', privateBindingGen: 2, deliveries: [{ id: 'del2', state: 'done', outcome: 'unknown' }] }, 2), {
+    status: 'done',
+    outcome: 'unknown',
+    delivery: { id: 'del2', state: 'done', outcome: 'unknown' },
+    stale: false,
+    canResend: true,
+  });
+});
+
+test('manager: member window private DM send, live status, resend, stale binding, and plugin panels', async () => {
+  const doc = new FakeDoc();
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: doc });
+  try {
+    const member = { id: 'm', clusterId: 'c', name: 'Ann', harness: 'claude', bindingGen: 2 };
+    const f = fakeContext((method, path, body: any) => {
+      if (path.startsWith('/api/state')) return { clusters: [{ id: 'c', name: 'Cluster' }], members: [member] };
+      if (method === 'GET' && path.includes('privateWith=m')) {
+        return [
+          { id: 'synced-dm', clusterId: 'c', from: 'user', privateTo: 'm', privateBindingGen: 2, body: 'sent via orrery',
+            deliveries: [{ id: 'd-sync', messageId: 'synced-dm', state: 'done' }] },
+          { id: 'old-dm', clusterId: 'c', from: 'user', privateTo: 'm', privateBindingGen: 1, body: 'from old binding',
+            deliveries: [{ id: 'd-old', messageId: 'old-dm', state: 'failed', reason: 'offline' }] },
+          { id: 'cur-fail', clusterId: 'c', from: 'user', privateTo: 'm', privateBindingGen: 2, body: 'retry me',
+            deliveries: [{ id: 'd-cur', messageId: 'cur-fail', state: 'failed', reason: 'boom' }] },
+        ];
+      }
+      if (method === 'GET' && path.includes('/transcript')) {
+        return ok([
+          item('u1', 'user', { text: 'typed natively' }),
+          item('dm-tr', 'orrery_delivery', { parts: [{ messageId: 'synced-dm', from: 'user', body: 'sent via orrery', private: true }] }),
+        ]);
+      }
+      if (method === 'POST' && path === '/api/clusters/c/messages') {
+        return { id: 'new-dm', clusterId: 'c', from: 'user', privateTo: 'm', privateBindingGen: 2, body: body.body,
+          deliveries: [{ id: 'd-new', messageId: 'new-dm', state: 'queued' }] };
+      }
+      if (method === 'GET' && path === '/api/clusters/c/deliveries/d-cur/timeline') {
+        return { deliveryId: 'd-cur', resend: { available: true, needsConfirmation: false } };
+      }
+      if (method === 'POST' && path === '/api/clusters/c/deliveries/d-cur/resend') {
+        return { message: { id: 'resent-dm', clusterId: 'c', from: 'user', privateTo: 'm', privateBindingGen: 2, body: 'retry me' },
+          delivery: { id: 'd-resent', messageId: 'resent-dm', state: 'queued' } };
+      }
+      return {};
+    });
+    let extClosed = 0;
+    const extShell = new FakeNode('section', doc);
+    (f.ctx as any).pluginUi = { mountStarmapFrame: () => ({ shell: extShell, close: () => { extClosed++; } }) };
+
+    const root = new FakeNode('div', doc);
+    const windows = W.createWindows({ root, ctx: f.ctx });
+    windows.open({ kind: 'member', clusterId: 'c', memberId: 'm' });
+    await flush();
+    const layer = root.children[0];
+    const win = layer.children[0];
+
+    // Native user bubble vs expanded Orrery DM bubble both render cleanly; synced done DM is deduplicated from dmTray.
+    assert.match(win.textContent, /你 · 在 Claude 里输入/);
+    assert.match(win.textContent, /经 Orrery 私聊/);
+    assert.match(win.textContent, /sent via orrery/);
+    assert.equal(win.find((n) => n.attrs.get('data-dm-id') === 'synced-dm').length, 0, 'done DM already in transcript must not duplicate in dmTray');
+    // Old binding DM is labeled 旧对话 with no resend button; current failed DM has Retry button.
+    assert.match(win.textContent, /旧对话/);
+    const retryBtns = win.find((n) => n.tag === 'button' && n.textContent === '重试');
+    assert.equal(retryBtns.length, 1, 'only same-binding failed DM gets a retry button');
+    retryBtns[0].fire('click');
+    await flush();
+    assert.ok(f.calls.some((c) => c.method === 'POST' && c.path === '/api/clusters/c/deliveries/d-cur/resend'));
+
+    // Sending a new private DM calls POST /messages with private: true and expectedBindingGen.
+    const input = win.find((n) => n.tag === 'textarea')[0];
+    input.value = 'private hello';
+    await win.find((n) => n.tag === 'form')[0].fire('submit');
+    await flush();
+    assert.deepEqual(f.calls.find((c) => c.method === 'POST' && c.path === '/api/clusters/c/messages')?.body,
+      { body: 'private hello', to: ['m'], private: true, expectedBindingGen: 2 });
+    assert.equal(input.value, '');
+
+    // Opening same-page panel & restricted external panel, theme sync, and plugin panel release.
+    let unmounted = 0;
+    const themesSeen: string[] = [];
+    const panel = {
+      key: 'ext:demo', id: 'demo', pluginId: 'ext', trusted: true, icon: 'tasks', scope: 'cluster',
+      title: () => 'Demo Panel', defaultSize: { w: 500, h: 400 },
+      mount(el: any, pctx: any) {
+        pctx.onThemeChange((th: any) => themesSeen.push(th.id));
+        el.append('panel body');
+      },
+      unmount() { unmounted++; },
+    };
+    windows.open({ kind: 'panel', panel, clusterId: 'c' });
+    windows.open({ kind: 'external-panel', item: { pluginId: 'tp', name: 'Restricted TP' }, clusterId: 'c' });
+    assert.equal(layer.children.length, 3);
+    assert.match(layer.children[1].textContent, /第三方插件/);
+    assert.match(layer.children[2].textContent, /第三方插件/);
+    windows.setTheme({ id: 'sol', scheme: 'dark', tokens: {} });
+    assert.deepEqual(themesSeen, ['sol']);
+    windows.closePluginPanels('ext');
+    assert.equal(unmounted, 1);
+    assert.equal(layer.children.length, 2);
+    windows.closeAll();
+    assert.equal(extClosed, 1);
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'document', saved); else delete (globalThis as any).document;
+  }
+});
+
+test('manager: rebind guards private DM draft, uncertain resend asks confirmDuplicate, panel guards draft & isolates multi-cluster instances', async () => {
+  const doc = new FakeDoc();
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: doc });
+  try {
+    let memberGen = 1;
+    let simulateRace = false;
+    const f = fakeContext((method, path, body: any) => {
+      if (path.startsWith('/api/state')) {
+        return {
+          clusters: [{ id: 'c1', name: 'Cluster 1' }, { id: 'c2', name: 'Cluster 2' }],
+          members: [{ id: 'm', clusterId: 'c1', name: 'Ann', harness: 'claude', bindingGen: memberGen }],
+        };
+      }
+      if (method === 'GET' && path.includes('privateWith=m')) {
+        return [
+          { id: 'uncertain-dm', clusterId: 'c1', from: 'user', privateTo: 'm', privateBindingGen: 1, body: 'did it run?',
+            deliveries: [{ id: 'd-unk', messageId: 'uncertain-dm', state: 'done', outcome: 'unknown', error: 'timeout' }] },
+          { id: 'stale-dm', clusterId: 'c1', from: 'user', privateTo: 'm', privateBindingGen: 0, body: 'old gen',
+            deliveries: [{ id: 'd-old', messageId: 'stale-dm', state: 'failed' }] },
+        ];
+      }
+      if (method === 'GET' && path.includes('/transcript')) return ok([]);
+      if (method === 'GET' && path === '/api/clusters/c1/deliveries/d-unk/timeline') {
+        return { deliveryId: 'd-unk', resend: { available: true, needsConfirmation: true } };
+      }
+      if (method === 'POST' && path === '/api/clusters/c1/deliveries/d-unk/resend') {
+        return { message: { id: 'resent-unk', clusterId: 'c1', from: 'user', privateTo: 'm', privateBindingGen: memberGen, body: 'did it run?' },
+          delivery: { id: 'd-unk-2', messageId: 'resent-unk', state: 'queued' } };
+      }
+      if (method === 'POST' && path === '/api/clusters/c1/messages') {
+        if (simulateRace) {
+          simulateRace = false;
+          throw Object.assign(new Error('member binding changed'), { data: { code: 'BINDING_CHANGED' } });
+        }
+        return { id: 'dm-sent', clusterId: 'c1', from: 'user', privateTo: 'm', privateBindingGen: body.expectedBindingGen ?? memberGen, body: body.body,
+          deliveries: [{ id: 'd-sent', messageId: 'dm-sent', state: 'queued' }] };
+      }
+      return {};
+    });
+
+    const asks: any[] = [];
+    let nextAskAnswer = false;
+    const askClose = async (opts: any) => { asks.push(opts); return nextAskAnswer; };
+
+    const root = new FakeNode('div', doc);
+    const windows = W.createWindows({ root, ctx: f.ctx, askClose });
+    windows.open({ kind: 'member', clusterId: 'c1', memberId: 'm' });
+    await flush();
+    const layer = root.children[0];
+    const memWin = layer.children[0];
+
+    // 1. Outcome-unknown DM shows retry button, checks timeline needsConfirmation, cancels cleanly, then sends confirmDuplicate: true.
+    assert.match(memWin.textContent, /结果未知/);
+    const retryBtns = memWin.find((n) => n.tag === 'button' && n.textContent === '重试');
+    assert.equal(retryBtns.length, 1, 'uncertain DM gets retry button while stale DM does not');
+    nextAskAnswer = false;
+    retryBtns[0].fire('click');
+    await flush();
+    assert.equal(asks.length, 1, 'uncertain resend opens confirmation dialog');
+    assert.equal(f.calls.some((c) => c.method === 'POST' && c.path.includes('/resend')), false, 'cancelling confirm does not POST resend');
+
+    nextAskAnswer = true;
+    retryBtns[0].fire('click');
+    await flush();
+    assert.equal(asks.length, 2);
+    assert.deepEqual(f.calls.find((c) => c.method === 'POST' && c.path === '/api/clusters/c1/deliveries/d-unk/resend')?.body,
+      { confirmDuplicate: true }, 'confirming uncertain resend sends confirmDuplicate: true');
+
+    // 2. Writing a draft on bindingGen 1, then rebinding to bindingGen 2 preserves draft and blocks silent send until user confirms.
+    const input = memWin.find((n) => n.tag === 'textarea')[0];
+    input.value = 'only for session A';
+    input.fire('input');
+    memberGen = 2;
+    f.emit({ kind: 'member', payload: { member: { id: 'm', clusterId: 'c1', name: 'Ann', harness: 'claude', bindingGen: 2 }, rebind: true } });
+    await flush();
+    assert.equal(input.value, 'only for session A', 'draft preserved across rebind');
+    const sendBtn = memWin.find((n) => n.tag === 'button' && n.classes.has('smw-send'))[0];
+    assert.equal(sendBtn.disabled, true, 'send disabled until user confirms new conversation');
+    await memWin.find((n) => n.tag === 'form')[0].fire('submit');
+    await flush();
+    assert.equal(f.calls.some((c) => c.method === 'POST' && c.path === '/api/clusters/c1/messages'), false, 'blocked submit does not POST');
+
+    // Confirming the new conversation re-enables send and submits with expectedBindingGen: 2.
+    const confirmRebindBtn = memWin.find((n) => n.tag === 'button' && n.classes.has('smw-rebind-ok'))[0];
+    confirmRebindBtn.fire('click');
+    assert.equal(sendBtn.disabled, false);
+    // First simulate a race where the member moved to bindingGen 3 on the Hub before SSE arrives: draft must stay, re-lock, and refresh directory.
+    simulateRace = true;
+    memberGen = 3;
+    await memWin.find((n) => n.tag === 'form')[0].fire('submit');
+    await flush();
+    assert.equal(input.value, 'only for session A', 'draft kept after BINDING_CHANGED race');
+    assert.equal(sendBtn.disabled, true, 're-locked after BINDING_CHANGED race');
+    assert.equal(confirmRebindBtn.disabled, false, 'confirm unlocks once directory.refresh() observes bindingGen 3');
+
+    // Confirm again and send cleanly to bindingGen 3.
+    confirmRebindBtn.fire('click');
+    await memWin.find((n) => n.tag === 'form')[0].fire('submit');
+    await flush();
+    assert.deepEqual(f.calls.filter((c) => c.method === 'POST' && c.path === '/api/clusters/c1/messages').at(-1)?.body,
+      { body: 'only for session A', to: ['m'], private: true, expectedBindingGen: 3 });
+    assert.equal(input.value, '');
+
+    // 3. Same-page panel draft protection on Esc and Close (cancel keeps draft, confirm closes & unmounts).
+    // Also test per-instance lifecycle across two clusters simultaneously (c1 & c2)!
+    const mounted = new Map<any, string>();
+    const unmountedClusters: string[] = [];
+    const clusterPanel = {
+      key: 'tasks:tasks', id: 'tasks', pluginId: 'tasks', trusted: false, icon: 'tasks', scope: 'cluster',
+      title: () => 'Tasks', defaultSize: { w: 500, h: 400 },
+      mount(el: any, pctx: any) {
+        mounted.set(el, pctx.clusterId);
+        const ta = doc.createElement('textarea');
+        el.append(ta);
+        return () => {
+          if (mounted.has(el)) {
+            unmountedClusters.push(mounted.get(el)!);
+            mounted.delete(el);
+          }
+        };
+      },
+      unmount(el: any) {
+        if (mounted.has(el)) {
+          unmountedClusters.push(mounted.get(el)!);
+          mounted.delete(el);
+        }
+      },
+    };
+    windows.open({ kind: 'panel', panel: clusterPanel, clusterId: 'c1' });
+    windows.open({ kind: 'panel', panel: clusterPanel, clusterId: 'c2' });
+    assert.equal(mounted.size, 2, 'both cluster c1 and c2 panels remain mounted simultaneously');
+
+    const p1Win = layer.children.find((w: any) => w.attrs.get('data-window') === 'panel|tasks:tasks|c1')!;
+    const p2Win = layer.children.find((w: any) => w.attrs.get('data-window') === 'panel|tasks:tasks|c2')!;
+    const p1Ta = p1Win.find((n: any) => n.tag === 'textarea')[0];
+    p1Ta.value = 'unsaved panel draft';
+
+    // Esc keeps panel with unsaved draft open.
+    p1Win.fire('keydown', { key: 'Escape' });
+    assert.equal(layer.children.includes(p1Win), true, 'Esc keeps panel with draft open');
+
+    // Close button asks confirmation; cancelling keeps panel and draft intact.
+    const asksBefore = asks.length;
+    nextAskAnswer = false;
+    p1Win.find((n: any) => n.classes.has('smw-close'))[0].fire('click');
+    await flush();
+    assert.equal(asks.length, asksBefore + 1, 'panel close with draft calls askClose');
+    assert.equal(layer.children.includes(p1Win), true, 'cancelling keeps panel open');
+    assert.equal(p1Ta.value, 'unsaved panel draft');
+    assert.equal(mounted.size, 2);
+
+    // Confirming closes ONLY c1 panel while c2 stays mounted!
+    nextAskAnswer = true;
+    p1Win.find((n: any) => n.classes.has('smw-close'))[0].fire('click');
+    await flush();
+    assert.equal(layer.children.includes(p1Win), false, 'c1 panel closed after confirm');
+    assert.equal(layer.children.includes(p2Win), true, 'c2 panel remains open');
+    assert.deepEqual(unmountedClusters, ['c1'], 'closing c1 unmounts only c1');
+    assert.equal(mounted.size, 1);
+
+    // Closing c2 (no draft) closes immediately without prompt and unmounts c2.
+    p2Win.find((n: any) => n.classes.has('smw-close'))[0].fire('click');
+    await flush();
+    assert.equal(asks.length, asksBefore + 2, 'empty panel closes without extra confirm');
+    assert.deepEqual(unmountedClusters, ['c1', 'c2']);
+    assert.equal(mounted.size, 0);
+
+    windows.closeAll();
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'document', saved); else delete (globalThis as any).document;
+  }
+});
+
+test('manager: blocks private DM submit while directory is loading or failed without SSE, and ignores late stale snapshots', async () => {
+  const doc = new FakeDoc();
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: doc });
+  try {
+    // Directory GET held while member is already on bindingGen 2 on the Hub (no SSE).
+    const heldStates: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = [];
+    const f1 = fakeContext((method, path, body: any) => {
+      if (path.startsWith('/api/state')) {
+        return new Promise((resolve, reject) => { heldStates.push({ resolve, reject }); });
+      }
+      if (method === 'GET' && path.includes('privateWith=m')) return [];
+      if (method === 'GET' && path.includes('/transcript')) return ok([]);
+      if (method === 'POST' && path === '/api/clusters/c1/messages') {
+        return { id: 'dm-1', clusterId: 'c1', from: 'user', privateTo: 'm', privateBindingGen: body.expectedBindingGen, body: body.body, deliveries: [] };
+      }
+      return {};
+    });
+
+    const root1 = new FakeNode('div', doc);
+    const w1 = W.createWindows({ root: root1, ctx: f1.ctx });
+    w1.open({ kind: 'member', clusterId: 'c1', memberId: 'm' });
+    await flush();
+    const win1 = root1.children[0].children[0];
+    const input1 = win1.find((n) => n.tag === 'textarea')[0];
+    const send1 = win1.find((n) => n.tag === 'button' && n.classes.has('smw-send'))[0];
+
+    assert.equal(heldStates.length, 1, 'initial directory GET is in flight');
+    assert.equal(input1.disabled, true, 'DM input disabled before bindingGen is known');
+    assert.equal(send1.disabled, true, 'DM send disabled before bindingGen is known');
+    // Even forcing a form submit while directory is still loading must emit zero POSTs.
+    input1.value = 'must not send without gen';
+    await win1.find((n) => n.tag === 'form')[0].fire('submit');
+    await flush();
+    assert.equal(f1.calls.filter((c) => c.method === 'POST' && c.path === '/api/clusters/c1/messages').length, 0,
+      'no private DM POST while directory is loading and no SSE arrived');
+
+    // If initial directory GET fails, composer stays disabled and still refuses POSTs until manual refresh succeeds.
+    heldStates[0].reject(new Error('network down'));
+    await flush();
+    assert.equal(input1.disabled, true, 'DM input stays disabled after failed directory load');
+    assert.equal(send1.disabled, true, 'DM send stays disabled after failed directory load');
+    await win1.find((n) => n.tag === 'form')[0].fire('submit');
+    await flush();
+    assert.equal(f1.calls.filter((c) => c.method === 'POST' && c.path === '/api/clusters/c1/messages').length, 0,
+      'no private DM POST after failed directory load');
+
+    // Clicking Refresh starts a new directory GET; if SSE delivers gen 2 before that GET resolves with stale gen 1,
+    // the late stale snapshot must NOT overwrite gen 2.
+    win1.find((n) => n.tag === 'button' && n.textContent === '刷新')[0].fire('click');
+    await flush();
+    assert.equal(heldStates.length, 2, 'manual Refresh issues a fresh directory GET');
+    f1.emit({ kind: 'member', payload: { member: { id: 'm', clusterId: 'c1', name: 'Ann', harness: 'claude', bindingGen: 2 } } });
+    await flush();
+    // Now resolve the older directory GET with stale bindingGen: 1.
+    heldStates[1].resolve({
+      clusters: [{ id: 'c1', name: 'Cluster 1' }],
+      members: [{ id: 'm', clusterId: 'c1', name: 'Ann', harness: 'claude', bindingGen: 1 }],
+    });
+    await flush();
+
+    assert.equal(input1.disabled, false);
+    assert.equal(send1.disabled, false);
+    await win1.find((n) => n.tag === 'form')[0].fire('submit');
+    await flush();
+    const posts1 = f1.calls.filter((c) => c.method === 'POST' && c.path === '/api/clusters/c1/messages');
+    assert.equal(posts1.length, 1);
+    assert.deepEqual(posts1[0].body, {
+      body: 'must not send without gen',
+      to: ['m'],
+      private: true,
+      expectedBindingGen: 2,
+    }, 'late stale snapshot must not regress bindingGen below SSE-observed gen 2');
+    w1.closeAll();
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'document', saved); else delete (globalThis as any).document;
+  }
+});
+
+test('manager: BINDING_CHANGED refreshes directory without SSE, blocks confirm until new bindingGen arrives, and ignores out-of-order old snapshots', async () => {
+  const doc = new FakeDoc();
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: doc });
+  try {
+    let serverGen = 1;
+    let stateGetCount = 0;
+    const heldRefresh: Array<(v: unknown) => void> = [];
+    const f = fakeContext((method, path, body: any) => {
+      if (path.startsWith('/api/state')) {
+        stateGetCount++;
+        if (stateGetCount === 1) {
+          return {
+            clusters: [{ id: 'c1', name: 'Cluster 1' }],
+            members: [{ id: 'm', clusterId: 'c1', name: 'Ann', harness: 'claude', bindingGen: 1 }],
+          };
+        }
+        return new Promise((resolve) => { heldRefresh.push(resolve); });
+      }
+      if (method === 'GET' && path.includes('privateWith=m')) return [];
+      if (method === 'GET' && path.includes('/transcript')) return ok([]);
+      if (method === 'POST' && path === '/api/clusters/c1/messages') {
+        if (body.expectedBindingGen !== serverGen) {
+          throw Object.assign(new Error('member binding changed'), { data: { code: 'BINDING_CHANGED' } });
+        }
+        return {
+          id: `dm-${body.expectedBindingGen}`,
+          clusterId: 'c1',
+          from: 'user',
+          privateTo: 'm',
+          privateBindingGen: serverGen,
+          body: body.body,
+          deliveries: [{ id: 'd-ok', messageId: `dm-${body.expectedBindingGen}`, state: 'queued' }],
+        };
+      }
+      return {};
+    });
+
+    const root = new FakeNode('div', doc);
+    const windows = W.createWindows({ root, ctx: f.ctx });
+    windows.open({ kind: 'member', clusterId: 'c1', memberId: 'm' });
+    await flush();
+    assert.equal(stateGetCount, 1);
+
+    const win = root.children[0].children[0];
+    const input = win.find((n) => n.tag === 'textarea')[0];
+    const sendBtn = win.find((n) => n.tag === 'button' && n.classes.has('smw-send'))[0];
+    const confirmBtn = win.find((n) => n.tag === 'button' && n.classes.has('smw-rebind-ok'))[0];
+
+    // Write draft on bindingGen 1, then rebind on server to gen 2 WITHOUT emitting any SSE event.
+    input.value = 'draft before silent rebind';
+    input.fire('input');
+    serverGen = 2;
+
+    await win.find((n) => n.tag === 'form')[0].fire('submit');
+    await flush();
+
+    // Must have rejected with BINDING_CHANGED, preserved draft, triggered a real second directory GET, and disabled Confirm until new gen arrives.
+    assert.equal(stateGetCount, 2, 'BINDING_CHANGED must trigger a real directory refresh GET even after loaded=true');
+    assert.equal(input.value, 'draft before silent rebind', 'draft preserved after rejection');
+    assert.equal(sendBtn.disabled, true, 'send locked after rejection');
+    assert.equal(confirmBtn.disabled, true, 'confirm button disabled while refresh has not observed a newer bindingGen');
+    confirmBtn.fire('click');
+    assert.equal(sendBtn.disabled, true, 'clicking confirm while disabled does not unlock send');
+
+    // Trigger another refresh (GET #3) that resolves FIRST with bindingGen 2, while GET #2 resolves LATER with stale bindingGen 1.
+    win.find((n) => n.tag === 'button' && n.textContent === '刷新')[0].fire('click');
+    await flush();
+    assert.equal(stateGetCount, 3);
+    assert.equal(heldRefresh.length, 2);
+
+    heldRefresh[1]({
+      clusters: [{ id: 'c1', name: 'Cluster 1' }],
+      members: [{ id: 'm', clusterId: 'c1', name: 'Ann', harness: 'claude', bindingGen: 2 }],
+    });
+    await flush();
+    assert.equal(confirmBtn.disabled, false, 'confirm unlocks as soon as newer bindingGen 2 arrives without SSE');
+
+    // Late resolution of older GET #2 with stale bindingGen 1 must NOT overwrite bindingGen 2 or re-lock confirm.
+    heldRefresh[0]({
+      clusters: [{ id: 'c1', name: 'Cluster 1' }],
+      members: [{ id: 'm', clusterId: 'c1', name: 'Ann', harness: 'claude', bindingGen: 1 }],
+    });
+    await flush();
+    assert.equal(confirmBtn.disabled, false, 'stale snapshot must not overwrite newer bindingGen 2');
+    assert.equal(input.value, 'draft before silent rebind', 'draft still preserved');
+
+    // Now user explicitly confirms and submits to bindingGen 2 (still with zero SSE events).
+    confirmBtn.fire('click');
+    assert.equal(sendBtn.disabled, false);
+    await win.find((n) => n.tag === 'form')[0].fire('submit');
+    await flush();
+
+    const posts = f.calls.filter((c) => c.method === 'POST' && c.path === '/api/clusters/c1/messages');
+    assert.equal(posts.length, 2);
+    assert.deepEqual(posts[0].body, { body: 'draft before silent rebind', to: ['m'], private: true, expectedBindingGen: 1 });
+    assert.deepEqual(posts[1].body, { body: 'draft before silent rebind', to: ['m'], private: true, expectedBindingGen: 2 });
+    assert.equal(input.value, '', 'draft cleared after confirmed send succeeds');
+    windows.closeAll();
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'document', saved); else delete (globalThis as any).document;
+  }
 });

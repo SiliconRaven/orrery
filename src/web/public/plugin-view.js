@@ -25,11 +25,14 @@ const warnOf = (label) => (error) => { console.warn(`plugin UI failed in ${label
  * `confirmLeave()`: the page's confirm dialog (a promise of true or false), asked before the user leaves a view that
  * holds input typed and not submitted (typedInput); a view's own ctx.close() is its decision and is not asked.
  */
-export function createViewHost({ doc = globalThis.document, app, layer, heading, back, before, api, clusterId, openChat, theme,
+export function createViewHost({ doc = globalThis.document, app, layer, heading, back, before, switcher = null, api, clusterId, openChat, theme,
+  actions = null, pluginUi = null,
   onChange = () => {}, covered = () => [], canFocus = () => true, fallbackFocus = () => [], confirmLeave = async () => true }) {
   let views = [];   // the page's slots.view
+  let panels = [];  // the page's slots.panel
   const buttons = new Map();   // view entry -> its entry button
-  /** The open view: { entry, el, listeners, reads (its AbortController), returnFocus }; null when none is. */
+  let standardBtn = null;      // the "标准界面" button inside `switcher`
+  /** The open view: { entry, el, listeners, panelListeners, pluginUiListeners, starmapFrames, reads, returnFocus }; null when none is. */
   let open = null;
   /** The covered elements this host made inert (one already inert stays so on close). */
   let inerted = [];
@@ -38,36 +41,86 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
 
   const label = (entry) => (entry.trusted ? t('第三方插件：{title}', { title: entry.title() }) : entry.title());
 
+  function svgIcon(name, cls = 'ico') {
+    const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', cls);
+    svg.setAttribute('aria-hidden', 'true');
+    const use = doc.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttribute('href', `#i-${name}`);
+    svg.append(use);
+    return svg;
+  }
+
   function entryButton(entry) {
     const button = doc.createElement('button');
     button.type = 'button';
-    button.className = 'icon-button ghost';
     button.setAttribute('data-plugin-slot', entry.pluginId);
-    const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('class', 'ico');
-    svg.setAttribute('aria-hidden', 'true');
-    const use = doc.createElementNS('http://www.w3.org/2000/svg', 'use');
-    use.setAttribute('href', `#i-${entry.icon}`);
-    svg.append(use);
-    button.append(svg);
+    if (switcher) {
+      button.className = 'view-switch-btn';
+      button.append(svgIcon(entry.icon, 'ico ico-sm'));
+      const textSpan = doc.createElement('span');
+      textSpan.className = 'view-switch-label';
+      button.append(textSpan);
+      if (entry.trusted) {
+        const tag = doc.createElement('span');
+        tag.className = 'view-switch-tag';
+        button.append(tag);
+      }
+    } else {
+      button.className = 'icon-button ghost';
+      button.append(svgIcon(entry.icon, 'ico'));
+    }
     button.addEventListener('click', () => (open?.entry === entry ? leave() : open ? leave(() => show(entry)) : show(entry)));
     return button;
+  }
+
+  function ensureStandardButton() {
+    if (!switcher || standardBtn) return;
+    const button = doc.createElement('button');
+    button.type = 'button';
+    button.className = 'view-switch-btn';
+    button.setAttribute('data-view-mode', 'standard');
+    button.append(svgIcon('chats', 'ico ico-sm'));
+    const textSpan = doc.createElement('span');
+    textSpan.className = 'view-switch-label';
+    button.append(textSpan);
+    button.addEventListener('click', () => { if (open) leave(); });
+    switcher.append(button);
+    standardBtn = button;
   }
 
   /** The entry buttons follow `views` (a released plugin's goes) and the language; the open view's title too. */
   function draw() {
     for (const [entry, button] of buttons) if (!views.includes(entry)) { button.remove(); buttons.delete(entry); }
+    if (switcher) {
+      switcher.hidden = views.length === 0;
+      if (views.length > 0) {
+        ensureStandardButton();
+        const stdText = t('标准界面');
+        standardBtn.querySelector('.view-switch-label').textContent = stdText;
+        standardBtn.title = stdText;
+        standardBtn.setAttribute('aria-label', stdText);
+        standardBtn.setAttribute('aria-pressed', String(!open));
+      }
+    }
     for (const entry of views) {
       let button = buttons.get(entry);
       if (!button) {
         button = entryButton(entry);
         buttons.set(entry, button);
-        before.before(button);
+        if (switcher) switcher.append(button);
+        else before.before(button);
       }
       const text = label(entry);   // plain text: title and aria-label are attributes, never markup
       button.title = text;
       button.setAttribute('aria-label', text);
       button.setAttribute('aria-pressed', String(open?.entry === entry));
+      if (switcher) {
+        const lbl = button.querySelector('.view-switch-label');
+        if (lbl) lbl.textContent = entry.title();
+        const tag = button.querySelector('.view-switch-tag');
+        if (tag) tag.textContent = t('第三方');
+      }
     }
     if (open) heading.textContent = open.entry.title();
   }
@@ -78,6 +131,13 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
     open = null;
     session.reads.abort();   // its reads still on the way: a late answer never reaches it
     session.listeners.clear();
+    session.panelListeners.clear();
+    session.pluginUiListeners.clear();
+    for (const frame of [...session.starmapFrames]) {
+      try { frame.close(); } catch { /* ignore */ }
+    }
+    session.starmapFrames.clear();
+    if (session.usedStarmapTheme) pluginUi?.setStarmapTheme?.(null);
     try {
       const result = session.entry.unmount();
       if (isThenable(result)) Promise.resolve(result).catch(warnOf(`${session.entry.pluginId}.view.unmount`));
@@ -93,6 +153,11 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
     return !(slot && isInactive(slot)) && canFocus(node);   // a released plugin's elements (its entry too) are removed next
   }
 
+  function restoreInert() {
+    for (const node of inerted) node.inert = false;
+    inerted = [];
+  }
+
   /**
    * Closes the open view and gives the chat back: the layer hides, the covered area is usable again, focus returns to
    * where it was before the view opened (or to a fallback when that is gone or off screen).
@@ -102,8 +167,8 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
     const { returnFocus } = finish();
     layer.hidden = true;
     app.classList.remove('view-open');
-    for (const node of inerted) node.inert = false;
-    inerted = [];
+    app.classList.remove('view-fullscreen');
+    restoreInert();
     draw();
     [returnFocus, ...fallbackFocus()].find(focusable)?.focus({ preventScroll: true });
     onChange();
@@ -131,6 +196,68 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
     const id = session.entry.pluginId;
     const live = () => open === session && !isInactive(id);
     const closed = () => new Error(`view ${id} is closed`);
+    const act = (name) => (...args) => {
+      if (!live()) return;
+      return actions?.[name]?.(...args);
+    };
+    const hostActions = Object.freeze({
+      openNewCluster: act('openNewCluster'),
+      openNewGroup: act('openNewGroup'),
+      openAddMember: act('openAddMember'),
+      openSettings: act('openSettings'),
+      openExtensions: act('openExtensions'),
+      openTrash: act('openTrash'),
+      togglePause() {
+        if (!live()) return Promise.reject(closed());
+        return Promise.resolve(actions?.togglePause?.());
+      },
+      getPaused() {
+        if (!live()) return { paused: false, clusters: [] };
+        return actions?.getPaused?.() ?? { paused: false, clusters: [] };
+      },
+      requestQuit: act('requestQuit'),
+    });
+    const hostPanels = Object.freeze({
+      list() {
+        if (!live()) return [];
+        return panels.filter((panel) => !isInactive(panel.pluginId));
+      },
+      onChange(fn) {
+        if (!live() || typeof fn !== 'function') return () => {};
+        session.panelListeners.add(fn);
+        return () => { session.panelListeners.delete(fn); };
+      },
+    });
+    const hostPluginUi = Object.freeze({
+      listStarmapItems(cid) {
+        if (!live() || !pluginUi?.starmapItems) return [];
+        return pluginUi.starmapItems(cid);
+      },
+      mountStarmapFrame(item, cid) {
+        if (!live() || !pluginUi?.mountStarmapFrame) return null;
+        const handle = pluginUi.mountStarmapFrame(item, cid);
+        if (!handle) return null;
+        const wrapped = {
+          shell: handle.shell,
+          close() {
+            session.starmapFrames.delete(wrapped);
+            handle.close();
+          },
+        };
+        session.starmapFrames.add(wrapped);
+        return wrapped;
+      },
+      onItemsChange(fn) {
+        if (!live() || typeof fn !== 'function') return () => {};
+        session.pluginUiListeners.add(fn);
+        return () => { session.pluginUiListeners.delete(fn); };
+      },
+      setStarmapTheme(snapshot) {
+        if (!live() || !pluginUi?.setStarmapTheme) return;
+        session.usedStarmapTheme = Boolean(snapshot);
+        pluginUi.setStarmapTheme(snapshot);
+      },
+    });
     return Object.freeze({
       // A read is aborted when this opening ends and its late answer is refused; a write is sent as is (once sent it may
       // take effect even if the view closes meanwhile).
@@ -143,12 +270,18 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
       openChat(cluster) {
         if (live()) leave(() => { close(); openChat(cluster); });
       },
+      leave() { if (live()) leave(); },
       close() { if (live()) close(); },
       onEvent(fn) {
         if (!live() || typeof fn !== 'function') return () => {};
         session.listeners.add(fn);
         return () => { session.listeners.delete(fn); };
       },
+      actions: hostActions,
+      panels: hostPanels,
+      pluginUi: hostPluginUi,
+      hasTypedInput(node) { return Boolean(live() && node && typedInput([node]).length); },
+      trackTypedInput(node, pluginId) { if (live() && node && pluginId) trackTypedInput(node, pluginId); },
       get theme() { return theme(); },
     });
   }
@@ -156,19 +289,24 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
   function show(entry) {
     if (!views.includes(entry) || isInactive(entry.pluginId) || open?.entry === entry) return;
     const returnFocus = open ? open.returnFocus : doc.activeElement;
-    if (open) finish();   // switching: the other view unmounts, the layer and the inert covered area stay
-    else {
-      inerted = [...covered()].filter((node) => node && !node.inert);
-      for (const node of inerted) node.inert = true;
-    }
+    if (open) { finish(); restoreInert(); }
+    const fullscreen = entry.fullscreen === true;
+    inerted = [...covered(fullscreen)].filter((node) => node && !node.inert);
+    for (const node of inerted) node.inert = true;
     const el = doc.createElement('div');
     el.className = 'plugin-view-body';
+    if (fullscreen) el.tabIndex = -1;
     trackTypedInput(el, entry.pluginId);
-    const session = { entry, el, listeners: new Set(), reads: new AbortController(), returnFocus };
+    const session = {
+      entry, el, listeners: new Set(), panelListeners: new Set(), pluginUiListeners: new Set(),
+      starmapFrames: new Set(), usedStarmapTheme: false, reads: new AbortController(), returnFocus,
+    };
     open = session;
     layer.append(el);
     layer.hidden = false;
     app.classList.add('view-open');
+    if (fullscreen) app.classList.add('view-fullscreen');
+    else app.classList.remove('view-fullscreen');
     app.classList.remove('sidebar-open');   // narrow screens: the drawer it was opened from closes
     draw();
     const failed = (error) => {
@@ -179,7 +317,7 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
       const result = entry.mount(el, contextFor(session));
       if (isThenable(result)) Promise.resolve(result).catch(failed);
     } catch (error) { failed(error); }
-    if (open === session && !layer.contains(doc.activeElement)) back.focus({ preventScroll: true });
+    if (open === session && !layer.contains(doc.activeElement)) (fullscreen ? el : back).focus({ preventScroll: true });
     onChange();
   }
 
@@ -194,6 +332,19 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
     leave();
   });
 
+  function notifyPanels(releasedId = null) {
+    const session = open;
+    if (!session?.panelListeners.size) return;
+    const warn = warnOf(`${session.entry.pluginId}.view.panels`);
+    for (const fn of [...session.panelListeners]) {
+      if (!session.panelListeners.has(fn)) continue;
+      try {
+        const result = fn(releasedId);
+        if (isThenable(result)) Promise.resolve(result).catch(warn);
+      } catch (error) { warn(error); }
+    }
+  }
+
   return {
     /** The views to offer (slots.view, again after a release); an open view no longer offered closes. */
     setViews(list) {
@@ -201,12 +352,42 @@ export function createViewHost({ doc = globalThis.document, app, layer, heading,
       if (open && !views.includes(open.entry)) close();
       draw();
     },
+    /** The floating panels offered to full-screen views (slots.panel, again after a release). */
+    setPanels(list) {
+      panels = [...(list ?? [])];
+      notifyPanels(null);
+    },
+    /** Called by release (plugin-slots.js) before removing a released plugin's panel DOM nodes. */
+    releasePanels(id) {
+      panels = panels.filter((panel) => panel.pluginId !== id);
+      notifyPanels(id);
+    },
     /** Called by release (plugin-slots.js) for a full-trust plugin: its open view unmounts and closes now. */
     release(id) {
       if (open?.entry.pluginId === id) close();
     },
+    /** Called when a cluster's restricted plugin UI list changes. */
+    notifyPluginUi(cid) {
+      const session = open;
+      if (!session?.pluginUiListeners.size) return;
+      const warn = warnOf(`${session.entry.pluginId}.view.pluginUi`);
+      for (const fn of [...session.pluginUiListeners]) {
+        if (!session.pluginUiListeners.has(fn)) continue;
+        try {
+          const result = fn(cid);
+          if (isThenable(result)) Promise.resolve(result).catch(warn);
+        } catch (error) { warn(error); }
+      }
+    },
     /** After a language switch: titles given as functions are read again. */
     relabel: draw,
+    /** Whether any view is currently open. */
+    isOpen: () => Boolean(open),
+    /** Leaves the open view (confirming drafts first) and then runs `fn`. */
+    exitTo(fn) {
+      if (!open) { fn?.(); return; }
+      leave(() => { close(); fn?.(); });
+    },
     /** One frame of the page's event stream (its raw JSON), for the open view's listeners; each gets the same fresh copy. */
     emit(data) {
       const session = open;

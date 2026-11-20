@@ -17,6 +17,7 @@ export interface TranscriptDeliveryPart {
   from: string;
   kind: string;
   body: string;
+  private?: true;
   truncated?: boolean;
 }
 

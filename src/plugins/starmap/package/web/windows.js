@@ -7,11 +7,12 @@ import {
   avatarEl, confirmDialog, fmtTime, h, harnessApp, icon, isSystemMessage, markdownBlocks, messageAuthorName, plainTextRecord, systemAvatar,
   systemClass, userAvatar,
 } from '/plugin-host/v1.js';
-import { lt, t } from './words.js';
+import { lt, onLanguageChange, t } from './words.js';
 import {
-  allCardsOpen, applyPage, bindingChange, deliveryCaption, eventMessage, HUB_PAGE, hasOlder, isCard, isGoneError, isMemberActivity, MAX_CHAIN, mergeMessages,
-  messagesPath, nextWant, oneLine, prependMessages, readTarget, requestFor, toggleAllCards, transcriptEntries, transcriptPath,
-  transcriptState, wantOnActivity,
+  allCardsOpen, applyPage, applyPrivateDeliveryEvent, bindingChange, deliveryCaption, dmStatusOf, eventMessage, eventPrivateMessage,
+  HUB_PAGE, hasOlder, isCard, isGoneError, isMemberActivity, isPrivateDeliveryEntry, MAX_CHAIN, mergeMessages,
+  messagesPath, nextWant, oneLine, prependMessages, privateMessagesPath, readTarget, requestFor, toggleAllCards,
+  transcriptEntries, transcriptPath, transcriptPrivateIds, transcriptState, wantOnActivity,
 } from './transcript.js';
 
 const enc = encodeURIComponent;
@@ -21,11 +22,18 @@ const MIN_W = 300, MIN_H = 240;
 const READ_GAP_MS = 2000;   // at most one read position per window every two seconds, as the chat does
 const ACTIVITY_DELAY_MS = 700;   // a burst of events for one member becomes one read
 
-/** The key of a window target, or null for a malformed one: one window per Hub chat, one per member conversation. */
+/** The key of a window target, or null for a malformed one. */
 export function windowKey(target) {
   const id = (v) => typeof v === 'string' && v.length > 0;
   if (target?.kind === 'hub' && id(target.clusterId)) return `hub|${target.clusterId}`;
   if (target?.kind === 'member' && id(target.clusterId) && id(target.memberId)) return `member|${target.clusterId}|${target.memberId}`;
+  if (target?.kind === 'panel' && id(target.panel?.key)) {
+    if (target.panel.scope === 'cluster') return id(target.clusterId) ? `panel|${target.panel.key}|${target.clusterId}` : null;
+    if (target.panel.scope === 'global') return `panel|${target.panel.key}|global`;
+  }
+  if (target?.kind === 'external-panel' && id(target.item?.pluginId) && id(target.clusterId)) {
+    return `ext|${target.item.pluginId}|${target.clusterId}`;
+  }
   return null;
 }
 
@@ -109,33 +117,80 @@ function ensureStyles(doc) {
   doc.head.append(link);
 }
 
+function validBindingGen(value) {
+  return Number.isSafeInteger(value) && value >= 1 ? value : null;
+}
+
 /** Clusters and members by id (removed members too, for old messages), from GET /api/state and the event stream. */
 function createDirectory(ctx, changed) {
   const clusters = new Map(), members = new Map();
-  let loading = null, loaded = false;
+  const clusterTick = new Map(), memberTick = new Map();
+  let loading = null, loaded = false, tick = 0, appliedSnapshotTick = 0;
+
+  function setMember(m, sourceTick, fromSnapshot) {
+    if (!m?.id) return false;
+    if (fromSnapshot && (memberTick.get(m.id) ?? 0) > sourceTick) return false;
+    const prev = members.get(m.id);
+    const prevGen = validBindingGen(prev?.bindingGen);
+    const nextGen = validBindingGen(m.bindingGen);
+    // Never let a late snapshot or out-of-order record regress a member's binding generation.
+    if (prevGen !== null && (nextGen === null ? fromSnapshot : nextGen < prevGen)) return false;
+    const next = nextGen === null && prevGen !== null ? { ...m, bindingGen: prevGen } : m;
+    const renamed = prev?.name !== next.name;
+    members.set(m.id, next);
+    if (!fromSnapshot) memberTick.set(m.id, sourceTick);
+    return renamed;
+  }
+
+  function fetchState() {
+    const startedAt = ++tick;
+    const p = ctx.api('GET', '/api/state?includeRemoved=true').then((state) => {
+      if (startedAt < appliedSnapshotTick) return true;
+      appliedSnapshotTick = startedAt;
+      for (const c of state?.clusters ?? []) {
+        if (!c?.id || (clusterTick.get(c.id) ?? 0) > startedAt) continue;
+        clusters.set(c.id, c);
+      }
+      for (const m of state?.members ?? []) setMember(m, startedAt, true);
+      loaded = true;
+      changed(null, true);
+      return true;
+    }, () => false).finally(() => {
+      if (loading === p) {
+        loading = null;
+        if (!loaded) changed(null, false);
+      }
+    });
+    loading = p;
+    return p;
+  }
+
   return {
     clusters, members,
     get loaded() { return loaded; },
+    get loading() { return Boolean(loading); },
     load() {
-      if (loaded || loading) return loading;
-      loading = ctx.api('GET', '/api/state?includeRemoved=true').then((state) => {
-        for (const c of state?.clusters ?? []) if (c?.id) clusters.set(c.id, c);
-        for (const m of state?.members ?? []) if (m?.id) members.set(m.id, m);
-        loaded = true;
-        changed(null, true);
-      }, () => { /* names fall back to ids; the next window tries again */ }).finally(() => { loading = null; });
-      return loading;
+      if (loaded) return Promise.resolve(true);
+      if (loading) return loading;
+      return fetchState();
+    },
+    refresh() {
+      return fetchState();
     },
     apply(event) {
       const p = event?.payload ?? {};
       if (event?.kind === 'cluster' && p.cluster?.id) {
+        const eventTick = ++tick;
         clusters.set(p.cluster.id, p.cluster);
+        clusterTick.set(p.cluster.id, eventTick);
         let renamed = false;
-        for (const m of p.members ?? []) if (m?.id) { renamed ||= members.get(m.id)?.name !== m.name; members.set(m.id, m); }
+        for (const m of p.members ?? []) {
+          if (setMember(m, eventTick, false)) renamed = true;
+        }
         changed(p.cluster.id, renamed);
       } else if (event?.kind === 'member' && p.member?.id) {
-        const renamed = members.get(p.member.id)?.name !== p.member.name;
-        members.set(p.member.id, p.member);
+        const eventTick = ++tick;
+        const renamed = setMember(p.member, eventTick, false);
         changed(p.member.clusterId, renamed);
       }
     },
@@ -150,7 +205,8 @@ function createDirectory(ctx, changed) {
  * `askClose(options)`: the page's confirm dialog (resolves true or false), asked before a window's close button drops a
  * draft. Leaving the whole view (its back button, Esc, ctx.openChat) is guarded by the view host (plugin-view.js).
  */
-export function createWindows({ root, ctx, askClose = confirmDialog }) {
+export function createWindows({ root, ctx, askClose = confirmDialog, getTheme = () => ({ id: 'luna', scheme: 'dark', tokens: {} }),
+  onOpenCluster = null, onOpenMember = null, onRaise = null, onChange = null }) {
   const doc = root.ownerDocument ?? globalThis.document;
   ensureStyles(doc);
   const layer = h('div', { class: 'smw-layer' });
@@ -158,6 +214,7 @@ export function createWindows({ root, ctx, askClose = confirmDialog }) {
   const stack = windowStack();
   const wins = new Map();   // key -> window
   const satellites = new Map();   // clusterId -> Set of message ids
+  const themeListeners = new Set();
   let closed = false;
   // `names`: what a window shows of names changed (the first load, a rename), so its messages are drawn again; else only its title.
   const directory = createDirectory(ctx, (clusterId, names) => {
@@ -167,6 +224,13 @@ export function createWindows({ root, ctx, askClose = confirmDialog }) {
     if (closed) return;
     directory.apply(event);
     for (const w of [...wins.values()]) w.event(event);
+  });
+  const unsubLang = onLanguageChange(() => {
+    if (closed) return;
+    for (const w of [...wins.values()]) {
+      if (w.relabel) w.relabel();
+      else w.names(true);
+    }
   });
 
   function layout() {
@@ -181,19 +245,33 @@ export function createWindows({ root, ctx, askClose = confirmDialog }) {
 
   function size() { return { W: num(layer.clientWidth, 1200) || 1200, H: num(layer.clientHeight, 800) || 800 }; }
 
-  /** Where a new window goes: Hub chats from the right, conversations from the left, each new one a step further in. */
-  function place(kind) {
+  /** Where a new window goes: Hub chats right, member conversations left, plugin panels centered with stagger. */
+  function place(kind, defaultSize = null) {
     const { W, H } = size();
+    // Leave clear room below the top HUD (wraps onto two rows at <= 900px) and above the bottom Dock.
+    const topSafe = W <= 900 ? 100 : 56;
+    const bottomSafe = 66;
+    const availH = Math.max(MIN_H, H - topSafe - bottomSafe);
     const step = ([...wins.values()].filter((w) => w.kind === kind).length % 5) * 28;
+    if (kind === 'panel' || kind === 'external-panel') {
+      const wantW = defaultSize?.w ?? 560;
+      const wantH = defaultSize?.h ?? 480;
+      const width = Math.min(clamp(wantW, MIN_W, Math.max(MIN_W, W - 28)), W);
+      const height = Math.min(clamp(wantH, MIN_H, availH), Math.max(MIN_H, H - topSafe - 16));
+      const left = clamp(Math.round((W - width) / 2) + step - 28, 12, Math.max(12, W - width - 12));
+      const top = clamp(topSafe + step, topSafe, Math.max(topSafe, H - height - bottomSafe));
+      return { left, top, width, height };
+    }
     const width = Math.min(clamp(Math.round(W * 0.3), 340, 460), W);
-    const top = Math.min(56 + step, Math.max(0, H - MIN_H));
-    const height = Math.max(Math.min(clamp(H - 80, 280, 640), H - top - 8), Math.min(MIN_H, H));
+    const top = Math.min(topSafe + step, Math.max(topSafe, H - MIN_H - bottomSafe));
+    const height = Math.max(Math.min(clamp(availH, 280, 640), H - top - bottomSafe), Math.min(MIN_H, Math.max(160, H - top - 8)));
     const left = kind === 'hub' ? W - width - 20 - step : 20 + step;
     return { left: clamp(left, 0, Math.max(0, W - width)), top, width, height };
   }
 
   function raise(key) {
     if (stack.raise(key)) layout();
+    onRaise?.();
   }
 
   function close(key) {
@@ -204,6 +282,7 @@ export function createWindows({ root, ctx, askClose = confirmDialog }) {
     w.destroy();
     w.el.remove();
     layout();
+    onChange?.();
   }
 
   /**
@@ -489,6 +568,7 @@ export function createWindows({ root, ctx, askClose = confirmDialog }) {
     // `dead`: this window closed (one opened again for the same member is another window); `binding`: counts the ends of
     // the binding shown (a rebind, a removal): an answer to a read sent before either changes nothing.
     let dead = false, binding = 0;
+    let dmMessages = [], dmLoaded = false, dmSending = false, resending = new Set();
     const alive = () => !closed && !dead;
     const pending = new Set();
     const open = new Set();   // keys of the cards shown open
@@ -499,30 +579,311 @@ export function createWindows({ root, ctx, askClose = confirmDialog }) {
     const older = h('button', { type: 'button', class: 'smw-more', hidden: true, onclick: () => queue('before') }, lt('加载更早的内容'));
     const banner = h('p', { class: 'smw-status' }, t('正在读取…'));
     const unknown = h('p', { class: 'smw-note', hidden: true });
-    const body = h('div', { class: 'smw-body', tabindex: '-1' }, older, banner, unknown, list);
+    const dmTray = h('div', { class: 'smw-dm-tray', hidden: true });
+    const body = h('div', { class: 'smw-body', tabindex: '-1' }, older, banner, unknown, list, dmTray);
     const all = h('button', { type: 'button', class: 'smw-chip', 'data-ox-all': '', 'aria-pressed': 'false', hidden: true,
       onclick: () => { const next = toggleAllCards(entries, open); open.clear(); for (const k of next) open.add(k); syncCards(); } }, t('全部展开'));
     // Reading again by hand also gives a conversation that kept changing (`reset`) its retries back.
-    const refresh = h('button', { type: 'button', class: 'smw-chip', onclick: () => { state = { ...state, resets: 0 }; queue('latest'); } }, lt('刷新'));
+    const refresh = h('button', { type: 'button', class: 'smw-chip', onclick: () => {
+      state = { ...state, resets: 0 };
+      void directory.refresh();
+      queue('latest');
+      void loadDms();
+    } }, lt('刷新'));
     const sub = h('div', { class: 'smw-sub' }, refresh, all);
+    const dmError = h('p', { class: 'smw-error', hidden: true, role: 'alert' });
+    const currentBindingGen = () => validBindingGen(memberOf(memberId)?.bindingGen);
+    let knownBindingGen = currentBindingGen();
+    let handledRebindGen = knownBindingGen;
+    let draftBindingGen = null;
+    let reboundPending = false;
+    let reboundRejectedGen = null;
+    let rebindRefreshing = false;
+    let rebindRefreshSeq = 0;
+    const canConfirmRebind = () => {
+      if (rebindRefreshing) return false;
+      const gen = currentBindingGen();
+      if (gen === null) return false;
+      return reboundRejectedGen === null || gen > reboundRejectedGen;
+    };
+    const rebindText = h('span', {});
+    const rebindConfirmBtn = h('button', { type: 'button', class: 'smw-chip smw-rebind-ok', onclick: () => {
+      if (!canConfirmRebind()) return;
+      reboundPending = false;
+      reboundRejectedGen = null;
+      draftBindingGen = currentBindingGen();
+      showDmError('');
+      syncComposer();
+      dmInput.focus?.({ preventScroll: true });
+    } }, lt('确认发给新对话'));
+    const rebindClearBtn = h('button', { type: 'button', class: 'smw-chip', onclick: () => {
+      dmInput.value = '';
+      reboundPending = false;
+      reboundRejectedGen = null;
+      rebindRefreshing = false;
+      draftBindingGen = null;
+      showDmError('');
+      syncComposer();
+    } }, lt('清空草稿'));
+    const rebindGuard = h('div', { class: 'smw-rebind-guard', role: 'alert', hidden: true },
+      rebindText, h('div', { class: 'smw-rebind-acts' }, rebindConfirmBtn, rebindClearBtn));
+    const dmInput = h('textarea', { rows: '1', 'aria-label': lt('私聊消息') });
+    const dmSend = h('button', { type: 'submit', class: 'smw-send' }, icon('send'), h('span', {}, lt('发送')));
+    const dmForm = h('form', { class: 'smw-composer smw-dm-composer' }, dmInput, dmSend);
     const footText = h('span', {});
-    const foot = h('div', { class: 'smw-foot smw-readonly' }, icon('eye', 'ico-sm'), footText);
+    const footHint = h('div', { class: 'smw-dm-hint' }, icon('orbit', 'ico-xs'), footText);
+    const foot = h('div', { class: 'smw-foot smw-dm-foot' }, dmError, rebindGuard, dmForm, footHint);
     const avatarSlot = h('span', { class: 'smw-av' });
-    const f = frame(key, { label: '', avatar: avatarSlot, title: '', subtitle: '', sub, body, foot });
+    const f = frame(key, {
+      label: '', avatar: avatarSlot, title: '', subtitle: '', sub, body, foot,
+      canClose: () => !dmInput.value.trim(),
+    });
     body.addEventListener('scroll', () => { if (num(body.scrollTop) < 24 && hasOlder(state) && !running) queue('before'); });
+
+    function showDmError(text) { dmError.textContent = text; dmError.hidden = !text; }
+
+    function dmDisabledReason() {
+      if (directory.clusters.get(clusterId)?.deletedAt) return t('这个群已移入回收站。');
+      const member = memberOf(memberId);
+      if (state.status === 'ended' || member?.removedAt) return t('这个群员已不在这个群里，或群已移入回收站。');
+      if (member?.hiddenAt) return t('该群员已隐身，不能发送私聊。');
+      if (currentBindingGen() === null) {
+        return directory.loading ? t('正在同步成员绑定状态，暂时不能发送私聊…') : t('尚未取得成员当前对话绑定，请点「刷新」后再试。');
+      }
+      return '';
+    }
+
+    function syncComposer() {
+      const blocked = dmDisabledReason();
+      const member = memberOf(memberId);
+      const name = member?.name ?? memberId, app = appName(member);
+      dmInput.disabled = Boolean(blocked);
+      rebindGuard.hidden = !reboundPending || Boolean(blocked);
+      const canConfirm = canConfirmRebind();
+      rebindConfirmBtn.disabled = !canConfirm;
+      rebindText.textContent = rebindRefreshing
+        ? t('成员已换绑到新对话，正在同步新对话绑定，原私聊草稿已保留…')
+        : canConfirm
+          ? t('成员已换绑到新对话，原私聊草稿已保留。确认要发给新对话吗？')
+          : t('成员已换绑到新对话，尚未同步到新绑定；请点「刷新」后再确认发送。');
+      dmSend.disabled = Boolean(blocked) || dmSending || reboundPending || rebindRefreshing;
+      dmInput.setAttribute('placeholder', blocked || t('私聊 {name}…（Enter 发送，Shift+Enter 换行）', { name }));
+      footText.textContent = t('私聊仅发给 {name}，其他群员不可见；离线时不启动 {app}', { name, app });
+    }
+    dmInput.addEventListener('input', () => {
+      if (dmInput.value.trim()) {
+        if (draftBindingGen === null && !reboundPending) draftBindingGen = currentBindingGen();
+      } else {
+        draftBindingGen = null;
+        if (reboundPending || reboundRejectedGen !== null || rebindRefreshing) {
+          reboundPending = false;
+          reboundRejectedGen = null;
+          rebindRefreshing = false;
+          syncComposer();
+        }
+      }
+    });
 
     function names(redrawAll = true) {
       const member = memberOf(memberId);
+      const gen = currentBindingGen();
+      let reboundNow = false;
+      if (gen !== null) {
+        if (knownBindingGen === null) {
+          knownBindingGen = gen;
+          handledRebindGen = gen;
+        } else if (gen > knownBindingGen) {
+          knownBindingGen = gen;
+          reboundNow = true;
+        }
+        if (rebindRefreshing && (reboundRejectedGen === null || gen > reboundRejectedGen)) {
+          rebindRefreshing = false;
+        }
+      }
       const name = member?.name ?? memberId, app = appName(member);
       f.titleEl.textContent = name;
       f.subEl.textContent = `${app} · ${clusterName(clusterId)}`;
       f.el.setAttribute('aria-label', t('{name} 的对话（{cluster}）', { name, cluster: clusterName(clusterId) }));
       avatarSlot.replaceChildren(member ? avatarEl(member, 'sm') : h('span', { class: 'avatar sm' }, '?'));
-      footText.textContent = t('这里只读。在 {app} 里可以随时接手这段对话；orrery 只往这里投消息，不替你运行轮次。', { app });
+      if (reboundNow) {
+        end('rebind');
+        return;
+      }
+      syncComposer();
       if (!redrawAll) return;
       cache.clear();
       draw();
     }
+
+    async function loadDms() {
+      try {
+        const page = await ctx.api('GET', privateMessagesPath(clusterId, memberId));
+        if (!alive()) return;
+        const rows = Array.isArray(page) ? page : [];
+        dmMessages = mergeMessages(dmMessages, rows);
+        dmLoaded = true;
+        drawDmTray();
+      } catch { /* non-fatal: transcript still displays */ }
+    }
+
+    const dmStatusLabel = (status, stale, outcome = null) => {
+      if (stale) return t('旧对话');
+      if (outcome === 'unknown') return t('结果未知');
+      switch (status) {
+        case 'queued': return t('排队中');
+        case 'running': return t('投递中');
+        case 'done': return t('已投递');
+        case 'offline': return t('离线未投递');
+        case 'failed': return t('投递失败');
+        case 'blocked': return t('已拦截');
+        case 'superseded': return t('已替换');
+        default: return t('已记录');
+      }
+    };
+
+    const resendBlockedReason = (blockedBy) => {
+      switch (blockedBy) {
+        case 'offline': return t('成员现在不在线，不能重发。');
+        case 'removed': return t('成员已移出，不能重发。');
+        case 'hidden': return t('该群员已隐身，不能发送私聊。');
+        case 'hop_limit': return t('这条消息链的跳数已到上限，不能重发。');
+        case 'chain_limit': return t('这条消息链的轮次已到上限，不能重发。');
+        default: return t('当前不能重发这条私聊。');
+      }
+    };
+
+    async function resendDm(deliveryId) {
+      if (!alive() || !deliveryId || resending.has(deliveryId)) return;
+      resending.add(deliveryId);
+      showDmError('');
+      drawDmTray();
+      try {
+        let confirmDuplicate = false;
+        const timeline = await ctx.api('GET', `/api/clusters/${enc(clusterId)}/deliveries/${enc(deliveryId)}/timeline`);
+        if (!alive()) return;
+        const resend = timeline?.resend;
+        if (resend && !resend.available) {
+          showDmError(resendBlockedReason(resend.blockedBy));
+          return;
+        }
+        if (resend?.needsConfirmation) {
+          let ok = false;
+          try {
+            ok = await askClose({
+              title: lt('确认重发这条私聊？'),
+              message: lt('原投递结果未知或可能已开始执行，重发可能导致对方重复执行。确认重发吗？'),
+              confirmText: lt('确认重发'),
+              danger: true,
+            });
+          } catch { ok = false; }
+          if (!ok || !alive()) return;
+          confirmDuplicate = true;
+        }
+        const result = await ctx.api('POST', `/api/clusters/${enc(clusterId)}/deliveries/${enc(deliveryId)}/resend`,
+          confirmDuplicate ? { confirmDuplicate: true } : {});
+        if (!alive()) return;
+        if (result?.message?.id) {
+          const entry = { ...result.message, deliveries: result.delivery ? [result.delivery] : [] };
+          dmMessages = mergeMessages(dmMessages, [entry]);
+        }
+        void loadDms();
+      } catch (err) {
+        if (alive()) showDmError(t('重发失败：{message}', { message: err?.message ?? String(err) }));
+      } finally {
+        resending.delete(deliveryId);
+        if (alive()) drawDmTray();
+      }
+    }
+
+    function drawDmTray() {
+      const member = memberOf(memberId);
+      const currentGen = member?.bindingGen;
+      const synced = transcriptPrivateIds(entries);
+      const blocked = Boolean(dmDisabledReason());
+      // Keep any private DM not yet attributed inside the native transcript, or any stale/non-done/uncertain DM so status is clear.
+      const visible = dmMessages.filter((msg) => {
+        const info = dmStatusOf(msg, currentGen);
+        if (!synced.has(msg.id)) return true;
+        return info.stale || info.status !== 'done' || info.outcome === 'unknown';
+      });
+      dmTray.hidden = visible.length === 0;
+      if (!visible.length) { dmTray.replaceChildren(); return; }
+      dmTray.replaceChildren(
+        h('div', { class: 'smw-dm-tray-head' }, icon('orbit', 'ico-xs'), h('span', {}, t('经 Orrery 私聊'))),
+        ...visible.map((msg) => {
+          const { status, outcome, delivery, stale, canResend } = dmStatusOf(msg, currentGen);
+          const badgeKind = stale ? 'stale' : outcome === 'unknown' ? 'failed' : status;
+          const busy = delivery?.id && resending.has(delivery.id);
+          return h('div', { class: `smw-u smw-u-dm smw-dm-item smw-dm-${badgeKind}`, 'data-dm-id': msg.id },
+            h('div', { class: 'smw-dm-meta' },
+              h('span', { class: 'smw-dm-pill' }, icon('orbit', 'ico-xs'), t('经 Orrery 私聊')),
+              h('span', { class: `smw-dm-badge smw-dm-badge-${badgeKind}` }, dmStatusLabel(status, stale, outcome)),
+              msg.createdAt ? h('time', { datetime: msg.createdAt }, fmtTime(msg.createdAt)) : null),
+            h('div', { class: 'smw-bub smw-bub-dm' }, textBody(msg.body)),
+            (delivery?.error ?? delivery?.reason) ? h('p', { class: 'smw-dm-reason' }, delivery.error ?? delivery.reason) : null,
+            canResend && !blocked ? h('div', { class: 'smw-dm-acts' },
+              h('button', { type: 'button', class: 'smw-chip', disabled: Boolean(busy), onclick: () => void resendDm(delivery.id) },
+                busy ? t('正在重发…') : t('重试'))) : null);
+        }),
+      );
+    }
+
+    dmForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = dmInput.value.trim();
+      const expectedGen = validBindingGen(draftBindingGen) ?? currentBindingGen();
+      if (!text || dmSending || reboundPending || rebindRefreshing || dmDisabledReason() || expectedGen === null) return;
+      dmSending = true;
+      dmSend.disabled = true;
+      showDmError('');
+      try {
+        const created = await ctx.api('POST', `/api/clusters/${enc(clusterId)}/messages`, {
+          body: text,
+          to: [memberId],
+          private: true,
+          expectedBindingGen: expectedGen,
+        });
+        if (!alive()) return;
+        if (dmInput.value.trim() === text) {
+          dmInput.value = '';
+          draftBindingGen = null;
+          reboundPending = false;
+          reboundRejectedGen = null;
+          rebindRefreshing = false;
+        }
+        if (created?.id) {
+          const existing = dmMessages.find((m) => m.id === created.id);
+          const deliveries = Array.isArray(created.deliveries) && created.deliveries.length ? created.deliveries : (existing?.deliveries ?? []);
+          const row = { ...created, deliveries };
+          dmMessages = mergeMessages(dmMessages, [row]);
+          redraw(body, drawDmTray, { force: true });
+        }
+        void loadDms();
+      } catch (err) {
+        if (!alive()) return;
+        if (err?.data?.code === 'BINDING_CHANGED') {
+          reboundPending = true;
+          reboundRejectedGen = Math.max(reboundRejectedGen ?? 0, expectedGen);
+          const latestGen = currentBindingGen();
+          rebindRefreshing = latestGen === null || latestGen <= reboundRejectedGen;
+          const token = ++rebindRefreshSeq;
+          showDmError(t('发送已拦截：成员已换绑到新对话，草稿已保留。'));
+          void directory.refresh().finally(() => {
+            if (!alive()) return;
+            if (token === rebindRefreshSeq) rebindRefreshing = false;
+            syncComposer();
+          });
+        } else {
+          showDmError(t('发送失败：{message}', { message: err?.message ?? String(err) }));
+        }
+      } finally {
+        dmSending = false;
+        syncComposer();
+      }
+    });
+    dmInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); dmForm.requestSubmit?.(); }
+    });
 
     /**
      * Runs the waiting reads one after another; an answer that arrives after the window closed, or after the binding it
@@ -578,9 +939,25 @@ export function createWindows({ root, ctx, askClose = confirmDialog }) {
       open.clear();
       posts.clear();
       failure = null;
+      if (change === 'rebind') {
+        const gen = currentBindingGen();
+        if (gen !== null) {
+          knownBindingGen = gen;
+          handledRebindGen = gen;
+        }
+        if (dmInput.value.trim()) {
+          if (draftBindingGen === null || gen === null || draftBindingGen !== gen) reboundPending = true;
+        } else {
+          reboundPending = false;
+          reboundRejectedGen = null;
+          rebindRefreshing = false;
+          draftBindingGen = null;
+        }
+      }
       state = change === 'rebind' ? transcriptState() : { ...transcriptState(), status: 'ended' };
+      syncComposer();
       redraw(body, draw, { force: true });
-      if (change === 'rebind') queue('latest');
+      if (change === 'rebind') { queue('latest'); void loadDms(); }
     }
 
     function reason() {
@@ -649,6 +1026,14 @@ export function createWindows({ root, ctx, askClose = confirmDialog }) {
     function deliveryNode(entry) {
       const item = entry.item;
       const parts = Array.isArray(item.parts) ? item.parts : [];
+      // 1-on-1 private Orrery DM: render expanded as a distinct user-aligned DM bubble, never collapsed into group delivery.
+      if (isPrivateDeliveryEntry(entry)) {
+        return h('div', { class: 'smw-u smw-u-dm', 'data-dm-entry': entry.key },
+          h('div', { class: 'smw-dm-meta' },
+            h('span', { class: 'smw-dm-pill' }, icon('orbit', 'ico-xs'), t('经 Orrery 私聊')),
+            item.timestamp ? h('time', { datetime: item.timestamp }, fmtTime(item.timestamp)) : null),
+          ...parts.map((part) => h('div', { class: 'smw-bub smw-bub-dm' }, textBody(part.body, { truncated: part.truncated }))));
+      }
       const { from, text, more } = deliveryCaption(item);
       const system = parts.length > 0 && parts.every((p) => p.from === 'system');
       const caption = [
@@ -733,14 +1118,31 @@ export function createWindows({ root, ctx, askClose = confirmDialog }) {
       unknown.textContent = t('{count} 条记录无法识别，没有显示。', { count: state.unknownCount });
       older.hidden = !hasOlder(state);
       syncCards();
+      drawDmTray();
     }
 
     return {
       kind: 'member', clusterId, el: f.el, style: f.style, names,
-      start() { names(); queue('latest'); },
+      relabel() { cache.clear(); names(); draw(); },
+      start() { names(); queue('latest'); void loadDms(); },
       event(event) {
+        const dm = eventPrivateMessage(event, clusterId, memberId);
+        if (dm) {
+          dmMessages = mergeMessages(dmMessages, [dm]);
+          redraw(body, drawDmTray);
+        } else if (event?.kind === 'delivery') {
+          const next = applyPrivateDeliveryEvent(dmMessages, event);
+          if (next !== dmMessages) { dmMessages = next; drawDmTray(); }
+        }
         const change = bindingChange(event, clusterId, memberId);
-        if (change) { end(change); return; }
+        if (change) {
+          if (change === 'rebind') {
+            const evGen = validBindingGen(event?.payload?.member?.bindingGen);
+            if (evGen !== null && evGen === handledRebindGen) return;
+          }
+          end(change);
+          return;
+        }
         if (!isMemberActivity(event, memberId)) return;
         clearTimeout(activityTimer);
         activityTimer = setTimeout(() => {
@@ -751,13 +1153,178 @@ export function createWindows({ root, ctx, askClose = confirmDialog }) {
       },
       focused() {},
       satellites() {},
-      focus() { body.focus?.({ preventScroll: true }); },
+      focus() { (dmInput.disabled ? body : dmInput).focus?.({ preventScroll: true }); },
       destroy() { dead = true; clearTimeout(activityTimer); activityTimer = null; pending.clear(); cache.clear(); },
     };
   }
 
+  // ---- embedded same-page plugin panel (official or full-trust) ----
+
+  /** Whether a same-page panel container currently holds unsaved typed input (uses host typedInput when available). */
+  function panelHasDraft(container) {
+    if (typeof ctx.hasTypedInput === 'function') return Boolean(ctx.hasTypedInput(container));
+    // Fallback for standalone DOM simulators without plugin-view's trusted-event tracker.
+    const TEXT_TYPES = new Set(['', 'text', 'search', 'email', 'url', 'tel', 'textarea']);
+    const walk = (node) => {
+      if (!node || node.hidden) return false;
+      const tag = String(node.tagName ?? node.tag ?? '').toLowerCase();
+      if ((tag === 'textarea' || (tag === 'input' && TEXT_TYPES.has(String(node.type ?? '').toLowerCase())))
+        && !node.readOnly && typeof node.value === 'string' && node.value.trim()) return true;
+      for (const child of node.children ?? []) if (walk(child)) return true;
+      return false;
+    };
+    return walk(container);
+  }
+
+  function panelWindow(key, panel, clusterId) {
+    let dead = false;
+    let cleanup = null;
+    const alive = () => !closed && !dead;
+    const reads = new AbortController();
+    const eventListeners = new Set();
+    const localThemeListeners = new Set();
+    const panelScopeCluster = panel.scope === 'cluster' ? clusterId : null;
+    const body = h('div', { class: 'smw-body smw-panel', tabindex: '-1', 'data-plugin-slot': panel.pluginId });
+    const badge = panel.trusted ? [h('span', { class: 'smw-thirdparty' }, lt('第三方插件'))] : [];
+    const f = frame(key, {
+      label: panel.title(),
+      avatar: h('span', { class: 'smw-picon', 'aria-hidden': 'true' }, icon(panel.icon)),
+      title: panel.title(),
+      subtitle: panelScopeCluster ? clusterName(panelScopeCluster) : t('全局'),
+      actions: badge,
+      body,
+      foot: null,
+      canClose: () => !panelHasDraft(body),
+    });
+    const READS = new Set(['GET', 'HEAD']);
+    const panelCtx = Object.freeze({
+      clusterId: panelScopeCluster,
+      api(method, path, bodyData) {
+        if (!alive()) return Promise.reject(new Error(`panel ${panel.key} is closed`));
+        if (!READS.has(String(method).toUpperCase())) return ctx.api(method, path, bodyData);
+        return ctx.api(method, path, bodyData, { signal: reads.signal })
+          .then((data) => (alive() ? data : Promise.reject(new Error(`panel ${panel.key} is closed`))));
+      },
+      onEvent(fn) {
+        if (!alive() || typeof fn !== 'function') return () => {};
+        eventListeners.add(fn);
+        return () => { eventListeners.delete(fn); };
+      },
+      get theme() { return getTheme(); },
+      onThemeChange(fn) {
+        if (!alive() || typeof fn !== 'function') return () => {};
+        localThemeListeners.add(fn);
+        themeListeners.add(fn);
+        return () => { localThemeListeners.delete(fn); themeListeners.delete(fn); };
+      },
+      setTitle(text) {
+        if (!alive() || typeof text !== 'string' || !text.trim()) return;
+        f.titleEl.textContent = text;
+        f.el.setAttribute('aria-label', text);
+      },
+      setSubtitle(text) {
+        if (!alive() || typeof text !== 'string') return;
+        f.subEl.textContent = text;
+      },
+      close() { if (alive()) close(key); },
+      openCluster(cid) { if (alive()) onOpenCluster?.(cid); },
+      openMember(cid, mid) { if (alive()) onOpenMember?.(cid, mid); },
+    });
+
+    return {
+      kind: 'panel', pluginId: panel.pluginId, scope: panel.scope, clusterId: panelScopeCluster, el: f.el, style: f.style,
+      names() {
+        f.titleEl.textContent = panel.title();
+        if (panelScopeCluster) f.subEl.textContent = clusterName(panelScopeCluster);
+      },
+      start() {
+        try {
+          ctx.trackTypedInput?.(body, panel.pluginId);
+          const result = panel.mount(body, panelCtx);
+          if (typeof result === 'function') cleanup = result;
+          else if (typeof result?.then === 'function') Promise.resolve(result).catch((err) => {
+            if (alive()) body.replaceChildren(h('p', { class: 'smw-status smw-warn' }, t('面板加载失败：{message}', { message: err?.message ?? String(err) })));
+          });
+        } catch (err) {
+          body.replaceChildren(h('p', { class: 'smw-status smw-warn' }, t('面板加载失败：{message}', { message: err?.message ?? String(err) })));
+        }
+      },
+      event(ev) {
+        if (panelScopeCluster && ev?.kind === 'cluster' && ev.payload?.cluster?.id === panelScopeCluster && ev.payload.cluster.deletedAt) {
+          close(key);
+          return;
+        }
+        for (const fn of [...eventListeners]) {
+          if (!eventListeners.has(fn) || !alive()) continue;
+          try { fn(ev); } catch { /* isolated */ }
+        }
+      },
+      focused() {},
+      satellites() {},
+      focus() { body.focus?.({ preventScroll: true }); },
+      destroy() {
+        if (dead) return;
+        dead = true;
+        reads.abort();
+        eventListeners.clear();
+        for (const fn of localThemeListeners) themeListeners.delete(fn);
+        localThemeListeners.clear();
+        const dispose = cleanup;
+        cleanup = null;
+        if (dispose) {
+          try {
+            const res = dispose();
+            if (typeof res?.then === 'function') Promise.resolve(res).catch(() => {});
+          } catch { /* isolated */ }
+        }
+        try {
+          const res = panel.unmount(body, panelCtx);
+          if (typeof res?.then === 'function') Promise.resolve(res).catch(() => {});
+        } catch { /* isolated */ }
+      },
+    };
+  }
+
+  // ---- restricted third-party plugin panel (sandboxed iframe via ctx.pluginUi) ----
+
+  function externalPanelWindow(key, item, clusterId) {
+    let dead = false;
+    let handle = null;
+    const body = h('div', { class: 'smw-body smw-ext-body', tabindex: '-1' });
+    const f = frame(key, {
+      label: `${item.name}（${t('第三方插件')}）`,
+      avatar: h('span', { class: 'smw-picon', 'aria-hidden': 'true' }, icon('layers')),
+      title: item.name,
+      subtitle: clusterName(clusterId),
+      actions: [h('span', { class: 'smw-thirdparty' }, lt('第三方插件'))],
+      body,
+      foot: null,
+    });
+    return {
+      kind: 'external-panel', pluginId: item.pluginId, scope: 'cluster', clusterId, el: f.el, style: f.style,
+      names() { f.subEl.textContent = clusterName(clusterId); },
+      start() {
+        handle = ctx.pluginUi?.mountStarmapFrame?.(item, clusterId) ?? null;
+        if (handle?.shell) body.replaceChildren(handle.shell);
+        else body.replaceChildren(h('p', { class: 'smw-status smw-warn' }, t('插件界面打不开。')));
+      },
+      event(ev) {
+        if (ev?.kind === 'cluster' && ev.payload?.cluster?.id === clusterId && ev.payload.cluster.deletedAt) close(key);
+      },
+      focused() {},
+      satellites() {},
+      focus() { body.focus?.({ preventScroll: true }); },
+      destroy() {
+        if (dead) return;
+        dead = true;
+        try { handle?.close(); } catch { /* ignore */ }
+        handle = null;
+      },
+    };
+  }
+
   return {
-    /** Opens the window for `target` ({ kind: 'hub', clusterId } or { kind: 'member', clusterId, memberId }), or raises it. */
+    /** Opens the window for `target` (hub, member, panel, or external-panel), or raises it. */
     open(target) {
       const key = windowKey(target);
       if (closed || !key) return;
@@ -770,20 +1337,52 @@ export function createWindows({ root, ctx, askClose = confirmDialog }) {
         existing.focus();
         return;
       }
-      const w = target.kind === 'hub' ? hubWindow(key, target.clusterId) : memberWindow(key, target.clusterId, target.memberId);
-      w.style(place(w.kind));
+      const w = target.kind === 'hub' ? hubWindow(key, target.clusterId)
+        : target.kind === 'member' ? memberWindow(key, target.clusterId, target.memberId)
+          : target.kind === 'panel' ? panelWindow(key, target.panel, target.clusterId)
+            : externalPanelWindow(key, target.item, target.clusterId);
+      w.style(place(w.kind, target.panel?.defaultSize ?? null));
       wins.set(key, w);
       stack.open(key);
       layer.append(w.el);
       layout();
+      onRaise?.();
+      if (!directory.loaded) directory.load();
       w.start();
       w.focus();
-      if (!directory.loaded) directory.load();
+      onChange?.();
+    },
+    /** Cluster ids whose Hub chat floating window is currently open. */
+    openHubClusterIds() {
+      const out = new Set();
+      for (const w of wins.values()) if (w.kind === 'hub' && w.clusterId) out.add(w.clusterId);
+      return out;
+    },
+    /** Closes every open panel window owned by `pluginId` (called when a plugin is released/detached). */
+    closePluginPanels(pluginId) {
+      for (const [key, w] of [...wins]) {
+        if ((w.kind === 'panel' || w.kind === 'external-panel') && w.pluginId === pluginId) close(key);
+      }
+    },
+    /** Closes cluster-scoped panels belonging to a deleted cluster. */
+    closeClusterPanels(clusterId) {
+      for (const [key, w] of [...wins]) {
+        if ((w.kind === 'panel' || w.kind === 'external-panel') && w.scope === 'cluster' && w.clusterId === clusterId) close(key);
+      }
+    },
+    /** Broadcasts a Star Map theme change to open same-page plugin panels. */
+    setTheme(themeObj) {
+      for (const fn of [...themeListeners]) {
+        if (!themeListeners.has(fn)) continue;
+        try { fn(themeObj); } catch { /* isolated */ }
+      }
     },
     /** Closes every window; reads still in flight are ignored when they come back, and the event listener goes. */
     closeAll() {
       if (closed) return;
       closed = true;
+      themeListeners.clear();
+      unsubLang?.();
       unsubscribe?.();
       for (const key of stack.clear()) {
         const w = wins.get(key);

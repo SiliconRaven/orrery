@@ -1,33 +1,70 @@
-# orrery (`v0.10.0-beta.3` Beta)
+# orrery (`v0.10.0-beta.4` Beta)
 
 Language: [中文](README.md) | **English**
 
-> **Beta Notice**: This release is **v0.10.0-beta.3 (Beta pre-release)**, not a final stable release. Interfaces, protocols, and plugin configurations may change.
+**Bring the AI coding conversations you already have open into one local group chat so they can collaborate like a team.**
 
-orrery is a Windows-first local multi-agent collaboration desktop and Hub (Native Mode only). It connects your existing conversations in AI coding apps (plus newly created native sessions where supported) to shared group chats and task boards. A member receives deliveries only while its app is online. Hub group messages and state stay on your machine.
+orrery is a Windows-first local multi-agent collaboration desktop and Hub (Native Mode only). Instead of replacing your AI coding apps or asking for your API keys, it connects your live conversations across Claude Code, Codex, Cursor, DeepSeek Harness, Kimi Code, and more to one local Hub—where agents discuss, `@mention` each other, split tasks, review independently, and ship code.
 
-## Windows Installer
+> **Beta Notice**: This release is **`v0.10.0-beta.4` (Public Beta)**, not a final stable release. Interfaces, plugin contracts, and config formats may still change. Please read the [Safety Boundaries & Disclaimer](#safety-boundaries--disclaimer) below before use.
 
-The Windows x64 installer includes Node and the runtime dependencies. It installs Orrery Beta and its own shortcuts; Node on `PATH` is not required. Data lives under `%APPDATA%/Orrery Beta/hub` and is retained during upgrades and uninstall.
+![orrery collaboration view](docs/assets/collaboration.en.png)
 
-The Beta installer is unsigned. Windows may show an unknown-publisher warning; use the checksum provided with the download.
+---
 
-## Interface, Updates & Plugins
+## Why orrery
 
-Choose Chinese or English in Settings → Appearance; it applies at once without reloading, and drafts and open panels stay. In the desktop app you can switch here or in desktop settings: the shell and the collaboration page switch together and remember the choice. User messages and names stay in their original language.
+### 1. Attach any existing conversation at any time
+No need to start over in a throwaway chat or give up your favorite tool. Pick any ongoing session from your native AI coding apps and drop it straight into a cluster with its full context intact—or spin up a fresh native thread where supported (such as Codex).
 
-Software updates are checked in the background and can also be checked manually in Settings. Detection never silently downloads or runs an installer. A private GitHub release feed may be inaccessible without an account; access failures are shown as errors.
+### 2. Full visibility into every message between agents
+Every `@mention`, delivery queue state, read receipt, retry, task assignment, and review comment flows through the central collaboration page in real time. There are no hidden side-channels between agents that you cannot see.
 
-Settings → Plugins accepts GitHub links, ZIP/tgz files and public npm package names. Review the requested permissions and readable/writable groups, confirm installation, then exit Hub and reopen Orrery to load it. Third-party plugins come in two tiers: **restricted plugins** run in a separate process with only the permissions and groups you grant (reads, events, restricted posting, message checks, commands, member tools, sandboxed pages and marks); **full-trust plugins** are registered by hand and confirmed in Settings, then run inside the Hub with the same power as orrery itself; start with `ORRERY_SAFE_MODE=1` to skip them if something goes wrong. See [Third-Party Plugins](docs/external-plugins.en.md).
+### 3. Jump back into any native app whenever you want
+orrery only delivers messages into your native conversations and never hijacks your client. Switch back to Claude Code, Codex, Cursor, or any other host window at any moment to take over, answer an approval prompt, or continue solo. Close an app and that member simply goes offline—orrery never auto-launches closed apps.
 
-The "Skills & MCP" page in the sidebar lists each app's skills and MCP servers read-only and can install skills into the shared skills folder ([Files & Skills](docs/files.en.md)).
+### 4. Minimal core—everything can be a plugin
+The core Hub stays deliberately small: clusters, membership, native delivery, authorization, and loop-prevention guards. **Almost everything else is a plugin**:
+- **Official built-in features are independently toggleable & updatable plugins**: Even the **task board & `ship` workflow (`tasks`)**, **coordinator delegation (`coordinator`)**, **shared bookmarks (`bookmarks`)**, and **3D Star Map view (`starmap`)** are packaged as official plugins that can be switched on/off or updated independently without reinstalling the app (see [Built-in Plugins](docs/plugins.en.md)).
+- **Two-tier third-party plugin ecosystem**: Install extensions in **Settings → Plugins** via GitHub URL, public npm package name, or local ZIP/tgz. **Restricted plugins** run in separate processes with per-cluster grants for events, commands, member tools, inline marks, and sandboxed `iframe` UIs; **full-trust plugins** run in-process after explicit user confirmation with the same Hub and page slots as official plugins (and can be bypassed anytime with `ORRERY_SAFE_MODE=1`). See [Third-Party Plugins](docs/external-plugins.en.md).
 
-In-process plugins can page through the Claude or Codex native conversation a member is currently bound to; reads happen on demand and bodies stay in memory, see [Architecture](docs/architecture.en.md#reading-a-members-bound-native-conversation).
+### 5. Strictly local with built-in loop guards
+The Hub binds strictly to loopback `127.0.0.1` and stores all messages, tasks, and metadata in local SQLite. Built-in per-chain hop caps (default `6`), per-chain turn caps (default `20`), always-on per-member hourly turn limits, and a one-click global pause toggle keep agents from looping out of control.
 
-## Run from Source
+---
 
-Daily Hubs in the same account share a registry and keep separate databases. Stop the old Hub before upgrading. orrery's own plug-ins find the Hub through the registry and sign every request instead of reading `hub.json`; the copy-installed Cursor, Qoder and Antigravity plug-ins must be reinstalled after an upgrade. If a static MCP configuration still uses the old key, reveal the shared key under Settings → Delivery → Native connections. Secondary Hub delivery requires an explicit opt-in. [Signed bridges](docs/native-mode.en.md)
+## Visual Tour
 
+### Task Workbench & Collaboration (`tasks` / `coordinator` / `bookmarks`)
+Task planning, dependency graphs, member workload views, three review tiers (independent member review, self-review, user review), acceptance batches, local Git branch links, and `ship` merge records—all delivered through official plugins.
+
+![orrery task workbench](docs/assets/workbench.en.png)
+
+### 3D Star Map View 2.0 (`starmap`, off by default)
+Enable the official `starmap` plugin in Settings and restart to unlock a prominent **Standard / Star Map** mode switcher in the sidebar. Star Map takes over the viewport as a fullscreen 3D HUD (with three distinct Luna, Astra, and Sol UI themes) where you inspect group chats and native transcripts, send 1-on-1 binding-scoped private DMs, and open Tasks, Coordinator, Bookmarks, and third-party plugin panels right inside the HUD Dock (see [Embedding Plugins into Star Map](docs/starmap-plugins.en.md)).
+
+![orrery 3D Star Map plugin](docs/assets/starmap.en.png)
+
+### Plugin Center & Instant Bilingual UI
+Manage official plugin updates and third-party permissions in **Settings → Plugins**, or switch between Chinese and English instantly under **Settings → Appearance** without reloading or losing drafts. The sidebar's **Skills & MCP** page also gives a read-only overview of each app's skills and MCP servers plus shared skill installation ([Files & Skills](docs/files.en.md)).
+
+![orrery plugin center](docs/assets/plugins.en.png)
+
+---
+
+## Quick Start
+
+### Option 1: Windows Installer (Recommended)
+
+Download the latest Windows x64 installer from [GitHub Releases](https://github.com/SiliconRaven/orrery/releases) (bundles Node and runtime dependencies—no separate Node installation required):
+
+1. Run the installer and launch **Orrery Beta** from the created shortcut.
+2. Data lives under `%APPDATA%/Orrery Beta/hub` and is preserved across upgrades and uninstalls.
+3. Beta installers are currently unsigned, so Windows SmartScreen may show an unknown-publisher prompt; verify the checksum published alongside the download.
+
+Update checks run in the background or on demand in Settings, and **never silently download or execute an installer**.
+
+### Option 2: Run from Source
 
 Requirements: Windows 10/11 (primary platform) and **Node.js >= 24.2**.
 
@@ -38,12 +75,13 @@ npm ci
 npm run open
 ```
 
-- `npm run open` reuses a matching Hub for the same data directory or starts one in the background, then opens the collaboration UI (`npm start` runs in foreground; `npm run shortcut` creates a desktop shortcut).
-- Open the UI through `npm run open`, the desktop shortcut, or the desktop shell to sign in with the token. APIs accept a Bearer token or a session cookie; see the [Security Model](docs/security.en.md).
+- `npm run open` reuses a matching running Hub or starts one in the background, then opens the collaboration UI with token login (`npm start` runs in foreground; `npm run shortcut` creates a desktop shortcut).
+- Open the UI via `npm run open`, the desktop shortcut, or the desktop shell to sign in with the session cookie (APIs also accept a Bearer token; see [Security Model](docs/security.en.md)).
+- Daily Hubs under the same account share a registry and keep separate databases; stop the old Hub before upgrading and reinstall copy-installed Cursor, Qoder, and Antigravity plugins when upgrading. See [Native Mode](docs/native-mode.en.md).
 
-### Optional: Desktop Shell
+### Optional: Electron Desktop Shell
 
-`desktop/` provides an optional Electron wrapper (also `v0.10.0-beta.3` Beta) that docks and switches running top-level host windows without embedding third-party UIs:
+`desktop/` provides an optional Windows wrapper that docks and switches running top-level host app windows in a tab bar (**never embeds windows, alters styles, or injects input**):
 
 ```powershell
 npm ci --prefix desktop
@@ -52,9 +90,11 @@ npm start --prefix desktop
 
 See [Desktop Shell](docs/desktop.en.md).
 
+---
+
 ## Supported Native Harnesses
 
-Every member attaches in **Native Mode (`NativeAdapter`)** to a conversation inside its host app, inheriting your existing app permissions (prompts are not guaranteed on every action). Closed apps appear offline without auto-launch or replay on restart:
+Every member attaches in **Native Mode (`NativeAdapter`)** to a conversation inside its host app, inheriting your existing permissions. Closed apps appear offline without auto-launch or replay on restart:
 
 | Harness | Integration | Guide |
 |---|---|---|
@@ -68,11 +108,11 @@ Every member attaches in **Native Mode (`NativeAdapter`)** to a conversation ins
 | WorkBuddy | Parent-process MCP bridge + background wait command | [WorkBuddy Adapter](docs/adapters/workbuddy.en.md) |
 | Antigravity | Sidecar + signed Hook (includes ToS notice) | [Antigravity Adapter](docs/adapters/antigravity.en.md) |
 
-> **Security Note**: Deliveries run under your own host app permissions. Cluster names may include spaces, while member names reject spaces and control characters. See [Security Model](docs/security.en.md).
+> **Tip**: Cluster names may include internal spaces; member names reject spaces and control characters.
 
 ### Set up multiple harnesses with an agent
 
-Replace `<app list>` with the apps you want to connect, then copy this prompt to your agent. See the [Native Mode guide](docs/native-mode.en.md) and the app guides in the table above.
+Replace `<app list>` with the apps you want to connect, then copy this prompt to your agent:
 
 ```text
 Help me connect these apps to my current Orrery Hub: <app list>.
@@ -82,7 +122,26 @@ Help me connect these apps to my current Orrery Hub: <app list>.
 3. Use the guides to verify the connections I have authorized you to check. Record tool calls and actual delivery separately, and explain when either does not apply. For each app, report Connected, Needs my action, or Unverified, and identify any uninstalled apps. Use Connected only after verifying the applicable connections.
 ```
 
-## Environment Variables
+---
+
+## Safety Boundaries & Disclaimer
+
+Please understand these responsibilities and risks before using orrery (full threat model in [Security Model](docs/security.en.md); vulnerability reporting in [SECURITY.md](SECURITY.md)):
+
+1. **Execution security belongs to each host harness—orrery only routes messages**: orrery does not execute model tools or manage model permissions. Each member acts under the permission and approval settings of its native app. If you enable auto-approve / yolo mode inside a host app, relayed cluster messages can trigger actions without prompting.
+2. **Cross-agent persuasion & indirect prompt injection**: An agent in a cluster can be misled by faulty reasoning, malicious suggestions, or indirect prompt injection carried in messages from other agents or plugins. **Never treat Hub-relayed messages as direct user authorization**; review and approve sensitive commands, config/rule edits, and merges directly inside your native apps.
+3. **Cross-vendor data flow & same-account local boundary**: Placing agents from different vendors in the same cluster means one model's output can be forwarded to another provider. Evaluate compliance before sharing sensitive code or data. Although the Hub binds only to `127.0.0.1` and requires tokens, **other local programs running under the same OS account** can read credentials and data under `~/.orrery` and fall outside the threat model.
+4. **API cost & quota usage**: Multi-agent collaboration can consume model quotas or paid API credits quickly. Keep loop limits sensible and use the **global pause** switch whenever needed.
+5. **Third-party ToS & no affiliation**: orrery is an independent open-source project not affiliated with Claude, OpenAI/Codex, Cursor, DeepSeek, Kimi, ZCode, Qoder, WorkBuddy, or Antigravity. Compliance with each third-party client's Terms of Service remains your responsibility.
+6. **Plugins & local `ship` checks**: Restricted third-party plugins run under your OS account (**process separation is not an OS sandbox**), and full-trust plugins run in-process with the same privileges as orrery itself—only install plugins you trust. `ship` runs repository-declared verification commands in a temporary local worktree; do not run it blindly on untrusted repositories.
+7. **Beta software provided AS-IS**: This is an unsigned public Beta distributed under the MIT License without warranties of any kind; the authors are not liable for direct or indirect damages arising from its use.
+
+---
+
+<details>
+<summary><strong>Environment Variables & Common Commands (Click to expand)</strong></summary>
+
+### Environment Variables
 
 | Variable | Description | Default |
 |---|---|---|
@@ -91,37 +150,37 @@ Help me connect these apps to my current Orrery Hub: <app list>.
 | `ORRERY_REGISTRY` | Account-local registry and shared bridge key. Use a separate path for tests and development. | `~/.orrery/registry` |
 | `ORRERY_HUB` | For plug-ins: connect only to the Hub with this hubId or name; an invalid record stops the plug-in instead of falling back to the active Hub | Unset (active Hub) |
 | `ORRERY_LEGACY_HUB` | For plug-ins: when the registry has no running active Hub, read `hub.json` in this old Hub's home and send the plaintext key the old way | Unset |
-| `ORRERY_SECONDARY` | `1` starts a secondary Hub with native delivery disabled by default. | Unset |
+| `ORRERY_SECONDARY` | `1` starts a secondary Hub with native delivery disabled by default | Unset |
 | `ORRERY_DB` | SQLite database file path | `<repo>/.tmp/orrery.db` |
 | `ORRERY_SKILLS_DIR` | Local skills folder scanned for `$` completion | `~/.agents/skills` |
-| `ORRERY_MOCK` | Set to `1` for a demo project with two mock conversations that reply to incoming chat messages without calling a model | Off |
+| `ORRERY_MOCK` | Set to `1` for a demo `mock` adapter that auto-replies without calling real models | Off |
 | `ORRERY_MAX_HOPS` | Max hops per chain (non-negative integer only, `0` allowed; no `unlimited`) | `6` |
 | `ORRERY_MAX_TURNS_PER_CHAIN` | Max turns per chain (non-negative integer only, `0` allowed; no `unlimited`) | `20` |
 | `ORRERY_SAFE_MODE` | Set to `1` to skip every full-trust plugin | Off |
 
-## Common Commands
+### Common Commands
 
 ```powershell
 npm test                                 # Run automated tests (separate test ports & temp dirs, never 4317)
 npm run check:health                     # Knip check for unused files, deps, and cycles (no tests, not a CVE audit)
-npm run check:exports                    # Check unused export/type candidates only (no file checks, no tests)
+npm run check:exports                    # Check unused export/type candidates only
 npm run --silent bench:collaboration     # Run reproducible mock collaboration benchmark (not live-model scores)
 npm run clean:temp                       # Clean leftover test temporary artifacts
 npm run backup                           # Back up local private Hub SQLite database
 npm run plugin:inspect -- <manifest>     # Preflight a third-party plugin manifest before registering (never runs it)
 ```
 
-Users can set group roles for creating, executing, and reviewing tasks under Roles and coordination → Task permissions. All three are open by default. The coordinator's optional create-role bypass is configured under Task planning. [Task permissions](docs/collaboration.en.md)
+</details>
+
+---
 
 ## Documentation Index
 
-- **Architecture & Design**: [Architecture](docs/architecture.en.md) · [Native Mode](docs/native-mode.en.md) · [Loop Limits](docs/hop-limit.en.md) · [Security Model](docs/security.en.md)
-- **Collaboration & Tasks**: [Collaboration & Tasks](docs/collaboration.en.md) · [Collaboration API](docs/collaboration-api.en.md) · [Members & Handover](docs/cluster-members.en.md) · [Built-in Plugins](docs/plugins.en.md)
-- **Operations & Extensions**: [Desktop Shell](docs/desktop.en.md) · [Launcher](docs/launcher.en.md) · [Files & Skills](docs/files.en.md) · [Usage & Quotas](docs/usage.en.md) · [Activity Observation](docs/activity.en.md) · [Third-Party Plugins](docs/external-plugins.en.md) · [Unread Hint Hook](docs/adapters/unread-hook.en.md)
-- **Maintenance & Notices**: [Code Health](docs/code-health.en.md) · [Collaboration Benchmark](docs/evaluation.en.md) · [Third-Party Notices](docs/third-party.en.md)
+- **Architecture & Security**: [Architecture](docs/architecture.en.md) · [Native Mode](docs/native-mode.en.md) · [Loop Limits](docs/hop-limit.en.md) · [Security Model](docs/security.en.md) · [Security Policy](SECURITY.md)
+- **Collaboration & Plugins**: [Collaboration & Tasks](docs/collaboration.en.md) · [Collaboration API](docs/collaboration-api.en.md) · [Members & Handover](docs/cluster-members.en.md) · [Built-in Plugins](docs/plugins.en.md) · [Third-Party Plugins](docs/external-plugins.en.md) · [Embedding Plugins into Star Map](docs/starmap-plugins.en.md)
+- **Desktop & Operations**: [Desktop Shell](docs/desktop.en.md) · [Launcher](docs/launcher.en.md) · [Files & Skills](docs/files.en.md) · [Usage & Quotas](docs/usage.en.md) · [Activity Observation](docs/activity.en.md) · [Unread Hint Hook](docs/adapters/unread-hook.en.md)
+- **Maintenance & Roadmap**: [Code Health](docs/code-health.en.md) · [Collaboration Benchmark](docs/evaluation.en.md) · [Third-Party Notices](docs/third-party.en.md) · [Follow-ups](docs/backlog.en.md)
 
 ## License
 
-Source code in this repository is licensed under the **MIT License** (`orrery contributors`; see the root `LICENSE` file for the English legal text). Third-party application icons and dependencies retain their own rights and licenses; see [Third-Party Notices](docs/third-party.en.md). The original project SVG icon is included under MIT.
-
-See [Follow-ups](docs/backlog.en.md) for remaining improvements.
+Source code in this repository is licensed under the **MIT License** (`orrery contributors`; see the root [LICENSE](LICENSE) file for the English legal text). Third-party application icons and dependencies retain their own rights and licenses; see [Third-Party Notices](docs/third-party.en.md). The original project SVG icon is included under MIT.

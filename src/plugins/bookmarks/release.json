@@ -1,9 +1,9 @@
 {
   "format": 1,
   "id": "bookmarks",
-  "version": "0.10.0-beta.2",
+  "version": "0.10.0-beta.4",
   "keyId": "orrery-official-1",
-  "hub": { "api": 1, "minVersion": "0.10.0-beta.3" },
+  "hub": { "api": 1, "minVersion": "0.10.0-beta.4" },
   "requires": [],
   "migrationVersion": 1,
   "entry": "hub/index.mts",

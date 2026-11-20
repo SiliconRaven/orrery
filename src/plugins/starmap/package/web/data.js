@@ -240,6 +240,141 @@ export function dismissedStore(storage, hub) {
   };
 }
 
+// ---- burst / message-rate activity (60s sliding window, pure) ----
+
+/** Sliding window for message-rate calculation (ms). */
+export const ACTIVITY_WINDOW_MS = 60_000;
+/** Messages per minute to treat a cluster as clearly active / bursting. */
+export const ACTIVITY_ACTIVE_RATE = 3;
+export const ACTIVITY_BURST_RATE = 8;
+/** Cap stored timestamps per cluster so a heavy flood stays bounded. */
+export const ACTIVITY_MAX_STAMPS = 120;
+
+const LEVEL_RANK = { burst: 2, active: 1, quiet: 0 };
+
+/** Per-cluster recent public message records: Map<clusterId, Array<{ id: string | null, at: number }>>. */
+export function createActivityTracker() {
+  return new Map();
+}
+
+function pruneList(list, cutoff) {
+  if (!list.length || list[0].at >= cutoff) return list;
+  let i = 0;
+  while (i < list.length && list[i].at < cutoff) i++;
+  return i >= list.length ? [] : list.slice(i);
+}
+
+/**
+ * Records one public cluster message at timestamp `at` (ms) relative to `now` (ms).
+ * Deduplicates by `id` when present and prunes records older than `now - windowMs`.
+ */
+export function recordClusterActivity(tracker, clusterId, { id = null, at = Date.now() } = {}, now = at, windowMs = ACTIVITY_WINDOW_MS) {
+  if (!clusterId || !Number.isFinite(at) || !Number.isFinite(now) || windowMs <= 0) return 0;
+  const cutoff = now - windowMs;
+  if (at < cutoff) return clusterActivity(tracker, clusterId, now, windowMs).count;
+  const prev = pruneList(tracker.get(clusterId) ?? [], cutoff);
+  if (id && prev.some((r) => r.id === id)) {
+    if (prev.length) tracker.set(clusterId, prev); else tracker.delete(clusterId);
+    return prev.length;
+  }
+  const next = [...prev, { id, at }];
+  if (next.length > 1 && next[next.length - 2].at > at) next.sort((a, b) => a.at - b.at);
+  const bounded = next.length > ACTIVITY_MAX_STAMPS ? next.slice(next.length - ACTIVITY_MAX_STAMPS) : next;
+  tracker.set(clusterId, bounded);
+  return bounded.length;
+}
+
+/**
+ * Seeds the tracker from an already-fetched page of public messages (ignoring private messages and anything
+ * outside `[now - windowMs, now + 5000]`). Safe to call repeatedly: deduplicates by message id.
+ */
+export function seedClusterActivity(tracker, clusterId, messages, now = Date.now(), windowMs = ACTIVITY_WINDOW_MS) {
+  if (!clusterId || !Array.isArray(messages) || !messages.length || windowMs <= 0) return 0;
+  const cutoff = now - windowMs, ceiling = now + 5000;
+  for (const m of messages) {
+    if (!m || m.privateTo) continue;
+    const at = Date.parse(m.createdAt ?? '');
+    if (!Number.isFinite(at) || at < cutoff || at > ceiling) continue;
+    recordClusterActivity(tracker, clusterId, { id: m.id ?? null, at }, now, windowMs);
+  }
+  return clusterActivity(tracker, clusterId, now, windowMs).count;
+}
+
+/** Drops expired entries across all clusters. Returns true while at least one cluster still has entries in window. */
+export function pruneActivity(tracker, now = Date.now(), windowMs = ACTIVITY_WINDOW_MS) {
+  const cutoff = now - windowMs;
+  for (const [cid, list] of [...tracker]) {
+    const kept = pruneList(list, cutoff);
+    if (kept.length) tracker.set(cid, kept);
+    else tracker.delete(cid);
+  }
+  return tracker.size > 0;
+}
+
+/** Milliseconds until the earliest tracked message leaves the window, or null when completely quiet. */
+export function nextActivityExpiry(tracker, now = Date.now(), windowMs = ACTIVITY_WINDOW_MS) {
+  let oldest = Infinity;
+  for (const list of tracker.values()) {
+    if (list.length && list[0].at < oldest) oldest = list[0].at;
+  }
+  if (!Number.isFinite(oldest)) return null;
+  return Math.max(100, oldest + windowMs - now);
+}
+
+/**
+ * Current activity metrics for one cluster at `now` (pure read; does not mutate `tracker`).
+ * `rate`: public messages per minute; `level`: 'burst' | 'active' | 'quiet'; `intensity`: 0..1 visual weight.
+ */
+export function clusterActivity(tracker, clusterId, now = Date.now(), windowMs = ACTIVITY_WINDOW_MS) {
+  const list = tracker?.get?.(clusterId);
+  if (!list?.length || windowMs <= 0) return { count: 0, rate: 0, level: 'quiet', intensity: 0 };
+  const cutoff = now - windowMs;
+  let count = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i].at < cutoff) break;
+    count++;
+  }
+  if (!count) return { count: 0, rate: 0, level: 'quiet', intensity: 0 };
+  const rate = Math.max(1, Math.round((count * 60_000) / windowMs));
+  const level = rate >= ACTIVITY_BURST_RATE ? 'burst' : rate >= ACTIVITY_ACTIVE_RATE ? 'active' : 'quiet';
+  const intensity = level === 'burst'
+    ? Math.min(1, 0.55 + ((rate - ACTIVITY_BURST_RATE) / 16) * 0.45)
+    : level === 'active'
+      ? 0.25 + ((rate - ACTIVITY_ACTIVE_RATE) / Math.max(1, ACTIVITY_BURST_RATE - ACTIVITY_ACTIVE_RATE)) * 0.3
+      : Math.min(0.22, (rate / ACTIVITY_ACTIVE_RATE) * 0.22);
+  return { count, rate, level, intensity };
+}
+
+/**
+ * Top active or unread clusters for the HUD radar strip: sorted by burst/active level, message rate, unread count,
+ * and non-current preference on ties. Quiet read clusters — and clusters the user is already viewing (current system
+ * or open Hub chat) with 0 unread — are omitted so reading a flooding cluster immediately clears the alert.
+ */
+export function activeClusterRows(
+  model,
+  tracker,
+  now = Date.now(),
+  { currentCid = null, openHubCids = null, limit = 5, windowMs = ACTIVITY_WINDOW_MS } = {},
+) {
+  const rows = [];
+  for (const system of model.systems.values()) {
+    const cid = system.cluster.id;
+    const activity = clusterActivity(tracker, cid, now, windowMs);
+    const unread = Number(system.cluster.unread) || 0;
+    const isCurrent = cid === currentCid;
+    const hubOpen = Boolean(openHubCids?.has?.(cid));
+    if (unread <= 0 && (isCurrent || hubOpen)) continue;
+    if (activity.rate <= 0 && unread <= 0) continue;
+    rows.push({ system, activity, unread, isCurrent });
+  }
+  rows.sort((a, b) => (LEVEL_RANK[b.activity.level] - LEVEL_RANK[a.activity.level])
+    || (b.activity.rate - a.activity.rate)
+    || (b.unread - a.unread)
+    || (Number(a.isCurrent) - Number(b.isCurrent))
+    || String(a.system.cluster.name).localeCompare(String(b.system.cluster.name), 'zh-CN'));
+  return rows.slice(0, Math.max(0, limit));
+}
+
 // ---- the cluster list (/ or Ctrl+K) ----
 
 const norm = (s) => String(s ?? '').toLocaleLowerCase('zh-CN');
@@ -257,17 +392,40 @@ function memberRank(member, q) {
 
 /**
  * The rows of the cluster list for `query`. Empty: every cluster in sky order (`group` lets the list put headings
- * between galaxies), then the recycle bin. Otherwise the clusters matching by their own name (exact, then prefix, then
- * anywhere), then by their group's name, then those with a matching member only; each cluster row is followed by its
- * matching members (by name or harness), best first; the recycle bin last when `trashLabel` (or 回收站) matches.
- * `active`: the row Enter opens first: the first row, or the first member when no cluster matched by itself.
+ * between galaxies), then the recycle bin; when `activityOf` (`(cid) => { rate, level }`) is supplied, active or
+ * unread clusters float to a top `active` section ordered by rate then unread, with quiet clusters grouped below.
+ * Otherwise matching clusters are ranked by match score, breaking ties by activity when `activityOf` is supplied.
  */
-export function searchSky(model, query, trashLabel = '回收站') {
+export function searchSky(model, query, trashLabel = '回收站', activityOf = null) {
   const q = norm(query.trim());
   const rows = [];
   const trashMatches = !q || [trashLabel, '回收站'].some((s) => norm(s).includes(q));
+  const rateOf = (cid) => {
+    if (!activityOf) return { rate: 0, level: 'quiet' };
+    const info = typeof activityOf === 'function' ? activityOf(cid) : clusterActivity(activityOf, cid);
+    return { rate: Number(info?.rate) || 0, level: info?.level ?? 'quiet' };
+  };
   if (!q) {
-    for (const g of model.galaxies) for (const s of g.systems) rows.push({ type: 'cluster', system: s, group: g.name, score: 0 });
+    if (activityOf) {
+      const hot = [];
+      const quiet = [];
+      let order = 0;
+      for (const g of model.galaxies) for (const s of g.systems) {
+        const act = rateOf(s.cluster.id);
+        const unread = Number(s.cluster.unread) || 0;
+        const entry = { type: 'cluster', system: s, group: g.name, score: 0, activity: act, unread, order: order++ };
+        if (act.rate > 0 || unread > 0) hot.push({ ...entry, section: 'active' });
+        else quiet.push(entry);
+      }
+      hot.sort((a, b) => (LEVEL_RANK[b.activity.level] - LEVEL_RANK[a.activity.level])
+        || (b.activity.rate - a.activity.rate)
+        || (b.unread - a.unread)
+        || (a.order - b.order));
+      for (const r of hot) rows.push(r);
+      for (const r of quiet) rows.push(r);
+    } else {
+      for (const g of model.galaxies) for (const s of g.systems) rows.push({ type: 'cluster', system: s, group: g.name, score: 0 });
+    }
     rows.push({ type: 'trash' });
     return { rows, active: 0 };
   }
@@ -278,11 +436,16 @@ export function searchSky(model, query, trashLabel = '回收站') {
     const group = g.name ? rank(g.name, q) : -1;
     const members = s.planets.map((p) => ({ p, r: memberRank(p.member, q) })).filter((x) => x.r >= 0).sort((a, b) => a.r - b.r);
     const score = own >= 0 ? own : group >= 0 ? 3 : members.length ? 4 : -1;
-    if (score >= 0) hits.push({ s, g: g.name, score, members, order: order++ });
+    if (score >= 0) {
+      const act = rateOf(s.cluster.id);
+      hits.push({ s, g: g.name, score, members, act, unread: Number(s.cluster.unread) || 0, order: order++ });
+    }
   }
-  hits.sort((a, b) => a.score - b.score || a.order - b.order);
+  hits.sort((a, b) => (a.score - b.score)
+    || (activityOf ? (LEVEL_RANK[b.act.level] - LEVEL_RANK[a.act.level]) || (b.act.rate - a.act.rate) || (b.unread - a.unread) : 0)
+    || (a.order - b.order));
   for (const hit of hits) {
-    rows.push({ type: 'cluster', system: hit.s, group: hit.g, score: hit.score });
+    rows.push({ type: 'cluster', system: hit.s, group: hit.g, score: hit.score, ...(activityOf ? { activity: hit.act } : {}) });
     for (const { p } of hit.members) rows.push({ type: 'member', system: hit.s, planet: p, group: hit.g });
   }
   if (trashMatches) rows.push({ type: 'trash' });
@@ -393,14 +556,17 @@ export function applySkyEvent(state, event) {
       return { trash: false, layout: false, status: true, notices: [] };
     case 'message': {
       const m = p.message;
-      if (!m?.clusterId) return null;
+      if (!m?.clusterId || m.privateTo) return null;
       for (const d of p.deliveries ?? []) addRunning(state, d.memberId, d.id, d.state === 'running');
       if (state.messages.has(m.clusterId)) setMessages(state, m.clusterId, [m]);
       const cluster = state.clusters.get(m.clusterId);
       const unread = Boolean(cluster) && m.from !== 'user';
       // in place: the model's systems hold this object, so the list and the cards show it without a rebuild
       if (unread) cluster.unread = (cluster.unread ?? 0) + 1;
-      return { trash: false, layout: false, status: Boolean(p.deliveries?.length), notices: isSystemMessage(m) ? [m.clusterId] : [], unread };
+      return {
+        trash: false, layout: false, status: Boolean(p.deliveries?.length),
+        notices: isSystemMessage(m) ? [m.clusterId] : [], unread, activity: m,
+      };
     }
     case 'settings':
       if (!Array.isArray(p.clusterGroups)) return null;

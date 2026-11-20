@@ -2,7 +2,7 @@
 
 Language: [中文](external-plugins.md) | **English**
 
-orrery (`v0.10.0-beta.3` Beta pre-release) can run third-party Hub plugins that live outside the repository. There are two tiers:
+orrery (`v0.10.0-beta.4` Beta pre-release) can run third-party Hub plugins that live outside the repository. There are two tiers:
 
 | | Restricted plugin | Full-trust plugin |
 |---|---|---|
@@ -95,6 +95,8 @@ Plugin → Hub (by grant):
 
 Refusals are a uniform `-32000` error; some methods add a stable short code in `error.data.code` (`PERMISSION_DENIED`, `INVALID_DATA`, `CLUSTER_NOT_GRANTED`, `NOT_FOUND`, ...). Reading never marks messages read, acknowledges them or triggers delivery. The protocol never exposes file paths, attachment contents, member working directories, native session IDs, credentials, the database or arbitrary SQL. Timeouts, process exit, bad frames, oversized output or output floods mark the plugin `failed` and end its process; the Hub and other plugins keep running.
 
+Restricted plugins cannot read Star Map member direct messages through the message API or use them as cursors, post causes or mark targets. Restricted plugins do not receive message, delivery, receipt or loop guard events for direct messages. Mixed receipts list the group messages only.
+
 ## Posting (`messages.send`)
 
 With `messages.send` granted and the group listed in `writeClusterIds`, a plugin can post (bodies up to 8000 characters; optional `causedBy` must be an existing message in the same group, and the post continues its chain). Posts are signed "plugin <id>" with message kind `plugin`. By default `@` is plain text; to wake members, also grant `messages.mention` and turn on wake-ups under **Settings → Plugins → Posting settings**. Wake-ups still obey pause, online checks and loop limits. The default limit is 10 posts per minute and 200 per hour per group, adjustable; unlimited needs confirmation. Over the limit the call fails and the group gets a rate notice that wakes nobody.
@@ -176,6 +178,7 @@ The manifest's `ui.positions` declares positions; the registration's `ui` grants
 
 - `titlebar`: a chip in the group title bar that opens a panel (height `panelHeight`, 200-480 px, default 320);
 - `workbench`: a tab named after the plugin in the task workbench;
+- `starmap`: a plugin panel in Star Map 2.0, with a separate grant even if the plugin already has another position; see [Embedding Plugins into Star Map](starmap-plugins.en.md);
 - `marks`: small marks on messages, members and tasks, drawn by orrery from the plugin's data.
 
 **Pages** are served only from the plugin folder's `ui/`, entry fixed at `ui/index.html`; only `.html`, `.css`, `.js`, `.json`, `.svg`, `.png`, `.jpg`, `.webp`, `.woff2`, at most 1 MiB per file and 200 files / 4 MiB for all of `ui/`; paths are checked segment by segment and links or junctions are never followed. Each time the page opens a UI, the Hub creates an unguessable frame ID; the address `/plugin-ui/<frame ID>/index.html` stops working when the UI closes, the plugin stops or restarts, grants are revoked or the Hub restarts.
@@ -241,7 +244,7 @@ Load problems the Hub can diagnose only skip that plugin and its dependents, and
 
 ### Web module (`webEntry`)
 
-The Hub serves the `webEntry` folder read-only at `/plugin-web/<id>/` (scripts, styles, JSON, images and fonts only, no HTML, at most 1 MiB per file, no links followed, never the Hub entry). Only plugins confirmed, loaded and switched on in this Hub start appear in `trustedFrontend` of `GET /api/plugins`, and the page imports only those (each within 5 seconds). A module exports `register(host)` and returns the slots it uses among `message`, `composer`, `workbench` and `settings` (see [Official Plugins](plugins.en.md#official-web-slots)); `host` offers `ui`, `api`, `nameOf`, `command` and `onDispose(fn)`.
+The Hub serves the `webEntry` folder read-only at `/plugin-web/<id>/` (scripts, styles, JSON, images and fonts only, no HTML, at most 1 MiB per file, no links followed, never the Hub entry). Only plugins confirmed, loaded and switched on in this Hub start appear in `trustedFrontend` of `GET /api/plugins`, and the page imports only those (each within 5 seconds). A module exports `register(host)` and returns the slots it uses among `message`, `composer`, `workbench`, `settings`, `view`, and `panel` (see [Official Plugins](plugins.en.md#official-web-slots) and [Embedding Plugins into Star Map](starmap-plugins.en.md)); `host` offers `ui`, `api`, `nameOf`, `command` and `onDispose(fn)`.
 
 **When trust ends**: after revoking, switching off or safe mode plus a Hub restart, open pages detach the plugin in place: its slots are no longer called, the elements it added through slots are removed, its dialogs close (text the user typed there moves into a read-only notice of the page itself, ready to copy), and each `onDispose` it registered is called once. A banner says "fully takes effect after a page refresh"; the page never reloads itself and leaves unsent input alone; it reloads only when the user clicks "Reload". Until then the module code is still in page memory: its own timers, listeners and changes made outside the slots can only be cleaned up by its own `onDispose`, so reload the page to stop it completely.
 
@@ -262,8 +265,8 @@ Starting the Hub with `ORRERY_SAFE_MODE=1` skips every full-trust plugin before 
 
 - [Message counter](../examples/hub-plugins/message-counter/README.en.md): reads and commands.
 - [Review reminder](../examples/hub-plugins/review-reminder/README.en.md): event subscription and restricted posting.
-- [UI demo](../examples/hub-plugins/ui-demo/README.en.md): title-bar and workbench pages, and marks.
-- [Group notes](../examples/hub-plugins/trusted-demo/README.en.md): a full-trust plugin with a table, a route, a member tool and a web module.
+- [UI demo](../examples/hub-plugins/ui-demo/README.en.md): title-bar, workbench, and Star Map 2.0 sandboxed panels, plus marks.
+- [Group notes](../examples/hub-plugins/trusted-demo/README.en.md): a full-trust plugin with a table, a route, a member tool and a web module (including a Star Map `panel` slot).
 
 ## Current limits
 

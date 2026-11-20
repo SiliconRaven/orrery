@@ -27,8 +27,10 @@ const catchThenable = (value, label) => Promise.resolve(value).catch(warnOf(labe
  */
 const MESSAGE = { required: ['render'], optional: ['key', 'capture', 'restore', 'update'] };
 const TAB = { required: ['render', 'load'], optional: ['reset', 'itemRow'], data: { id: 'string', label: 'text' } };
-const SLOTS = ['message', 'composer', 'workbench', 'settings', 'view'];
-const VIEW_KEYS = ['id', 'title', 'icon', 'mount', 'unmount'];
+const SLOTS = ['message', 'composer', 'workbench', 'settings', 'view', 'panel'];
+const VIEW_KEYS = ['id', 'title', 'icon', 'fullscreen', 'mount', 'unmount'];
+const PANEL_KEYS = ['id', 'title', 'icon', 'scope', 'defaultSize', 'badge', 'mount', 'unmount'];
+const PANEL_SCOPES = new Set(['cluster', 'global']);
 /** Whether the page's sprite has the icon `i-<name>` (a view names its icon, it never brings its own markup). */
 const spriteHas = (name) => globalThis.document?.getElementById(`i-${name}`)?.localName === 'symbol';
 
@@ -59,7 +61,41 @@ function checkView(view, id, hasIcon) {
   if (view.id !== id) throw new Error(`view.id must be the plugin's id (${id})`);
   if (typeof view.title !== 'function' && (typeof view.title !== 'string' || !view.title.trim())) throw new Error('view.title must be a non-empty string or a function');
   if (typeof view.icon !== 'string' || !ID.test(view.icon) || !hasIcon(view.icon)) throw new Error('view.icon must name an icon of the page (i-<name>)');
+  if (view.fullscreen !== undefined && typeof view.fullscreen !== 'boolean') throw new Error('view.fullscreen must be a boolean');
   for (const key of ['mount', 'unmount']) if (typeof view[key] !== 'function') throw new Error(`view.${key} must be a function`);
+}
+
+/**
+ * A floating panel slot embedded in a full-screen view such as Star Map (docs/starmap.md「同页 panels 插槽合同」).
+ * Accepts one descriptor or a non-empty list of descriptors, each with a plugin-unique `id`, plain-text `title`,
+ * sprite `icon`, `scope` ('cluster' | 'global'), optional `defaultSize` ({ w, h }), optional `badge(clusterId)`,
+ * and `mount(el, ctx)` / `unmount()`.
+ */
+function checkPanels(raw, hasIcon) {
+  const list = Array.isArray(raw) ? raw : [raw];
+  if (!list.length) throw new Error('panel must be a panel descriptor or a non-empty array of them');
+  const seen = new Set();
+  for (const panel of list) {
+    if (!panel || typeof panel !== 'object' || Array.isArray(panel) || isThenable(panel)) throw new Error('panel must be an object (not a promise)');
+    for (const key of Object.keys(panel)) if (!PANEL_KEYS.includes(key)) throw new Error(`panel.${key} is not part of the slot`);
+    if (typeof panel.id !== 'string' || !ID.test(panel.id)) throw new Error('panel.id must be a valid lowercase id');
+    if (seen.has(panel.id)) throw new Error(`duplicate panel.id (${panel.id})`);
+    seen.add(panel.id);
+    if (typeof panel.title !== 'function' && (typeof panel.title !== 'string' || !panel.title.trim())) throw new Error('panel.title must be a non-empty string or a function');
+    if (typeof panel.icon !== 'string' || !ID.test(panel.icon) || !hasIcon(panel.icon)) throw new Error('panel.icon must name an icon of the page (i-<name>)');
+    if (!PANEL_SCOPES.has(panel.scope)) throw new Error('panel.scope must be cluster or global');
+    if (panel.defaultSize !== undefined) {
+      const sz = panel.defaultSize;
+      if (!sz || typeof sz !== 'object' || Array.isArray(sz) || isThenable(sz)) throw new Error('panel.defaultSize must be an object');
+      for (const k of Object.keys(sz)) if (k !== 'w' && k !== 'h') throw new Error(`panel.defaultSize.${k} is not supported`);
+      if (typeof sz.w !== 'number' || !Number.isFinite(sz.w) || sz.w <= 0 || typeof sz.h !== 'number' || !Number.isFinite(sz.h) || sz.h <= 0) {
+        throw new Error('panel.defaultSize must have positive finite numbers w and h');
+      }
+    }
+    if (panel.badge !== undefined && typeof panel.badge !== 'function') throw new Error('panel.badge must be a function');
+    for (const key of ['mount', 'unmount']) if (typeof panel[key] !== 'function') throw new Error(`panel.${key} must be a function`);
+  }
+  return list;
 }
 
 /** What register(host) returned, checked as a whole: one bad slot refuses the module. */
@@ -242,6 +278,7 @@ function release(slots, id, root = globalThis.document) {
   }
   const nodes = [...(root?.querySelectorAll?.(`[data-plugin-slot="${CSS.escape(id)}"]`) ?? [])];
   const fields = nodes.length ? typedInput(nodes) : [];
+  slots.closePanels?.(id);
   slots.closeView?.(id);
   for (const node of nodes) {
     if (node.open && typeof node.close === 'function') node.close();
@@ -264,11 +301,22 @@ function detachableHost(id, host) {
   const refusal = () => new Error(`plugin ${id} was detached from this page; reload the page`);
   const live = (fn) => (...args) => (isInactive(id) ? Promise.reject(refusal()) : fn(...args));
   const ui = host.ui ?? {};
+  const wb = host.workbench;
   const own = { tag: id, skip: () => isInactive(id) };
   return Object.freeze({
     ...host,
     api: live(host.api),
     command: live(host.command),
+    ...(wb ? {
+      workbench: Object.freeze({
+        ...wb,
+        mountEmbedded: (container, opts) => {
+          if (isInactive(id)) throw refusal();
+          return wb.mountEmbedded(container, opts);
+        },
+        stalledCount: (cid) => (isInactive(id) ? 0 : wb.stalledCount?.(cid) ?? 0),
+      }),
+    } : {}),
     ui: Object.freeze({
       ...ui,
       noticeDialog: live((message, title) => ui.noticeDialog(message, title, own)),
@@ -300,6 +348,9 @@ function addSlots(slots, id, hooks, own, fail = null, hasIcon = spriteHas, trust
   const view = hooks.view;
   if (isThenable(view)) catchThenable(view, `${id}.view`);   // refused below; its later rejection is only logged
   if (view !== undefined) checkView(view, id, hasIcon);   // before anything of the module is added
+  const rawPanel = hooks.panel;
+  if (isThenable(rawPanel)) catchThenable(rawPanel, `${id}.panel`);
+  const checkedPanels = rawPanel !== undefined ? checkPanels(rawPanel, hasIcon) : [];
   if (hooks.message) slots.message.push(mark(protectMethods(`${id}.message`, hooks.message, ['render', 'key', 'capture', 'restore', 'update'], own, ['render'])));
   for (const name of ['composer', 'settings']) {
     if (!hooks[name]) continue;
@@ -315,7 +366,7 @@ function addSlots(slots, id, hooks, own, fail = null, hasIcon = spriteHas, trust
     slots[name].push(mark(protect(`${id}.${name}`, factory, own, true)));
   }
   // The view host (plugin-view.js) calls mount and unmount itself, each in its own guard, and unmount once per opening.
-  if (view) slots.view.push(mark({ icon: view.icon, trusted,
+  if (view) slots.view.push(mark({ icon: view.icon, trusted, fullscreen: view.fullscreen === true,
     title() {
       if (typeof view.title === 'string') return view.title;
       try {
@@ -330,6 +381,40 @@ function addSlots(slots, id, hooks, own, fail = null, hasIcon = spriteHas, trust
     mount: (el, ctx) => view.mount(el, ctx),
     unmount: () => view.unmount(),
   }));
+  for (const panel of checkedPanels) {
+    slots.panel.push(mark({
+      key: `${id}:${panel.id}`,
+      id: panel.id,
+      icon: panel.icon,
+      scope: panel.scope,
+      trusted,
+      defaultSize: panel.defaultSize ? Object.freeze({ w: panel.defaultSize.w, h: panel.defaultSize.h }) : null,
+      title() {
+        if (typeof panel.title === 'string') return panel.title;
+        try {
+          if (own === null || !isInactive(id)) {
+            const text = panel.title();
+            if (isThenable(text)) catchThenable(text, `${id}.panel.${panel.id}.title`);
+            if (typeof text === 'string' && text.trim()) return text;
+          }
+        } catch (error) { warnOf(`${id}.panel.${panel.id}.title`)(error); }
+        return panel.id;
+      },
+      badge(clusterId) {
+        if (typeof panel.badge !== 'function') return null;
+        if (own !== null && isInactive(id)) return null;
+        try {
+          const value = panel.badge(clusterId);
+          if (isThenable(value)) { catchThenable(value, `${id}.panel.${panel.id}.badge`); return null; }
+          if (value === null || value === undefined || value === false) return null;
+          const text = String(value).trim();
+          return text ? text.slice(0, 16) : null;
+        } catch (error) { warnOf(`${id}.panel.${panel.id}.badge`)(error); return null; }
+      },
+      mount: (el, ctx) => panel.mount(el, ctx),
+      unmount: (el, ctx) => panel.unmount(el, ctx),
+    }));
+  }
   const createTab = hooks.workbench;
   if (createTab) slots.workbench.push(mark(protect(`${id}.workbench`, function (...args) {
     const tab = createTab.apply(this, args);
@@ -409,8 +494,8 @@ function packageI18n(english, onDispose) {
 export async function loadPluginSlots(result, host, load = (id) => import(`./official-plugins/${id}.js`),
   loadTrusted = (id) => import(`/plugin-web/${id}/`), hasIcon = spriteHas,
   { loadOfficial = (officialEntry) => import(officialEntry), loadEnglish = readEnglish } = {}) {
-  const slots = { message: [], composer: [], workbench: [], settings: [], view: [], trusted: [], tried: [],
-    officialPackages: new Map(), onRelease: null, closeView: null };
+  const slots = { message: [], composer: [], workbench: [], settings: [], view: [], panel: [], trusted: [], tried: [],
+    officialPackages: new Map(), onRelease: null, closeView: null, closePanels: null };
   const running = new Set(result?.plugins?.map((plugin) => plugin.id));
   const packages = officialEntries(result, running);
   for (const id of new Set(result?.frontend)) {

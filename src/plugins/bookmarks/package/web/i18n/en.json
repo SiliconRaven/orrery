@@ -33,5 +33,8 @@
   "正在加载收藏…": "Loading bookmarks…",
   "加载更多收藏": "Load more bookmarks",
   "成员收藏": "Member bookmarks",
-  "无": "None"
+  "无": "None",
+  "请先进入一个群聊再打开收藏面板。": "Enter a cluster before opening the Bookmarks panel.",
+  "按关键词或标签筛选收藏…": "Filter bookmarks by keyword or label…",
+  "附件消息": "Attachment message"
 }

@@ -182,11 +182,11 @@ test('bookmarks: an old database keeps its bookmarks through the upgrade to v24 
   send(user, { action: 'bookmark.set', operationId: 'star', messageId: 'm1', labels: ['old'] });
   const before = bookmarksOf(store, 'm1');
   // What a v23 database looks like: the bookmark table from the core schema, no plugin bookkeeping.
-  store.db.exec('DROP TABLE plugin_migrations; ALTER TABLE messages DROP COLUMN fyi; DROP TRIGGER deliveries_state_seq_insert; DROP TRIGGER deliveries_state_seq_update; ALTER TABLE deliveries DROP COLUMN state_seq; ALTER TABLE deliveries DROP COLUMN dismissed_at; ALTER TABLE reads DROP COLUMN seen_at; ALTER TABLE members DROP COLUMN hidden_at; ALTER TABLE members DROP COLUMN unread_after_rowid; ALTER TABLE messages DROP COLUMN system_kind; ALTER TABLE messages DROP COLUMN explicit_mentions_json; PRAGMA user_version = 23');
+  store.db.exec('DROP TABLE plugin_migrations; ALTER TABLE messages DROP COLUMN fyi; DROP TRIGGER deliveries_state_seq_insert; DROP TRIGGER deliveries_state_seq_update; ALTER TABLE deliveries DROP COLUMN state_seq; ALTER TABLE deliveries DROP COLUMN dismissed_at; ALTER TABLE reads DROP COLUMN seen_at; ALTER TABLE members DROP COLUMN hidden_at; ALTER TABLE members DROP COLUMN unread_after_rowid; ALTER TABLE messages DROP COLUMN system_kind; ALTER TABLE messages DROP COLUMN explicit_mentions_json; ALTER TABLE members DROP COLUMN binding_gen; ALTER TABLE messages DROP COLUMN private_to; ALTER TABLE messages DROP COLUMN private_binding_gen; PRAGMA user_version = 23');
   store.close();
   ({ store } = fixture(new PluginHost(officialPlugins), dir));
   try {
-    assert.equal((store.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 30);
+    assert.equal((store.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 31);
     assert.equal(versionOf(store, 'bookmarks'), 1);
     assert.deepEqual(bookmarksOf(store, 'm1'), before);
   } finally { store.close(); }
@@ -219,12 +219,12 @@ test('tools: enabled, the two bookmark tools are exactly the ones from before th
     // shortcut: a golden hash of these two definitions, the rest of the list is free to change; update it only when the tools are meant to change.
     assert.equal(fingerprintTools(two), 'sha256:4db3b48da91eff2f86ac754c9b6d01f1c8bdcca97eaf9932748991420b0fb797');
     const listing = await app.api('GET', '/api/plugins');
-    assert.deepEqual(listing.plugins, [{ id: 'tasks', version: '0.10.0-beta.2' }, { id: 'bookmarks', version: '0.10.0-beta.2' }, { id: 'coordinator', version: '0.10.0-beta.2' }]);
+    assert.deepEqual(listing.plugins, [{ id: 'tasks', version: '0.10.0-beta.4' }, { id: 'bookmarks', version: '0.10.0-beta.4' }, { id: 'coordinator', version: '0.10.0-beta.4' }]);
     assert.deepEqual(listing.frontend, []);
-    assert.equal(listing.officialFrontend.length, 1);
-    assert.equal(listing.officialFrontend[0].id, 'bookmarks');
-    assert.match(listing.officialFrontend[0].entry, /^\/official-plugin-web\/bookmarks\/[a-f0-9]{64}\/index\.js$/);
-    assert.match(listing.officialFrontend[0].english, /^\/official-plugin-web\/bookmarks\/[a-f0-9]{64}\/i18n\/en\.json$/);
+    assert.deepEqual(listing.officialFrontend.map((e: { id: string }) => e.id).sort(), ['bookmarks', 'coordinator', 'tasks']);
+    const bmFront = listing.officialFrontend.find((e: { id: string }) => e.id === 'bookmarks');
+    assert.match(bmFront.entry, /^\/official-plugin-web\/bookmarks\/[a-f0-9]{64}\/index\.js$/);
+    assert.match(bmFront.english, /^\/official-plugin-web\/bookmarks\/[a-f0-9]{64}\/i18n\/en\.json$/);
   } finally { await app.close(); }
 });
 
@@ -237,9 +237,9 @@ test('disabled: no tools, no route, no field, and a Hub still runs a cluster cha
     assert.deepEqual((await toolsOf(app)).map((tool) => tool.name).sort(),
       enabledNames.filter((name) => name !== 'list_bookmarks' && name !== 'bookmark_message').sort());
     const listing = await app.api('GET', '/api/plugins');
-    assert.deepEqual(listing.plugins, [{ id: 'tasks', version: '0.10.0-beta.2' }, { id: 'coordinator', version: '0.10.0-beta.2' }]);
+    assert.deepEqual(listing.plugins, [{ id: 'tasks', version: '0.10.0-beta.4' }, { id: 'coordinator', version: '0.10.0-beta.4' }]);
     assert.deepEqual(listing.frontend, []);
-    assert.deepEqual(listing.officialFrontend, []);
+    assert.deepEqual(listing.officialFrontend.map((e: { id: string }) => e.id).sort(), ['coordinator', 'tasks']);
     const { cluster, members } = await app.cluster('p', ['alice']);
     const path = `/api/clusters/${cluster.id}`;
     const sent = await app.api('POST', `${path}/messages`, { body: `@${members[0].name} hello` });
@@ -353,13 +353,13 @@ test('api: GET lists what is installed; PUT only changes the next start, which t
   try {
     const before = await first.api('GET', '/api/plugins');
     const bookmarksEnglish = JSON.parse(readFileSync(join(REPO_ROOT, 'src/plugins/bookmarks/package/web/i18n/en.json'), 'utf8'));
-    assert.deepEqual(before.installed, [{ id: 'bookmarks', version: '0.10.0-beta.2', requires: [], name: '收藏', description: onlyBookmarks[0].description,
+    assert.deepEqual(before.installed, [{ id: 'bookmarks', version: '0.10.0-beta.4', requires: [], name: '收藏', description: onlyBookmarks[0].description,
       details: onlyBookmarks[0].details, iconUrl: '/api/plugins/bookmarks/icon', enabled: true, disabledByEnv: false, pendingEnabled: true,
       officialUpdate: { source: 'bundled', english: {
         name: bookmarksEnglish['收藏'], description: bookmarksEnglish[onlyBookmarks[0].description!], details: bookmarksEnglish[onlyBookmarks[0].details!],
       } } }]);
     const after = await first.api('PUT', '/api/plugins/bookmarks', { enabled: false });
-    assert.deepEqual(after.plugins, [{ id: 'bookmarks', version: '0.10.0-beta.2' }], 'still running until the Hub restarts');
+    assert.deepEqual(after.plugins, [{ id: 'bookmarks', version: '0.10.0-beta.4' }], 'still running until the Hub restarts');
     assert.equal(after.installed[0].enabled, true);
     assert.equal(after.installed[0].pendingEnabled, false);
     assert.deepEqual(fileOf(dir), { disabled: ['bookmarks'] });
@@ -423,7 +423,7 @@ test('start-up: a damaged plugins.json stops the Hub with the reason; an id this
   withPluginsFile(dir, '{"disabled":["from-another-version"]}');
   const app = await startTestHub({ dir, plugins: onlyBookmarks });
   try {
-    assert.deepEqual((await app.api('GET', '/api/plugins')).plugins, [{ id: 'bookmarks', version: '0.10.0-beta.2' }]);
+    assert.deepEqual((await app.api('GET', '/api/plugins')).plugins, [{ id: 'bookmarks', version: '0.10.0-beta.4' }]);
     await app.api('PUT', '/api/plugins/bookmarks', { enabled: false });
     assert.deepEqual(fileOf(dir), { disabled: ['from-another-version', 'bookmarks'] });
   } finally { await app.close(); }
@@ -487,7 +487,7 @@ test('tasks disabled: the Hub starts, chat and pause work, the task surfaces are
     assert.equal(off.store.tasks, null);
     assert.equal(off.store.coordinator, null, 'tasks and the coordinator are off together');
     assert.equal(off.hub.services.size, 0, 'no idle or merge-window timers run');
-    assert.deepEqual((await off.api('GET', '/api/plugins')).plugins, [{ id: 'bookmarks', version: '0.10.0-beta.2' }]);
+    assert.deepEqual((await off.api('GET', '/api/plugins')).plugins, [{ id: 'bookmarks', version: '0.10.0-beta.4' }]);
     const names = (await toolsOf(off)).map((tool) => tool.name);
     for (const name of TASK_TOOLS) assert.equal(names.includes(name), false, `${name} is gone`);
     for (const name of ['send_message', 'manage_roles', 'set_cluster_paused', 'list_bookmarks']) assert.ok(names.includes(name), `${name} stays`);
@@ -638,7 +638,7 @@ test('coordinator: an old row keeps the policy and the pause; the core and the p
   store.close();
 
   store = new Store(path, new PluginHost(officialPlugins));
-  assert.equal((store.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 30, 'no schema change');
+  assert.equal((store.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 31, 'no schema change');
   assert.deepEqual(store.coordinator!.policy('c'), policy);
   assert.equal(store.coordinator!.generation('c'), 5);
   assert.deepEqual(store.clusterPause('c'), { paused: false, pausedBy: null });

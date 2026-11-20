@@ -141,7 +141,7 @@ test('bookmarks, tasks and coordinator upgrade sequentially from signed ZIPs whi
       dir,
       mock: { script: hold.script },
       officialUpdates: {
-        hubVersion: '0.10.0-beta.3',
+        hubVersion: '0.10.0-beta.4',
         keys: new Map([[KEY_ID, { publicKey, ids: ['bookmarks', 'tasks', 'coordinator'] }]]),
         fetcher,
       },
@@ -181,7 +181,7 @@ test('bookmarks, tasks and coordinator upgrade sequentially from signed ZIPs whi
   // Verify built-in copies start as bundled.
   for (const id of ['bookmarks', 'tasks', 'coordinator']) {
     const card = await cardOf(app, id);
-    assert.equal(card.version, '0.10.0-beta.2');
+    assert.equal(card.version, '0.10.0-beta.4');
     assert.equal(card.officialUpdate.source, 'bundled');
     assert.equal(card.enabled, true);
   }
@@ -272,7 +272,7 @@ test('bookmarks, tasks and coordinator upgrade sequentially from signed ZIPs whi
     { api: async () => ({}), ui: {} },
     () => assert.fail('must use officialFrontend'),
     () => assert.fail('must use officialFrontend'),
-    () => false,
+    () => true,
     {
       loadEnglish: async () => upgradedEn,
       loadOfficial: () => import(pathToFileURL(join(webProbeDir, 'index.js')).href),
@@ -280,6 +280,8 @@ test('bookmarks, tasks and coordinator upgrade sequentially from signed ZIPs whi
   );
   try {
     assert.equal(slots.workbench.length, 1);
+    assert.equal(slots.panel.length, 1);
+    assert.equal(slots.panel[0].key, 'bookmarks:bookmarks');
     const tab = slots.workbench[0]({});
     assert.equal(isLive(tab.label), true, 'upgraded bookmarks tab label uses live translation');
     setLanguage('zh');
@@ -312,7 +314,7 @@ test('bookmarks, tasks and coordinator upgrade sequentially from signed ZIPs whi
   const tasksCard = await cardOf(app, 'tasks');
   assert.equal(tasksCard.version, '1.0.0');
   assert.equal(tasksCard.officialUpdate.source, 'package');
-  assert.equal((await cardOf(app, 'coordinator')).version, '0.10.0-beta.2');
+  assert.equal((await cardOf(app, 'coordinator')).version, '0.10.0-beta.4');
   assert.equal((await cardOf(app, 'coordinator')).officialUpdate.source, 'bundled');
   assert.equal(migrationVersion(app, 'tasks'), 8);
 
@@ -396,7 +398,7 @@ test('OfficialPluginUpdates refuses all-bundled incompatible dependencies, metad
   const conflictUpdates = new OfficialPluginUpdates({
     home: conflictHome,
     dbPath: join(dir, 'conflict.db'),
-    hubVersion: '0.10.0-beta.3',
+    hubVersion: '0.10.0-beta.4',
     builtins: [
       dummyPlugin(baseTasks, { version: '2.0.0' }),
       {
@@ -417,7 +419,7 @@ test('OfficialPluginUpdates refuses all-bundled incompatible dependencies, metad
   const mismatchUpdates = new OfficialPluginUpdates({
     home: mismatchHome,
     dbPath: join(dir, 'mismatch.db'),
-    hubVersion: '0.10.0-beta.3',
+    hubVersion: '0.10.0-beta.4',
     builtins: [
       {
         ...baseTasks,
@@ -434,7 +436,7 @@ test('OfficialPluginUpdates refuses all-bundled incompatible dependencies, metad
   const requiresUpdates = new OfficialPluginUpdates({
     home: mismatchHome,
     dbPath: join(dir, 'requires-mismatch.db'),
-    hubVersion: '0.10.0-beta.3',
+    hubVersion: '0.10.0-beta.4',
     builtins: [
       dummyPlugin(baseTasks),
       {
@@ -460,11 +462,137 @@ test('OfficialPluginUpdates refuses all-bundled incompatible dependencies, metad
   const floorUpdates = new OfficialPluginUpdates({
     home: dbHome,
     dbPath,
-    hubVersion: '0.10.0-beta.3',
+    hubVersion: '0.10.0-beta.4',
     builtins: [baseTasks],
     switches: () => ({ disabled: [], enabled: [] }),
     envDisabled: [],
   });
   await assert.rejects(() => floorUpdates.boot(), (err: unknown) =>
     err instanceof OfficialUpdateError && err.code === 'OFFICIAL_NO_COMPATIBLE_SET' && /迁移/.test(err.message));
+});
+
+test('older Hub (0.10.0-beta.3) refuses 0.10.0-beta.4 / 2.0.0 Star Map 2.0 official packages and stays on prior packages', async (t) => {
+  const dir = tempDir();
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const catalog: { id: string; version: string; tag: string; asset: string; hub: { api: number; minVersion: string }; bytes: Buffer; sha256: string }[] = [];
+  const publish = (id: string, version: string, tag: string, hub: { api: number; minVersion: string }, bytes: Buffer) => {
+    catalog.push({ id, version, tag, asset: `${id}.zip`, hub, bytes, sha256: createHash('sha256').update(bytes).digest('hex') });
+  };
+  for (const id of ['tasks', 'coordinator', 'bookmarks', 'starmap'] as const) {
+    const meta = releaseMetadata(id);
+    assert.equal(meta.hub.minVersion, '0.10.0-beta.4', `${id} release.json bumps hub.minVersion to 0.10.0-beta.4`);
+    // Publish a newer package requiring Hub >= 0.10.0-beta.4 (next patch over built-in release metadata).
+    const nextVersion = id === 'starmap' ? '2.0.1' : '0.10.0-beta.5';
+    publish(id, nextVersion, `${id}-${nextVersion}`, meta.hub, packFromRepoPayload(dir, `${id}-next`, id, privateKey, {
+      overrides: { version: nextVersion },
+    }));
+  }
+  const fetcher: typeof fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/index.json')) {
+      return Response.json({ format: 1, releases: catalog.map(({ id, version, tag, asset, hub, sha256 }) => ({ id, version, tag, asset, hub, sha256 })) });
+    }
+    const found = catalog.find((item) => url.pathname.endsWith(`/${item.tag}/${item.asset}`));
+    return found ? new Response(new Uint8Array(found.bytes)) : new Response(null, { status: 404 });
+  };
+
+  // Simulate an older 0.10.0-beta.3 Hub running prior built-in plugins compatible with 0.10.0-beta.3.
+  const priorBuiltins: OfficialPlugin[] = officialPlugins.map((plugin) => {
+    if (!plugin.packageSource) return plugin;
+    return {
+      ...plugin,
+      version: plugin.id === 'starmap' ? '1.0.0' : '0.10.0-beta.2',
+      packageSource: {
+        directory: plugin.packageSource.directory,
+        metadata: {
+          ...(plugin.packageSource.metadata as Record<string, unknown>),
+          version: plugin.id === 'starmap' ? '1.0.0' : '0.10.0-beta.2',
+          hub: { api: 1, minVersion: '0.10.0-beta.3' },
+          ...(plugin.id === 'coordinator' ? { requires: [{ id: 'tasks', minVersion: '0.10.0-beta.2', beforeVersion: '2.0.0' }] } : {}),
+        },
+      },
+    };
+  });
+  const updates = new OfficialPluginUpdates({
+    home: join(dir, 'old-hub-home'),
+    dbPath: join(dir, 'old-hub.db'),
+    hubVersion: '0.10.0-beta.3',
+    builtins: priorBuiltins,
+    keys: new Map([[KEY_ID, { publicKey, ids: ['tasks', 'coordinator', 'bookmarks', 'starmap'] }]]),
+    fetcher,
+    switches: () => ({ disabled: [], enabled: ['starmap'] }),
+    envDisabled: [],
+  });
+  const booted = await updates.boot();
+  t.after(() => {});
+  assert.equal(booted.find((p) => p.id === 'tasks')?.version, '0.10.0-beta.2');
+  assert.equal(booted.find((p) => p.id === 'starmap')?.version, '1.0.0');
+  const check = await updates.check();
+  for (const id of ['tasks', 'coordinator', 'bookmarks', 'starmap']) {
+    const nextVersion = id === 'starmap' ? '2.0.1' : '0.10.0-beta.5';
+    const candidate = check.candidates.find((c) => c.id === id && c.version === nextVersion);
+    assert.ok(candidate, `${id} candidate listed`);
+    assert.equal(candidate.compatible, false, `${id} marked incompatible with 0.10.0-beta.3 Hub`);
+    await assert.rejects(() => updates.prepare(id, nextVersion), (err: unknown) =>
+      err instanceof OfficialUpdateError && err.code === 'OFFICIAL_HUB_INCOMPATIBLE');
+  }
+  // Confirm active selection stayed untouched on prior versions.
+  const rebooted = await updates.boot();
+  assert.equal(rebooted.find((p) => p.id === 'tasks')?.version, '0.10.0-beta.2');
+  assert.equal(rebooted.find((p) => p.id === 'bookmarks')?.version, '0.10.0-beta.2');
+  assert.equal(rebooted.find((p) => p.id === 'coordinator')?.version, '0.10.0-beta.2');
+  assert.equal(rebooted.find((p) => p.id === 'starmap')?.version, '1.0.0');
+});
+
+test('official cluster panels keep independent instances across two clusters and match desktop/root beta.4 version', async () => {
+  const rootPkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+  const desktopPkg = JSON.parse(readFileSync(join(REPO_ROOT, 'desktop', 'package.json'), 'utf8'));
+  const desktopLock = JSON.parse(readFileSync(join(REPO_ROOT, 'desktop', 'package-lock.json'), 'utf8'));
+  assert.equal(desktopPkg.version, rootPkg.version, 'desktop/package.json version must match root package.json');
+  assert.equal(desktopLock.version, rootPkg.version, 'desktop/package-lock.json version must match root package.json');
+  assert.equal(desktopLock.packages['']?.version, rootPkg.version, 'desktop/package-lock.json root package version must match');
+
+  // Verify tasks isolates cluster A and B instances, coordinator adds no duplicate Dock panel,
+  // and bookmarks only registers a standalone panel when tasks is disabled.
+  const active = new Map<unknown, string>();
+  const unmounted: string[] = [];
+  const workbench = {
+    tasksEnabled: () => true,
+    stalledCount: () => 0,
+    mountEmbedded(el: unknown, opts: { clusterId?: string; tab?: string }) {
+      const tag = `${opts.tab}:${opts.clusterId}`;
+      active.set(el, tag);
+      return {
+        unmount() {
+          if (active.has(el)) {
+            unmounted.push(active.get(el)!);
+            active.delete(el);
+          }
+        },
+      };
+    },
+  };
+  const tasksMod = await import(pathToFileURL(join(REPO_ROOT, 'src/plugins/tasks/package/web/index.js')).href);
+  const coordMod = await import(pathToFileURL(join(REPO_ROOT, 'src/plugins/coordinator/package/web/index.js')).href);
+  const bmMod = await import(pathToFileURL(join(REPO_ROOT, 'src/plugins/bookmarks/package/web/index.js')).href);
+  const tasksPanel = tasksMod.register({ workbench }).panel.find((p: { id: string }) => p.id === 'tasks');
+  assert.equal(coordMod.register({ workbench }).panel, undefined, 'coordinator lives inside the unified tasks tabbed workbench');
+  assert.equal(bmMod.register({ workbench }).panel, undefined, 'bookmarks lives inside the unified tasks workbench when tasks is enabled');
+  const bmStandalone = bmMod.register({ workbench: { ...workbench, tasksEnabled: () => false } }).panel;
+  assert.equal(bmStandalone?.id, 'bookmarks', 'bookmarks provides a standalone Star Map panel when tasks is disabled');
+
+  const elA = { replaceChildren() {} };
+  const elB = { replaceChildren() {} };
+  const cleanA = tasksPanel.mount(elA, { clusterId: 'cluster-a', close() {}, openCluster() {}, openMember() {} });
+  const cleanB = tasksPanel.mount(elB, { clusterId: 'cluster-b', close() {}, openCluster() {}, openMember() {} });
+  assert.equal(active.size, 2, 'both cluster panel instances remain mounted independently');
+
+  cleanA();
+  tasksPanel.unmount(elA);
+  assert.equal(active.size, 1, 'closing tasks(cluster-a) keeps cluster-b alive');
+  assert.deepEqual(unmounted, ['tasks:cluster-a']);
+
+  cleanB();
+  assert.equal(active.size, 0);
+  assert.deepEqual(unmounted, ['tasks:cluster-a', 'tasks:cluster-b']);
 });

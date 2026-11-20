@@ -81,7 +81,8 @@ Windows 安装版由 `desktop/lib/runtime.mjs` 选择内置 Node、外置 Hub �
 
 ## 存储与迁移原则
 
-- `src/core/store.ts` 维护核心表（`clusters`、`members`、`messages`、`deliveries`、`reads`、`message_acknowledgements`、`events`、`settings`、`files`、`message_files`、`turn_usage`、`quota_snapshots`、`activity_snapshots`、`merge_windows`、`plugin_migrations`），启动时执行单向增量迁移（集群分组保存在 `settings` 中，成员隐身字段为 `members.hidden_at`）；可用 `npm run backup` 备份私有数据库。当前 schema 版本为 **v30**（`PRAGMA user_version`）。
+- `src/core/store.ts` 维护核心表（`clusters`、`members`、`messages`、`deliveries`、`reads`、`message_acknowledgements`、`events`、`settings`、`files`、`message_files`、`turn_usage`、`quota_snapshots`、`activity_snapshots`、`merge_windows`、`plugin_migrations`），启动时执行单向增量迁移（集群分组保存在 `settings` 中，成员隐身字段为 `members.hidden_at`）；可用 `npm run backup` 备份私有数据库。当前 schema 版本为 **v31**（`PRAGMA user_version`）。
+- **v31** 为成员记录绑定代次，为私聊记录收件人与发送时的绑定代次。换绑递增代次并取消仍在排队的旧私聊，已有群聊记录保持原样。
 - **v30：隔离模式已删除**。原生模式是唯一的群员模式；升级时，数据库里仍在群里的旧隔离群员（如果有，包括回收站里的群）被移出：排队的投递记为取消、运行中的记为失败且结果未知，已安装插件照常执行移出成员的清理，每个受影响的群加一条 `mode_removed` 系统消息说明谁被移出、记录都保留（不投递给任何人）。已有消息、已读、用量和投递记录都保留；群员发出的消息投递失败时，发送者在 Hub 启动后照常收到失败通知。不再是群员的协调员在启动或恢复群时停用。从没有隔离群员的数据库升级时没有可见变化。`members.mode` 列只作历史保留，代码不再读取。
 - **升级前备份**：已有数据库在这次启动有待跑的迁移（核心 schema 或任何插件的迁移步骤）时，Hub 在第一次改结构之前自动备份到 `<ORRERY_HOME>/backups/orrery-<时间>-pre-upgrade.db`；只保留最新几个自动备份，这一轮升级还没完整完成时保留最早的那个还原点。`npm run backup` 的手动备份从不自动删除。Hub 不会自动还原备份。
 - 官方插件通过 `plugin_migrations` 各自管理扩展表（如 `tasks`、`coordinator` 与 `bookmarks` 的 `collaboration_tasks`、`collaboration_roles`、`collaboration_member_roles`、`collaboration_links`、`collaboration_bookmarks`、`collaboration_policies`、`collaboration_operations`、`collaboration_records`、`task_label_groups`、`task_labels`、`cluster_label_groups`、`task_batches`、`task_watches`、`task_cluster_settings` 等）。完全信任插件的表以 `x_<插件 ID>_` 开头，迁移在越出前缀时回滚。

@@ -19,7 +19,7 @@ const CHIP_MAX = 24;
 const MARK_TEXT_MAX = 16;
 const MARK_TIP_MAX = 80;
 const MARK_STATE_WORD = { running: '进行中', done: '完成', failed: '失败', info: '提示' };
-const POSITION_LABEL = { titlebar: '标题栏面板', workbench: '工作台' };
+const POSITION_LABEL = { titlebar: '标题栏面板', workbench: '工作台', starmap: '星图面板' };
 /** The colour tokens (style.css :root) a plugin UI receives, resolved to the colours this theme shows now. */
 const THEME_TOKENS = ['bg', 'surface', 'surface-2', 'line', 'text', 'muted', 'accent', 'accent-soft', 'on-accent', 'running', 'done',
   'failed', 'warn-bg', 'warn-text'];
@@ -66,7 +66,10 @@ export function createPluginUi({ api, chipsHost, itemsChanged = () => {} }) {
   // frames applied (loadItems); `marks` is the index of its plugins' marks by target (built when asked, dropped
   // whenever the items or a mark change).
   const items = new Map();
-  const hosts = new Set();      // every open frame host (panel and workbench), to update when the items change
+  const hosts = new Set();      // every open frame host (panel, workbench and starmap), to update when the items change
+  const starmapHosts = new Set();   // { clusterId, pluginId, host } for open Star Map floating frames
+  let starmapTheme = null;      // latest Star Map theme snapshot pushed by the active full-screen view
+  let lastStarmapTheme = '';
   let chatCluster = null;
   let panel = null;             // { pluginId, host, wrap } of the open title bar panel
   let workbenchHost = null;
@@ -204,8 +207,8 @@ export function createPluginUi({ api, chipsHost, itemsChanged = () => {} }) {
     if (message.type === 'orrery.ready') {
       clearTimeout(record.timer);
       record.ready = true;
-      const theme = themeSnapshot();
-      lastTheme = JSON.stringify(theme);
+      const theme = record.position === 'starmap' && starmapTheme ? starmapTheme : themeSnapshot();
+      if (record.position !== 'starmap') lastTheme = JSON.stringify(theme);
       send(record, { type: 'orrery.init', position: record.position, clusterId: record.clusterId, theme,
         language: document.documentElement.lang || 'zh-CN' });
     } else if (message.type === 'orrery.request') void request(record, message);
@@ -218,7 +221,9 @@ export function createPluginUi({ api, chipsHost, itemsChanged = () => {} }) {
     const key = JSON.stringify(theme);
     if (key === lastTheme) return;
     lastTheme = key;
-    for (const record of byId.values()) if (record.ready) send(record, { type: 'orrery.theme', theme });
+    for (const record of byId.values()) {
+      if (record.ready && !(record.position === 'starmap' && starmapTheme)) send(record, { type: 'orrery.theme', theme });
+    }
   };
   new MutationObserver(themeChanged).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   // The language changed (设置 → 外观, or the desktop settings): every ready frame gets the new one, as with the theme.
@@ -266,19 +271,26 @@ export function createPluginUi({ api, chipsHost, itemsChanged = () => {} }) {
       const item = entry.items.find((i) => i.pluginId === workbenchHost.pluginId && i.positions.includes('workbench'));
       if (item) workbenchHost.host.update(item);
     }
+    for (const st of starmapHosts) {
+      if (st.clusterId !== clusterId) continue;
+      const item = entry.items.find((i) => i.pluginId === st.pluginId && i.positions.includes('starmap'));
+      if (item) st.host.update(item);
+      else st.host.revoked(st.host.frameId, 'NOT_GRANTED');
+    }
     itemsChanged(clusterId);
   }
 
   /**
    * Reads the listings again soon (a plugin started, stopped or its switch changed; the Hub may have restarted): the
-   * shown cluster's, the workbench's and those of clusters with marks on the page now. Any other cluster read before is
-   * forgotten; a slot of it shown later reads it again.
+   * shown cluster's, the workbench's, open Star Map frames' and those of clusters with marks on the page now. Any other
+   * cluster read before is forgotten; a slot of it shown later reads it again.
    */
   function scheduleReload() {
     clearTimeout(reloadTimer);
     reloadTimer = setTimeout(() => {
       const shown = [...document.querySelectorAll('[data-pui-marks]')].map((slot) => slot.dataset.puiCluster);
-      const keep = new Set([chatCluster, workbenchHost?.clusterId, ...shown].filter(Boolean));
+      const starmapClusters = [...starmapHosts].map((st) => st.clusterId);
+      const keep = new Set([chatCluster, workbenchHost?.clusterId, ...starmapClusters, ...shown].filter(Boolean));
       for (const clusterId of [...items.keys()]) if (!keep.has(clusterId)) items.delete(clusterId);
       for (const clusterId of keep) void loadItems(clusterId);
     }, 150);
@@ -579,6 +591,39 @@ export function createPluginUi({ api, chipsHost, itemsChanged = () => {} }) {
       workbenchHost.host.close();
       workbenchHost.host.shell.remove();
       workbenchHost = null;
+    },
+    /** Restricted third-party plugins granted `starmap` for a cluster (loads on first ask; `itemsChanged` follows). */
+    starmapItems(clusterId) {
+      if (!clusterId) return [];
+      if (!items.has(clusterId)) void loadItems(clusterId);
+      return itemsOf(clusterId).filter((item) => item.positions.includes('starmap'));
+    },
+    /** Mounts one restricted plugin's sandboxed `starmap` frame inside its host-drawn shell. */
+    mountStarmapFrame(item, clusterId) {
+      if (!item?.pluginId || !clusterId) return null;
+      const current = itemsOf(clusterId).find((i) => i.pluginId === item.pluginId && i.positions.includes('starmap')) ?? item;
+      const host = frameHost(current, clusterId, 'starmap');
+      const entry = { clusterId, pluginId: current.pluginId, host };
+      starmapHosts.add(entry);
+      return {
+        shell: host.shell,
+        close() {
+          starmapHosts.delete(entry);
+          host.close();
+          host.shell.remove();
+        },
+      };
+    },
+    /** Updates the theme snapshot sent in `orrery.init` / `orrery.theme` to every `position: 'starmap'` frame. */
+    setStarmapTheme(snapshot) {
+      starmapTheme = snapshot && typeof snapshot === 'object' ? snapshot : null;
+      const key = starmapTheme ? JSON.stringify(starmapTheme) : '';
+      if (key === lastStarmapTheme) return;
+      lastStarmapTheme = key;
+      const next = starmapTheme ?? themeSnapshot();
+      for (const record of byId.values()) {
+        if (record.ready && record.position === 'starmap') send(record, { type: 'orrery.theme', theme: next });
+      }
     },
   };
 }

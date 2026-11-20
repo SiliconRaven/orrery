@@ -95,6 +95,31 @@ test('discards pending reads on member removal, cluster deletion or a round trip
   assert.doesNotMatch(JSON.stringify(refused), /sensitive/);
 });
 
+test('marks a verified private delivery while leaving ordinary deliveries and native input unmarked', async (t) => {
+  const { hub, store, group, insert, setReader } = fixture(t);
+  const recipient = store.getMember('reader')!;
+  const [dm] = store.insertMessage({ id: 'private-send', clusterId: group, from: 'user', mentions: [recipient.id],
+    body: 'private text', replyTo: null, chainId: 'private-send', hop: 0, createdAt: at,
+    privateTo: recipient.id, privateBindingGen: recipient.bindingGen }, [recipient.id], true);
+  const publicDelivery = insert('public-send', 'public text', group, 'user', recipient.id, true);
+  for (const delivery of [dm, publicDelivery]) {
+    store.startDelivery(delivery.id, delivery.id);
+    store.setDeliveryState(delivery.id, 'done', null, 'completed');
+  }
+  setReader(async () => page([
+    { id: 'actual-dm', kind: 'user', source: { deliveryId: dm.id } },
+    { id: 'actual-public', kind: 'user', source: { deliveryId: publicDelivery.id } },
+    { id: 'manual', kind: 'user', text: 'private text' },
+  ]));
+  const { items } = await hub.memberTranscript(recipient.id);
+  assert.deepEqual(items[0].parts, [{ messageId: 'private-send', from: 'user', kind: 'chat', body: 'private text', private: true }]);
+  assert.deepEqual(items[1].parts, [{ messageId: 'public-send', from: 'user', kind: 'chat', body: 'public text' }]);
+  assert.deepEqual(items[2], { id: 'manual', kind: 'user', text: 'private text' });
+  await hub.rebindMember(recipient.id, { harness: 'claude', sessionId: 'new-binding', confirmStopped: true });
+  const rebound = await hub.memberTranscript(recipient.id);
+  assert.deepEqual(rebound.items[0], { id: 'actual-dm', kind: 'user' });
+});
+
 test('requires Claude peer origin and uniquely delivered exact text for legacy direct messages', async (t) => {
   const { hub, store, insert, group, other, setReader } = fixture(t);
   const delivered = (id: string, body: string, to = 'reader', clusterId = group, start = at) => {

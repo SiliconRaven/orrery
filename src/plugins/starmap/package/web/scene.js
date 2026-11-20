@@ -7,11 +7,12 @@
 import { fmtTime, h, icon, noticeDialog, openTrash } from '/plugin-host/v1.js';
 import { lt, onLanguageChange, t } from './words.js';
 import {
-  applySkyEvent, createSkyState, dismissedStore, harnessInfo, hashStr, keyAction, layoutSky, loadSnapshot, orbitFractions, rng,
-  SAT_ICON, SATELLITE_COLOR, setMessages, skyKey, skyModel,
+  activeClusterRows, applySkyEvent, clusterActivity, createActivityTracker, createSkyState, dismissedStore,
+  harnessInfo, hashStr, keyAction, layoutSky, loadSnapshot, nextActivityExpiry, orbitFractions, pruneActivity,
+  recordClusterActivity, rng, SAT_ICON, SATELLITE_COLOR, seedClusterActivity, setMessages, skyKey, skyModel,
 } from './data.js';
 import { createFinder } from './finder.js';
-import { readTheme, saveTheme, THEME_ICON, THEME_ORDER, THEMES } from './themes.js';
+import { readTheme, saveTheme, starmapPanelTheme, starmapThemeSnapshot, THEME_ICON, THEME_ORDER, THEMES } from './themes.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -101,19 +102,49 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
   let themeName = readTheme(storage);
   let T = THEMES[themeName];
   // Focusable (not in the tab order) so the keys work from the start: the scene takes focus once it is drawn.
-  const root = h('div', { class: 'starmap', 'data-sm-theme': themeName, tabindex: '-1', role: 'region', 'aria-label': lt('星图'),
+  const root = h('div', { class: 'starmap', 'data-sm-theme': themeName, 'data-starmap-theme': themeName, tabindex: '-1', role: 'region', 'aria-label': lt('星图'),
     'aria-keyshortcuts': '/ Control+K Escape F' });
   const css = h('link', { rel: 'stylesheet', href: new URL('./scene.css', import.meta.url).href });
   const status = h('div', { class: 'sm-status', role: 'status' }, lt('正在打开星图…'));
   root.append(css, status);
   el.append(root);
-  const applyCss = () => { for (const [k, v] of Object.entries(T.css)) root.style.setProperty(k, v); root.dataset.smTheme = themeName; };
+  const OVERLAY_MAP = [
+    ['--starmap-overlay-bg', '--starmap-bg'],
+    ['--starmap-overlay-surface', '--starmap-surface'],
+    ['--starmap-overlay-surface-2', '--starmap-surface-2'],
+    ['--starmap-overlay-edge', '--starmap-edge'],
+    ['--starmap-overlay-ink', '--starmap-ink'],
+    ['--starmap-overlay-muted', '--starmap-muted'],
+    ['--starmap-overlay-accent', '--starmap-accent'],
+    ['--starmap-overlay-accent-soft', '--starmap-accent-soft'],
+    ['--starmap-overlay-on-accent', '--starmap-on-accent'],
+  ];
+  const clearOverlay = () => {
+    const html = globalThis.document?.documentElement;
+    if (!html) return;
+    delete html.dataset.starmapOverlay;
+    for (const [prop] of OVERLAY_MAP) html.style.removeProperty(prop);
+  };
+  const applyCss = () => {
+    for (const [k, v] of Object.entries(T.css)) root.style.setProperty(k, v);
+    root.dataset.smTheme = themeName;
+    root.dataset.starmapTheme = themeName;
+    const html = globalThis.document?.documentElement;
+    if (html) {
+      html.dataset.starmapOverlay = themeName;
+      for (const [prop, srcKey] of OVERLAY_MAP) if (T.css[srcKey]) html.style.setProperty(prop, T.css[srcKey]);
+    }
+    ctx.pluginUi?.setStarmapTheme?.(starmapThemeSnapshot(themeName));
+    try { windows?.setTheme?.(starmapPanelTheme(themeName)); } catch { /* TDZ during first mount */ }
+  };
   applyCss();
   const fail = (text) => { status.textContent = text; status.classList.add('sm-failed'); status.hidden = false; };
 
   // The stream first, so nothing that happens while a snapshot (GET /api/state) is read is lost: its frames are kept
   // and applied again over the snapshot (loadSnapshot: only those newer than its seq). Live once the sky is drawn.
   const state = createSkyState();
+  const activity = createActivityTracker();
+  const activityOf = (cid) => clusterActivity(activity, cid);
   let ready = false, reads = 0;
   const kept = [];
   const stopEvents = ctx.onEvent((event) => {
@@ -127,7 +158,7 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
     let open = true;
     return () => { if (open) { open = false; if (!--reads) kept.length = 0; } };
   };
-  const stop = () => { closed = true; ac.abort(); try { stopEvents(); } catch { /* the host unsubscribes it too */ } root.remove(); };
+  const stop = () => { closed = true; ac.abort(); clearOverlay(); try { stopEvents(); } catch { /* the host unsubscribes it too */ } root.remove(); };
 
   // the stylesheet and the data, together
   const hubKey = globalThis.location?.host || 'hub';
@@ -173,9 +204,14 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
   canvas.className = 'sm-gl';
   canvas.setAttribute('aria-hidden', 'true');
   const labelLayer = h('div', { class: 'sm-labels', role: 'group', 'aria-label': lt('天体') });
+  const leaveBtn = h('button', { type: 'button', class: 'sm-leave-btn', title: lt('返回标准界面'), 'aria-label': lt('返回标准界面'),
+    onclick: () => (ctx.leave ? ctx.leave() : ctx.close()) }, icon('chevron-left', 'ico-sm'), h('span', {}, lt('标准界面')));
   const crumbs = h('nav', { class: 'sm-crumbs', 'aria-label': lt('层级') });
+  const topLeft = h('div', { class: 'sm-topbar-left' }, leaveBtn, crumbs);
   const hint = h('div', { class: 'sm-hint', 'aria-hidden': 'true' });
   const sysTitle = h('button', { type: 'button', class: 'sm-systitle', hidden: true });
+  const radar = h('aside', { class: 'sm-radar', 'aria-label': lt('活跃群聊'), hidden: true });
+  const dock = h('div', { class: 'sm-dock', role: 'toolbar', 'aria-label': lt('星图面板'), hidden: true });
   const winRoot = h('div', { class: 'sm-windows' });
   const card = h('div', { class: 'sm-card', role: 'tooltip' });
   const tip = h('div', { class: 'sm-tip', role: 'tooltip' });
@@ -186,10 +222,35 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
   const resetBtn = h('button', { type: 'button', class: 'sm-tb', title: lt('复位视角（也可以双击空白处）'), 'aria-label': lt('复位视角') }, svgFrom(RESET_ICON, '0 0 16 16'));
   const themeBtn = h('button', { type: 'button', class: 'sm-tb sm-theme-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false' });
   const helpBtn = h('button', { type: 'button', class: 'sm-tb', 'aria-expanded': 'false', title: lt('图例与操作说明'), 'aria-label': lt('图例与操作说明') }, icon('help'));
-  const tools = h('div', { class: 'sm-tools', role: 'toolbar', 'aria-label': lt('视图') }, finderBtn, pauseBtn, resetBtn, themeBtn, helpBtn);
+  // Global host actions exposed via ctx.actions so full-screen Star Map supports every everyday workflow.
+  const hasActions = Boolean(ctx.actions);
+  const newClusterBtn = hasActions ? h('button', { type: 'button', class: 'sm-tb', title: lt('新建集群'), 'aria-label': lt('新建集群'),
+    onclick: () => ctx.actions.openNewCluster() }, icon('plus')) : null;
+  const addMemberBtn = hasActions ? h('button', { type: 'button', class: 'sm-tb', hidden: true, title: lt('添加成员'), 'aria-label': lt('添加成员'),
+    onclick: () => { if (view.level === 'system' && view.cid) ctx.actions.openAddMember(view.cid); } }, icon('users')) : null;
+  const deliveryPauseBtn = hasActions ? h('button', { type: 'button', class: 'sm-tb sm-tb-delivery', 'aria-pressed': 'false',
+    onclick: () => void ctx.actions.togglePause() }, icon('clock')) : null;
+  const extensionsBtn = hasActions ? h('button', { type: 'button', class: 'sm-tb', title: lt('技能与 MCP'), 'aria-label': lt('技能与 MCP'),
+    onclick: () => ctx.actions.openExtensions() }, icon('layers')) : null;
+  const trashBtn = hasActions ? h('button', { type: 'button', class: 'sm-tb', title: lt('回收站'), 'aria-label': lt('回收站'),
+    onclick: () => ctx.actions.openTrash() }, icon('trash')) : null;
+  const settingsBtn = hasActions ? h('button', { type: 'button', class: 'sm-tb', title: lt('设置'), 'aria-label': lt('设置'),
+    onclick: () => ctx.actions.openSettings() }, icon('gear')) : null;
+  const quitBtn = hasActions ? h('button', { type: 'button', class: 'sm-tb sm-tb-danger', title: lt('退出 orrery'), 'aria-label': lt('退出 orrery'),
+    onclick: () => ctx.actions.requestQuit() }, icon('ban')) : null;
+  const tools = h('div', { class: 'sm-tools', role: 'toolbar', 'aria-label': lt('视图') },
+    finderBtn,
+    ...(hasActions ? [newClusterBtn, addMemberBtn, deliveryPauseBtn, h('span', { class: 'sm-tool-sep', 'aria-hidden': 'true' })] : []),
+    pauseBtn, resetBtn, themeBtn, helpBtn,
+    ...(hasActions ? [h('span', { class: 'sm-tool-sep', 'aria-hidden': 'true' }), extensionsBtn, trashBtn, settingsBtn, quitBtn] : []));
   const themeMenu = h('div', { class: 'sm-menu', role: 'menu', 'aria-label': lt('主题'), hidden: true });
   const help = h('div', { class: 'sm-help', role: 'dialog', 'aria-label': lt('图例与操作说明'), hidden: true });
-  root.append(canvas, labelLayer, hint, sysTitle, winRoot, crumbs, tools, themeMenu, help, card, tip, ncard, hudEl);
+  root.append(canvas, labelLayer, hint, sysTitle, radar, dock, winRoot, topLeft, tools, themeMenu, help, card, tip, ncard, hudEl);
+  // Click-to-front between HUD bars and floating windows: clicking a HUD bar brings it above windows; clicking/opening a window clears it.
+  const hudChrome = [topLeft, tools, dock, radar];
+  const clearHudFront = () => { for (const node of hudChrome) node.classList.remove('sm-hud-front'); };
+  const raiseHud = (node) => { clearHudFront(); node.classList.add('sm-hud-front'); };
+  for (const node of hudChrome) on(node, 'pointerdown', () => raiseHud(node), { capture: true });
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(34, W / H, 0.1, 16000);
@@ -505,10 +566,13 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       scene.add(group);
       const star = sprite(TEX.dot, starHex(system.stats), 1, false);
       star.position.copy(pos3);
+      const upulse = sprite(TEX.ring, T.css['--brass-hi'], 0, false);
+      upulse.position.copy(pos3);
+      upulse.visible = false;
       const spark = sprite(TEX.dot, SEV_HEX()[system.stats.level ?? 'attention'], 1, false);
       spark.center.set(-0.35, -0.35);
       spark.position.copy(pos3);
-      group.add(star, spark);
+      group.add(upulse, star, spark);
       // the small system: its orbits sit exactly where the full system's will be, so flying in turns one into the other
       const g3 = new THREE.Group();
       g3.position.copy(pos3);
@@ -522,10 +586,13 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       const glow = sprite(TEX.soft, T.sun.glowColor, 1);
       keep(glow.material, () => T.mini.glow);
       glow.scale.setScalar(4.8);
+      const mpulse = sprite(TEX.ring, T.css['--brass-hi'], 0);
+      mpulse.scale.setScalar(5.5);
+      mpulse.visible = false;
       const core = sprite(TEX.dot, toHex(T.sun.core), 1);
       keep(core.material, 1);
       core.scale.setScalar(1.6);
-      g3.add(glow, core);
+      g3.add(glow, mpulse, core);
       const fr = orbitFractions(system.planets.length);
       const halos = [];
       const dots = system.planets.map((p, i) => {
@@ -557,8 +624,8 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       const prox = proxy(11, { type: 'msys', system });
       g3.add(prox);
       pickables.galaxy.push(prox);
-      const entry = { system, pos3, group, pick: prox.userData.pick, u: { star, spark, px: 9 + Math.min(12, system.planets.length) },
-        mini: { g: g3, mats, dots, halos, spark: mspark, hover: false }, label: null };
+      const entry = { system, pos3, group, pick: prox.userData.pick, u: { star, pulse: upulse, spark, px: 9 + Math.min(12, system.planets.length) },
+        mini: { g: g3, mats, dots, halos, pulse: mpulse, spark: mspark, hover: false }, label: null };
       entry.label = addLabel({ el: mkLabel('sm-sm', prox.userData.pick), level: 'galaxy', at: () => frontOf(pos3, 11.2, 0), dy: () => 6,
         alpha: () => (entry.system.group === miniGroup ? 1 : 0), clamp: true, collide: true, prio: 1 });
       SYS.set(system.cluster.id, entry);
@@ -644,11 +711,13 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
     const sunMesh = new THREE.Mesh(new THREE.SphereGeometry(O.sunR, 48, 24), sunMat);
     const glow = sprite(TEX.soft, T.sun.glowColor, T.sun.glowOp);
     const halo = sprite(TEX.soft, T.sun.haloColor, T.sun.haloOp);
+    const pulse = sprite(TEX.ring, T.sun.glowColor, 0);
+    pulse.visible = false;
     const corona = sprite(TEX.rays, '#ffffff', T.sun.corona);
     const light = new THREE.PointLight(T.light.sunColor, T.light.sun, 0, 1.1);
     const sunProxy = proxy(O.sunR * 1.25, { type: 'sun' });
-    sunG.add(sunMesh, halo, corona, glow, light, sunProxy);
-    return { g, sunG, sunMat, glow, halo, corona, light, sunProxy };
+    sunG.add(sunMesh, halo, pulse, corona, glow, light, sunProxy);
+    return { g, sunG, sunMat, glow, halo, pulse, corona, light, sunProxy };
   })();
   const sunState = { x: 0, y: 0, r: 0, depth: 0, frozen: 0, hover: false };
   let ORR = null;   // { system, root, plane, own, labels }
@@ -1022,18 +1091,36 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
     stats.busy ? h('i', {}, t('{count} 工作中', { count: stats.busy })) : null,
     stats.notices ? h('em', {}, t('{count} 条通知', { count: stats.notices })) : null,
   ].filter(Boolean).flatMap((x) => [' · ', x]);
+  const rateTag = (act) => (act.rate > 0
+    ? h('span', { class: `sm-lb-rate sm-lb-rate-${act.level}` }, t('{rate} 条/分', { rate: act.rate }))
+    : null);
   /** The overview labels' words: galaxies and star systems, in the current language. */
   function refreshOverview() {
     for (const gx of GAL_LIST) {
       const systems = model.galaxies.find((g) => g.name === gx.name)?.systems ?? [];
       const sum = systems.reduce((a, s) => ({ busy: a.busy + s.stats.busy, notices: a.notices + s.stats.notices }), { busy: 0, notices: 0 });
-      gx.label.el.replaceChildren(h('b', {}, galaxyName(gx.name)), h('small', {}, t('{count} 个群聊', { count: systems.length }), ...counts(sum)));
+      let peak = { rate: 0, level: 'quiet' };
+      for (const s of systems) {
+        const act = activityOf(s.cluster.id);
+        if (act.rate > peak.rate) peak = act;
+      }
+      const rateEl = rateTag(peak);
+      gx.label.el.classList.toggle('sm-lb-burst', peak.level === 'burst');
+      gx.label.el.replaceChildren(
+        h('b', {}, galaxyName(gx.name)),
+        h('small', {}, t('{count} 个群聊', { count: systems.length }), ...counts(sum), ...(rateEl ? [' · ', rateEl] : [])),
+      );
       gx.label.el.setAttribute('aria-label', t('星系「{name}」：{count} 个群聊，{busy} 名群员正在工作。进入', { name: galaxyName(gx.name), count: systems.length, busy: sum.busy }));
       gx.label.w = 0;
     }
     for (const entry of SYS.values()) {
-      const { system } = entry, s = system.stats;
-      entry.label.el.replaceChildren(h('b', {}, system.cluster.name), h('small', {}, t('{count} 名群员', { count: s.n }), ...counts(s)));
+      const { system } = entry, s = system.stats, act = activityOf(system.cluster.id);
+      const rateEl = rateTag(act);
+      entry.label.el.classList.toggle('sm-lb-burst', act.level === 'burst');
+      entry.label.el.replaceChildren(
+        h('b', {}, system.cluster.name),
+        h('small', {}, t('{count} 名群员', { count: s.n }), ...counts(s), ...(rateEl ? [' · ', rateEl] : [])),
+      );
       entry.label.el.setAttribute('aria-label', t('恒星系统「{name}」：{count} 名群员。进入', { name: system.cluster.name, count: s.n }));
       entry.label.w = 0;
     }
@@ -1385,15 +1472,26 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       gx.mat.uniforms.uNear.value = gx.hmat.uniforms.uNear.value = d * 0.6 + fade.system * 90;
       gx.core.material.opacity = 0.3 * gx.spec.core * op;
     }
-    // universe markers keep a constant size on screen; only a problem's dot breathes
+    // universe markers keep a constant size on screen; active/bursting stars pulse with a rate-scaled halo
     const fu = fade.universe, pxs = 1 / ((camera.projectionMatrix.elements[5] * H) / 2);
+    const nowWall = Date.now();
     for (const e of SYS.values()) {
       const u = e.u, shown = fu > 0.01;
+      const act = shown ? clusterActivity(activity, e.system.cluster.id, nowWall) : null;
+      const hot = Boolean(act && act.intensity > 0);
       u.star.visible = shown;
+      u.pulse.visible = shown && hot;
       u.spark.visible = shown && e.system.stats.notices > 0;
       if (!shown) continue;
-      u.star.material.opacity = fu * 0.9;
-      u.star.scale.setScalar(u.px * pxs);
+      u.star.material.opacity = fu * (hot ? Math.min(1, 0.9 + act.intensity * 0.1) : 0.9);
+      u.star.scale.setScalar(u.px * (hot ? 1 + act.intensity * 0.45 : 1) * pxs);
+      if (u.pulse.visible) {
+        const period = act.level === 'burst' ? 1.3 : 2.2;
+        const k = still ? 0.38 : (ambient / period + (hashStr(e.system.cluster.id) % 100) / 100) % 1;
+        u.pulse.material.color.set(act.level === 'burst' ? T.css['--k-warn'] : T.css['--brass-hi']);
+        u.pulse.scale.setScalar(u.px * (1.25 + k * (1.4 + act.intensity * 1.4)) * pxs);
+        u.pulse.material.opacity = fu * (0.3 + act.intensity * 0.65) * (1 - k * 0.85);
+      }
       if (u.spark.visible) {
         u.spark.scale.setScalar(7 * pxs);
         u.spark.material.opacity = fu * (e.system.stats.level === 'problem' ? 0.55 + 0.35 * breath(3.2) : 0.75);
@@ -1405,6 +1503,16 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       const mi = e.mini, shown = fg > 0.01 && e.system.group === miniGroup;
       mi.g.visible = shown;
       if (!shown) continue;
+      const act = clusterActivity(activity, e.system.cluster.id, nowWall);
+      const hot = act.intensity > 0;
+      mi.pulse.visible = hot;
+      if (hot) {
+        const period = act.level === 'burst' ? 1.3 : 2.2;
+        const k = still ? 0.38 : (ambient / period + (hashStr(e.system.cluster.id) % 100) / 100) % 1;
+        mi.pulse.material.color.set(act.level === 'burst' ? T.css['--k-warn'] : T.css['--brass-hi']);
+        mi.pulse.scale.setScalar(3.6 + k * (5.2 + act.intensity * 4.5));
+        mi.pulse.material.opacity = fg * (0.28 + act.intensity * 0.62) * (1 - k * 0.85);
+      }
       for (const [m, base] of mi.mats) setOp(m, base() * fg * (mi.hover && m.isLineBasicMaterial ? 2.2 : 1));
       for (const dd of mi.dots) {
         if (!dd.off && !still) dd.ang += dt * T.speed.mini * Math.pow(3.6 / dd.r, 1.5) * (mi.hover ? 0.15 : 1);
@@ -1455,6 +1563,15 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
     STAR.glow.scale.setScalar(O.sunR * T.sun.glow);
     STAR.halo.material.opacity = T.sun.haloOp;
     STAR.halo.scale.setScalar(O.sunR * T.sun.halo);
+    const sunAct = clusterActivity(activity, ORR.system.cluster.id);
+    STAR.pulse.visible = sunAct.intensity > 0;
+    if (STAR.pulse.visible) {
+      const period = sunAct.level === 'burst' ? 1.4 : 2.3;
+      const k = still ? 0.38 : (ambient / period) % 1;
+      STAR.pulse.material.color.set(sunAct.level === 'burst' ? T.css['--k-warn'] : T.sun.glowColor);
+      STAR.pulse.scale.setScalar(O.sunR * (2.2 + k * (2.6 + sunAct.intensity * 1.8)));
+      STAR.pulse.material.opacity = (0.25 + sunAct.intensity * 0.55) * (1 - k * 0.85);
+    }
     STAR.corona.visible = T.sun.corona > 0;
     STAR.corona.material.opacity = T.sun.corona;
     STAR.corona.scale.setScalar(O.sunR * T.sun.halo * 0.9);
@@ -1524,7 +1641,7 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
   });
   on(root, 'scroll', (e) => { if (winRoot.contains(e.target)) scrollQuietUntil = performance.now() + 220; }, { capture: true, passive: true });
   on(root, 'pointerover', (e) => {
-    const inWin = (winRoot.contains(e.target) && e.target !== winRoot) || Boolean(e.target.closest?.('.sm-ncard, .sm-finder'));
+    const inWin = (winRoot.contains(e.target) && e.target !== winRoot) || Boolean(e.target.closest?.('.sm-ncard, .sm-finder, .sm-radar'));
     if (inWin !== pointerInWin) { pointerInWin = inWin; requestRender(); }
   });
   const resizer = new ResizeObserver(() => {
@@ -1566,12 +1683,14 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
     return t('{name}（{state}）：打开对话', { name: pl.member.name, state: parts });
   }
   function clusterCard(system) {
-    const s = system.stats;
+    const s = system.stats, act = activityOf(system.cluster.id);
     return [head(system.cluster.name, system.group ? t('分组 {group}', { group: system.group }) : t('未分组')),
       h('div', { class: 'sm-mrow' }, system.planets.map((p) => h('span', { class: `sm-mi sm-st-${p.status}${p.hidden ? ' sm-ghost' : ''}` }, p.member.name))),
       row(t('群员'), t('{count} 名 · {busy} 工作中 · {online} 在线', { count: s.n, busy: s.busy, online: s.online })),
+      act.rate > 0 ? row(t('消息速率'), h('span', { class: act.level === 'burst' ? 'sm-k-problem' : '' },
+        act.level === 'burst' ? t('{rate} 条/分 · 刷屏中', { rate: act.rate }) : t('{rate} 条/分', { rate: act.rate }))) : null,
       row(t('通知'), noticeText(s.notices)),
-      foot(t('点击（或滚轮向前）进入这个恒星系统'))];
+      foot(t('点击（或滚轮向前）进入这个恒星系统'))].filter(Boolean);
   }
   function galaxyCard(gx) {
     const systems = model.galaxies.find((g) => g.name === gx.name)?.systems ?? [];
@@ -1582,11 +1701,13 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       foot(t('点击（或滚轮向前）拉近到星系'))].filter(Boolean);
   }
   function sunCard(system) {
-    const s = system.stats, c = system.cluster;
+    const s = system.stats, c = system.cluster, act = activityOf(c.id);
     const hubNotices = system.satellites.filter((n) => n.target === null).length;
     return [head(c.name, t('Hub 群聊')),
       row(t('状态'), h('span', { class: 'sm-st-hub' }, c.paused ? t('投递已暂停') : t('投递未暂停'))),
       row(t('群员'), t('{count} 名，{online} 名在线', { count: s.n, online: s.online })),
+      act.rate > 0 ? row(t('消息速率'), h('span', { class: act.level === 'burst' ? 'sm-k-problem' : '' },
+        act.level === 'burst' ? t('{rate} 条/分 · 刷屏中', { rate: act.rate }) : t('{rate} 条/分', { rate: act.rate }))) : null,
       c.unread ? row(t('未读'), t('{count} 条', { count: c.unread })) : null,
       row(t('群通知'), hubNotices ? t('{count} 条（绕恒星的卫星）', { count: hubNotices }) : t('无')),
       foot(t('点击打开群聊：所有经过 Hub 的消息'))].filter(Boolean);
@@ -1715,9 +1836,156 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       sysTitle.title = t('打开 Hub 群聊');
       sysTitle.hidden = false;
     } else sysTitle.hidden = true;
-    hint.textContent = model.galaxies.length ? HINTS[view.level]() : t('还没有群聊。在聊天界面新建群聊后，它会出现在这里。');
+    hint.textContent = model.galaxies.length ? HINTS[view.level]() : t('还没有群聊。点击右上角新建集群后，它会出现在这里。');
+    if (addMemberBtn) addMemberBtn.hidden = !(view.level === 'system' && view.cid);
+    drawDock();
+    drawRadar();
     titleRect = null;
   }
+  let dockCollapsed = false;
+  let radarCollapsed = false;
+  let activityTimer = 0;
+  function scheduleActivityDecay() {
+    cancel(activityTimer);
+    const wait = nextActivityExpiry(activity);
+    if (wait === null) return;
+    activityTimer = later(() => {
+      pruneActivity(activity);
+      onActivityChanged();
+      scheduleActivityDecay();
+    }, Math.min(wait + 80, 5000));
+  }
+  function onActivityChanged() {
+    drawRadar();
+    refreshOverview();
+    finder.refresh();
+    requestRender();
+  }
+  function drawRadar() {
+    const currentCid = view.level === 'system' ? view.cid : null;
+    let openHubCids = null;
+    try { openHubCids = windows?.openHubClusterIds?.() ?? null; } catch { /* TDZ during first mount */ }
+    const rows = activeClusterRows(model, activity, Date.now(), { currentCid, openHubCids, limit: 5 });
+    radar.hidden = rows.length === 0;
+    if (!rows.length) {
+      radar.classList.remove('sm-radar-burst', 'sm-radar-collapsed');
+      radar.replaceChildren();
+      return;
+    }
+    const anyBurst = rows.some((r) => r.activity.level === 'burst');
+    const topRate = rows[0].activity.rate;
+    radar.classList.toggle('sm-radar-burst', anyBurst);
+    radar.classList.toggle('sm-radar-collapsed', radarCollapsed);
+    if (radarCollapsed) {
+      const pill = h('button', {
+        type: 'button', class: 'sm-radar-pill', 'aria-expanded': 'false',
+        title: t('展开活跃群聊'), 'aria-label': t('展开活跃群聊'),
+        onclick: () => { radarCollapsed = false; drawRadar(); },
+      },
+      h('span', { class: `sm-radar-dot ${anyBurst ? 'sm-radar-dot-burst' : 'sm-radar-dot-active'}`, 'aria-hidden': 'true' }),
+      h('span', { class: 'sm-radar-pill-lbl' }, t('活跃 {count}', { count: rows.length })),
+      topRate > 0 ? h('span', { class: `sm-radar-rate ${anyBurst ? 'sm-radar-rate-burst' : ''}` }, t('{rate} 条/分', { rate: topRate })) : null,
+      icon('chevron-down', 'ico-xs sm-radar-chev'));
+      radar.replaceChildren(pill);
+      return;
+    }
+    const toggleBtn = h('button', {
+      type: 'button', class: 'sm-radar-toggle', 'aria-expanded': 'true',
+      title: t('收起活跃群聊'), 'aria-label': t('收起活跃群聊'),
+      onclick: () => { radarCollapsed = true; drawRadar(); },
+    }, icon('chevron-down', 'ico-xs'));
+    const headEl = h('div', { class: 'sm-radar-head' },
+      h('span', { class: `sm-radar-dot ${anyBurst ? 'sm-radar-dot-burst' : 'sm-radar-dot-active'}`, 'aria-hidden': 'true' }),
+      h('span', { class: 'sm-radar-title' }, t('活跃群聊')),
+      h('span', { class: 'sm-radar-cnt' }, String(rows.length)),
+      toggleBtn);
+    const listEl = h('div', { class: 'sm-radar-list' }, ...rows.map((r) => {
+      const cid = r.system.cluster.id;
+      const dotCls = r.activity.level === 'burst' ? 'sm-radar-dot-burst' : r.activity.rate > 0 ? 'sm-radar-dot-active' : 'sm-radar-dot-unread';
+      const detail = [
+        r.activity.rate > 0 ? t('{rate} 条/分', { rate: r.activity.rate }) : '',
+        r.unread > 0 ? t('未读 {count}', { count: r.unread }) : '',
+      ].filter(Boolean).join(t('，'));
+      const aria = r.isCurrent
+        ? t('{name}（当前，{detail}）：打开群聊', { name: r.system.cluster.name, detail })
+        : t('{name}（{detail}）：飞往这个恒星系统', { name: r.system.cluster.name, detail });
+      return h('button', {
+        type: 'button',
+        class: `sm-radar-row${r.activity.level === 'burst' ? ' sm-radar-row-burst' : ''}${r.isCurrent ? ' sm-radar-row-cur' : ''}`,
+        'data-cluster-id': cid,
+        'aria-label': aria,
+        onclick: () => {
+          if (flight) return;
+          if (view.level === 'system' && view.cid === cid) openHub(cid);
+          else go({ level: 'system', cid, group: r.system.group });
+        },
+      },
+      h('span', { class: `sm-radar-dot ${dotCls}`, 'aria-hidden': 'true' }),
+      h('span', { class: 'sm-radar-name' }, r.system.cluster.name, r.isCurrent ? h('i', {}, t('当前')) : null),
+      h('span', { class: 'sm-radar-pills' },
+        r.activity.rate > 0 ? h('span', { class: `sm-radar-rate sm-radar-rate-${r.activity.level}` }, t('{rate} 条/分', { rate: r.activity.rate })) : null,
+        r.unread > 0 ? h('span', { class: 'sm-radar-unread' }, t('未读 {count}', { count: r.unread })) : null));
+    }));
+    radar.replaceChildren(headEl, listEl);
+  }
+  function syncDeliveryPause() {
+    if (!deliveryPauseBtn) return;
+    const info = ctx.actions?.getPaused?.() ?? { paused: false, clusters: [] };
+    const isPaused = Boolean(info.paused);
+    deliveryPauseBtn.setAttribute('aria-pressed', String(isPaused));
+    deliveryPauseBtn.classList.toggle('sm-tb-paused', isPaused);
+    const label = isPaused ? t('恢复投递（当前已暂停）') : t('暂停全部投递');
+    deliveryPauseBtn.title = label;
+    deliveryPauseBtn.setAttribute('aria-label', label);
+  }
+  function drawDock() {
+    const cid = view.level === 'system' ? view.cid : null;
+    const allSamePage = ctx.panels?.list?.() ?? [];
+    const clusterPlugins = cid ? new Set(allSamePage.filter((p) => p.scope === 'cluster').map((p) => p.pluginId)) : new Set();
+    const samePage = allSamePage.filter((p) => (p.scope === 'cluster' && cid) || (p.scope === 'global' && !clusterPlugins.has(p.pluginId)));
+    const restricted = cid ? (ctx.pluginUi?.listStarmapItems?.(cid) ?? []) : [];
+    const total = samePage.length + restricted.length;
+    dock.hidden = total === 0;
+    if (!total) { dock.replaceChildren(); return; }
+    dock.classList.toggle('sm-dock-collapsed', dockCollapsed);
+    const toggleBtn = total > 4 ? h('button', {
+      type: 'button', class: 'sm-dock-toggle',
+      'aria-expanded': String(!dockCollapsed),
+      title: dockCollapsed ? t('展开插件面板栏') : t('收起插件面板栏'),
+      'aria-label': dockCollapsed ? t('展开插件面板栏') : t('收起插件面板栏'),
+      onclick: () => { dockCollapsed = !dockCollapsed; drawDock(); },
+    }, icon('layers', 'ico-sm'), dockCollapsed ? h('span', { class: 'sm-dock-count' }, String(total)) : null) : null;
+    if (dockCollapsed && toggleBtn) { dock.replaceChildren(toggleBtn); return; }
+    const panelButtons = samePage.map((panel) => {
+      const badge = panel.badge?.(cid);
+      const label = panel.title();
+      const tipText = panel.trusted ? t('第三方插件：{title}', { title: label }) : label;
+      return h('button', {
+        type: 'button', class: `sm-dock-btn${panel.trusted ? ' sm-dock-ext' : ''}`, 'data-panel-key': panel.key,
+        title: tipText, 'aria-label': tipText,
+        onclick: () => windows?.open({ kind: 'panel', panel, clusterId: cid }),
+      },
+      icon(panel.icon, 'ico-sm'),
+      panel.trusted ? h('span', { class: 'sm-dock-ext-dot', 'aria-hidden': 'true' }) : null,
+      badge ? h('span', { class: 'sm-dock-badge' }, badge) : null);
+    });
+    const extButtons = restricted.map((item) => {
+      const tipText = t('第三方插件：{title}', { title: item.name });
+      return h('button', {
+        type: 'button', class: 'sm-dock-btn sm-dock-ext', 'data-ext-panel': item.pluginId,
+        title: tipText, 'aria-label': tipText,
+        onclick: () => windows?.open({ kind: 'external-panel', item, clusterId: cid }),
+      },
+      icon('layers', 'ico-sm'),
+      h('span', { class: 'sm-dock-ext-dot', 'aria-hidden': 'true' }));
+    });
+    dock.replaceChildren(...[toggleBtn, ...panelButtons, ...extButtons].filter(Boolean));
+  }
+  const stopPanels = ctx.panels?.onChange?.((releasedId) => {
+    if (releasedId) windows?.closePluginPanels?.(releasedId);
+    drawDock();
+  });
+  const stopPluginUi = ctx.pluginUi?.onItemsChange?.(() => drawDock());
   on(sysTitle, 'click', () => clickPick({ type: 'sun' }));
   on(sysTitle, 'pointerenter', () => { if (ORR) setHover(STAR.sunProxy.userData.pick); });
   on(sysTitle, 'pointerleave', () => { if (hovered === STAR.sunProxy.userData.pick) setHover(null); });
@@ -1774,6 +2042,8 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       legendRow(satIcon('problem'), t('问题，比如投递失败（会轻微脉冲）')),
       legendRow(satIcon('attention'), t('提醒，比如任务被退回')),
       h('p', {}, t('绕行星转的属于该群员，绕恒星转的属于整个群聊。点卫星看详情；「知道了」只在这个浏览器里收起它，不改已读。')),
+      h('h4', {}, t('活跃与刷屏')),
+      legendRow(h('span', { class: 'sm-dot sm-lg-burst' }), t('消息频繁的恒星会发出脉冲光环，左下角活跃群聊栏可一键飞过去')),
       h('h4', {}, t('操作')),
       h('p', {}, t('点星系、恒星系统进入；点恒星打开 Hub 群聊，点行星打开该群员的原生对话。宇宙一角的黑洞是回收站。按 / 或 Ctrl+K 打开群聊列表，可以按群聊、分组或群员名搜索。拖动转动视角，滚轮缩放（推到底进入，拉到底返回），双击空白处复位，Esc 返回上一层，F 显示帧率。')));
   }
@@ -1789,6 +2059,7 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
     model: () => model,
     trashCount: () => trashRows.length,
     current: () => (view.level === 'system' ? view.cid : null),
+    activityOf,
     onOpen: () => closePopups(finder.el),
     choose(rowItem) {
       if (flight) return;
@@ -1953,6 +2224,10 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       ctx.api('GET', `/api/clusters/${encodeURIComponent(cid)}/messages?limit=100`).then((list) => {
         if (closed || !state.clusters.has(cid) || !Array.isArray(list)) return;
         setMessages(state, cid, list);
+        if (seedClusterActivity(activity, cid, list) > 0) {
+          scheduleActivityDecay();
+          onActivityChanged();
+        }
         refreshSoon();
       }).catch(() => { /* no satellites for it this time */ }).finally(() => { noticeReads--; pumpNotices(); });
     }
@@ -1960,22 +2235,34 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
 
   /** One frame of the stream, once the sky is drawn (the frames before that are in `early`). */
   function react(event) {
+    if (event?.kind === 'pause') syncDeliveryPause();
+    if (event?.kind === 'cluster' && event.payload?.cluster?.deletedAt) windows?.closeClusterPanels?.(event.payload.cluster.id);
+    if (event?.kind === 'collaboration') drawDock();
     const change = applySkyEvent(state, event);
     if (change) effects(change);
   }
   /** What a change asks for. `draw` false: the sky was drawn from the state already holding it. */
   function effects(change, draw = true) {
+    if (change.activity?.clusterId) {
+      recordClusterActivity(activity, change.activity.clusterId, { id: change.activity.id ?? null, at: Date.now() });
+      scheduleActivityDecay();
+    }
+    if (change.layout) {
+      for (const cid of [...activity.keys()]) if (!state.clusters.has(cid)) activity.delete(cid);
+    }
     if (change.reload) reloadState();
     if (change.trash) { cancel(trashTimer); trashTimer = later(loadTrash, 400); }
     // the read position moved past the messages held here: the Hub counts (one read for a burst)
     if (change.recount) { cancel(recountTimer); recountTimer = later(reloadState, 1000); }
     if (!draw) return;
+    if (change.unread) drawRadar();
     if (change.layout || change.status || change.notices.length) refreshSoon();
-    else if (change.unread) finder.refresh();   // the count shows in the list; a card reads it when it opens
+    else if (change.activity) onActivityChanged();
+    else if (change.unread) finder.refresh();   // the count shows in the radar & list; a card reads it when it opens
     if (change.layout && !change.reload) loadNotices();
   }
   const stopLanguage = onLanguageChange(() => {
-    refreshOverview(); updateChrome(); drawThemeMenu(); drawHelp(); syncPause(); finder.refresh();
+    refreshOverview(); updateChrome(); drawThemeMenu(); drawHelp(); syncPause(); syncDeliveryPause(); drawDock(); drawRadar(); finder.refresh();
     for (const p of planets) p.lab.el.setAttribute('aria-label', planetAria(p.pl));
     if (ncardFor) renderNcard();
     for (const L of labels) L.w = 0;
@@ -1985,7 +2272,19 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
   // ---- chat windows (starmap/windows.js) or, without them, the chat page ----
   let windows = null;
   if (typeof windowsModule?.createWindows === 'function') {
-    try { windows = windowsModule.createWindows({ root: winRoot, ctx }); } catch (error) { console.warn('star map windows did not start', error); }
+    try {
+      windows = windowsModule.createWindows({
+        root: winRoot, ctx,
+        getTheme: () => starmapPanelTheme(themeName),
+        onOpenCluster: (cid) => {
+          const sys = model.systems.get(cid);
+          if (sys) go({ level: 'system', cid, group: sys.group });
+        },
+        onOpenMember: (cid, mid) => openMember(cid, mid),
+        onRaise: clearHudFront,
+        onChange: () => drawRadar(),
+      });
+    } catch (error) { console.warn('star map windows did not start', error); }
     syncWindowSatellites();
   }
   function openHub(cid) {
@@ -2009,8 +2308,11 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
   drawThemeMenu();
   drawHelp();
   syncPause();
+  syncDeliveryPause();
   updateScales();
   jumpTo({ level: 'universe', group: null, cid: null });
+  drawDock();
+  drawRadar();
   requestRender();
   // Opened from a cluster: the camera flies from the universe into its star system.
   const start = model.systems.get(ctx.clusterId);
@@ -2019,6 +2321,8 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
   loadNotices();
   ready = true;
   for (const change of early) effects(change, false);
+  drawRadar();
+  if (activity.size) refreshOverview();
   // Focus into the sky, so its keys work at once, unless the user moved it elsewhere while it loaded (the host leaves
   // it on its back button, in the view's layer).
   const active = document.activeElement;
@@ -2034,7 +2338,10 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       if (rafId) cancelAnimationFrame(rafId);
       rafId = 0;
       resizer.disconnect();
+      clearOverlay();
       try { stopEvents(); } catch { /* the host unsubscribes it too */ }
+      try { stopPanels?.(); } catch { /* ignore */ }
+      try { stopPluginUi?.(); } catch { /* ignore */ }
       stopLanguage();
       try { windows?.closeAll(); } catch (error) { console.warn('star map windows: closeAll failed', error); }
       disposeOrrery();

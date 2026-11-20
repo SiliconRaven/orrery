@@ -6,6 +6,10 @@
   --wb-review: light-dark(#7c3aed, #c9a2ff);
 }
 .workbench-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.workbench-shell.wb-embedded { background: var(--bg); color: var(--text); }
+.workbench-shell.wb-embedded .workbench-content { padding: 0 var(--s-3) var(--s-3); background: transparent; }
+.workbench-shell.wb-embedded .workbench-tabs { margin: 0 calc(-1 * var(--s-3)) var(--s-3); padding: var(--s-2) var(--s-3) var(--s-1); }
+.workbench-shell.wb-embedded .wb-filterbar { margin: -4px calc(-1 * var(--s-3)) var(--s-3); padding: var(--s-1) var(--s-3) var(--s-2); }
 .workbench-head { background-image: var(--orbit-rings), linear-gradient(105deg, var(--accent-soft), var(--surface) 72%); }   /* the orbit: style.css */
 .workbench-title { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
 .workbench-title h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -100,7 +104,7 @@
 .wb-filterbar .wb-fb-input { width: 100%; padding: 0 8px 0 32px; }
 .wb-filterbar .wb-fb-input::placeholder { color: var(--muted); }
 /* Selects and the label button share one look: no native arrow, a drawn chevron in the muted colour. */
-.wb-filterbar .wb-fb-select { flex: none; width: auto; max-width: 100%; padding: 0 28px 0 11px; appearance: none; cursor: pointer; text-align: left;
+.wb-filterbar .wb-fb-select { flex: none; width: auto; max-width: 100%; padding: 0 28px 0 11px; -webkit-appearance: none; appearance: none; cursor: pointer; text-align: left;
   background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
   background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
 .wb-filterbar .wb-fb-trigger { display: inline-flex; align-items: center; gap: 6px; }

@@ -49,6 +49,7 @@ export function coreEventSource(store: Store): EventSource {
     return member && typeof member.id === 'string' ? member : null;
   };
   const by = (event: HubEvent) => event.memberId ?? null;
+  const privateMessage = (id: unknown) => typeof id === 'string' && store.getMessage(id)?.privateTo !== undefined;
   const collab = (event: HubEvent, actions: readonly string[]) => {
     const p = payloadOf(event);
     return !p.suggested && typeof p.action === 'string' && actions.includes(p.action) ? p : null;
@@ -64,7 +65,7 @@ export function coreEventSource(store: Store): EventSource {
       build: (event, { withBody }) => {
         const p = payloadOf(event);
         const message = p.message as Message | undefined;
-        if (!message || typeof message.id !== 'string') return null;
+        if (!message || typeof message.id !== 'string' || message.privateTo !== undefined) return null;
         const deliveries = Array.isArray(p.deliveries) ? p.deliveries as Delivery[] : [];
         const files = Array.isArray(p.attachments) ? p.attachments as FileInfo[] : [];
         const content = withBody && typeof message.body === 'string' ? pluginMessageBody(message) : null;
@@ -86,7 +87,9 @@ export function coreEventSource(store: Store): EventSource {
       build: (event) => {
         const p = payloadOf(event);
         if (!Array.isArray(p.messageIds)) return null;
-        return { clusterId: event.clusterId, memberId: str(p.memberId) ?? event.memberId, messageIds: p.messageIds.filter((id) => typeof id === 'string'),
+        const messageIds = p.messageIds.filter((id) => typeof id === 'string' && !privateMessage(id));
+        if (!messageIds.length) return null;
+        return { clusterId: event.clusterId, memberId: str(p.memberId) ?? event.memberId, messageIds,
           via: str(p.via), at: event.createdAt };
       },
     },
@@ -96,9 +99,10 @@ export function coreEventSource(store: Store): EventSource {
       fields: 'clusterId, memberId, messageIds, at',
       build: (event) => {
         const list = payloadOf(event).acknowledgements;
-        if (!Array.isArray(list) || !list.length) return null;
-        return { clusterId: event.clusterId, memberId: event.memberId,
-          messageIds: list.flatMap((a) => (typeof a?.messageId === 'string' ? [a.messageId] : [])), at: event.createdAt };
+        if (!Array.isArray(list)) return null;
+        const messageIds = list.flatMap((a) => (typeof a?.messageId === 'string' && !privateMessage(a.messageId) ? [a.messageId] : []));
+        if (!messageIds.length) return null;
+        return { clusterId: event.clusterId, memberId: event.memberId, messageIds, at: event.createdAt };
       },
     },
     {
@@ -157,7 +161,8 @@ export function coreEventSource(store: Store): EventSource {
           deletedAt?: unknown; userReadMessageId?: unknown } | undefined;
         if (!cluster || cluster.deletedAt) return null;
         return { clusterId: event.clusterId, name: str(cluster.name), category: str(cluster.category) ?? '', pinned: !!cluster.pinnedAt,
-          archived: !!cluster.archivedAt, userReadMessageId: str(cluster.userReadMessageId), at: event.createdAt };
+          archived: !!cluster.archivedAt, userReadMessageId: privateMessage(cluster.userReadMessageId) ? null : str(cluster.userReadMessageId),
+          at: event.createdAt };
       },
     },
     {
@@ -209,7 +214,7 @@ export function coreEventSource(store: Store): EventSource {
       fields: 'clusterId, deliveryId, messageId, memberId, state, outcome, attempts, at（不含错误文字）',
       build: (event) => {
         const d = payloadOf(event).delivery as Delivery | undefined;
-        if (!d || typeof d.id !== 'string') return null;
+        if (!d || typeof d.id !== 'string' || privateMessage(d.messageId)) return null;
         return { clusterId: event.clusterId, deliveryId: d.id, messageId: d.messageId, memberId: d.memberId, state: d.state,
           outcome: d.outcome ?? null, attempts: d.attempts ?? 0, at: event.createdAt };
       },
@@ -220,7 +225,7 @@ export function coreEventSource(store: Store): EventSource {
       fields: 'clusterId, memberId（没有时为 null）, reason, at；按原因另有 chainId、hop、maxHops、maxTurnsPerChain、maxTurnsPerHour、maxNoticeBatchesPerHour、pluginId、window、limit',
       build: (event) => {
         const p = payloadOf(event);
-        if (typeof p.reason !== 'string') return null;
+        if (typeof p.reason !== 'string' || privateMessage(p.chainId)) return null;
         const extra: Record<string, unknown> = {};
         for (const key of GUARD_FIELDS) {
           const value = p[key];

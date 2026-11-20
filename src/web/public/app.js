@@ -523,6 +523,7 @@ function applyEvent(e) {
       break;
     case 'message': {
       const m = p.message;
+      if (m.privateTo) break;   // the member view consumes private events from the same authenticated stream
       remember(e);
       const counted = unread.get(m.clusterId);
       if (counted && e.seq > counted.seq && m.from !== 'user') counted.count++;
@@ -1497,8 +1498,11 @@ function openGroupMenu(name, trigger) {
   showClusterMenu(`group:${name}`, trigger, menu);
 }
 
-$('new-group').addEventListener('click', () => groupNameDialog(lt('新建分组'), '', (name) => api('POST', '/api/cluster-groups', { name }),
-  t('可以先建空分组，再把群聊拖进来，或用群聊菜单里的“移到分组”。')));
+function openNewGroupDialog() {
+  groupNameDialog(lt('新建分组'), '', (name) => api('POST', '/api/cluster-groups', { name }),
+    t('可以先建空分组，再把群聊拖进来，或用群聊菜单里的“移到分组”。'));
+}
+$('new-group').addEventListener('click', openNewGroupDialog);
 
 // Dragging a cluster onto a group moves it there. The cluster menu's "移到分组…" does the same without a pointer.
 const CLUSTER_DRAG = 'application/x-orrery-cluster';
@@ -3668,21 +3672,22 @@ $('bridge-reveal-key').addEventListener('click', async (event) => {
     if (revision === bridgeSettingsRevision) showError('bridge-settings-error', e.message);
   } finally { button.disabled = false; }
 });
-$('open-settings').addEventListener('click', () => {
+function openSettingsDialog(section = null) {
   render();
-  settingsFrame.opened();
+  settingsFrame.opened(section);
   settingsDialog.showModal();
   void loadBridgeSettings();
   pluginSettings.load();
   disposeInstallPanel();
   installPanel = mountPluginInstall($('plugin-install-settings'), { api: featureApi, onInstalled: () => pluginSettings.load() });
-});
+}
+$('open-settings').addEventListener('click', () => openSettingsDialog());
 $('settings-close').addEventListener('click', () => settingsDialog.close());
 settingsDialog.addEventListener('close', () => {
   ++bridgeSettingsRevision;
   hideBridgeKey();
   disposeInstallPanel();
-  $('open-settings').focus();
+  if (!viewHost.isOpen()) $('open-settings').focus();
 });
 $('usage-alert-form').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -3697,7 +3702,7 @@ $('usage-alert-form').addEventListener('submit', async (event) => {
   finally { $('usage-alert-save').disabled = false; }
 });
 
-$('quit').addEventListener('click', async () => {
+async function requestQuit() {
   const ok = await confirmDialog({
     title: lt('退出 orrery？'), message: lt('退出后 Hub 停止，群员收不到新消息，直到你再次打开 orrery。'), confirmText: lt('退出'), danger: true,
   });
@@ -3712,16 +3717,18 @@ $('quit').addEventListener('click', async () => {
     if (stream?.readyState === EventSource.CLOSED) connect(S.lastSeq, true);
     noticeDialog(lt('退出失败：{message}', { message: e.message }));
   }
-});
+}
+$('quit').addEventListener('click', () => void requestQuit());
 
-$('pause').addEventListener('click', async () => {
+async function toggleGlobalPause() {
   try {
     // The resulting 'pause' event updates S.paused; the response could be older than a newer event.
     await api('POST', '/api/pause', { paused: !S.paused });
   } catch (e) {
     noticeDialog(lt('切换暂停失败：{message}', { message: e.message }));
   }
-});
+}
+$('pause').addEventListener('click', () => void toggleGlobalPause());
 
 for (const f of NOTIFY_FORMS) {
   const $f = (part) => $(`${f.id}-${part}`);
@@ -4819,14 +4826,21 @@ function drawStalledOverview() {
   badge.title = title;
   badge.setAttribute('aria-label', title);
 }
-// Plugins' own UIs (docs/external-plugins.md「网页界面」): title bar chips here, workbench tabs through the workbench.
-const pluginUi = createPluginUi({ api, chipsHost: $('plugin-ui-chips'), itemsChanged: (clusterId) => workbench.pluginTabsChanged(clusterId) });
+// Plugins' own UIs (docs/external-plugins.md「网页界面」): title bar chips here, workbench tabs through the workbench, starmap frames through viewHost.
+const pluginUi = createPluginUi({ api, chipsHost: $('plugin-ui-chips'), itemsChanged: (clusterId) => {
+  workbench.pluginTabsChanged(clusterId);
+  viewHost?.notifyPluginUi(clusterId);
+} });
 const workbench = createWorkbench({ api, stalled, pluginUi, getMembers: (id) => membersOf(id),
   getHistoryMembers: (id) => [...S.members.values()].filter((member) => member.clusterId === id),
   getClusters: () => [...S.clusters.values()], selectCluster: select, nameOf, messageName, openImage: openViewer, uploadFile,
   renderMarkdown: (body, clusterId) => mdBlocks(markdownBlocks(body), { clusterId, mentions: [] }),
   workspaceChanged: (clusterId) => { if (clusterId === S.sel.cluster) render(); },
-  getActivity: (id) => activitySummary(S.activity.get(id), S.activityFailed), showMessage: (clusterId, id) => openMessage(clusterId, id) });
+  getActivity: (id) => activitySummary(S.activity.get(id), S.activityFailed),
+  showMessage: (clusterId, id) => {
+    if (viewHost.isOpen()) viewHost.exitTo(() => openMessage(clusterId, id));
+    else openMessage(clusterId, id);
+  } });
 $('open-workbench').addEventListener('click', () => { if (S.sel.cluster) workbench.open(S.sel.cluster); });
 $('delivery-problems').addEventListener('click', () => { if (S.sel.cluster) openDeliveryProblems(); });
 $('message-sync-retry').addEventListener('click', () => { retryMessageMetadata(S.sel.cluster); render(); });
@@ -4838,9 +4852,10 @@ async function deleteCluster(cluster) {
   try { await api('DELETE', `/api/clusters/${encodeURIComponent(cluster.id)}`, {}); await syncPaused().catch(() => {}); }
   catch (e) { await noticeDialog(lt('{message}。请查看回收站确认结果。', { message: e.message }), lt('删除未确认')); }
 }
-$('open-trash').addEventListener('click', () => {
+function openTrashDialog() {
   trashRemoved = openTrash({ api, restored: syncPaused, noticeDialog, closed: () => { trashRemoved = null; } });
-});
+}
+$('open-trash').addEventListener('click', openTrashDialog);
 
 /** POST a ZIP's bytes to the skill installer (docs/files.md「安装 skill」); throws like api(). */
 async function uploadSkillZip(file, overwrite) {
@@ -4864,10 +4879,11 @@ async function loadSkills() {
   S.skillsVersion++;
   render();
 }
-$('open-extensions').addEventListener('click', () => {
+function openExtensionsDialog() {
   $('app').classList.remove('sidebar-open');
   openExtensions({ api, uploadZip: uploadSkillZip, skillsChanged: loadSkills });
-});
+}
+$('open-extensions').addEventListener('click', openExtensionsDialog);
 
 // "N 分钟前" in the sidebar and on 全部对话 moves on by itself: only those words are rewritten, nothing is redrawn.
 setInterval(() => refreshRelativeTimes(document), 30_000);
@@ -4902,13 +4918,29 @@ onLanguageChange(() => {
   render();
 });
 
-// ---- full-page plugin views (plugin-view.js): entries in the sidebar head, the view over the main area ----
+// ---- full-page plugin views (plugin-view.js): entries in the sidebar switcher, the view over the main area or full viewport ----
 
 const viewHost = createViewHost({ app: $('app'), layer: $('plugin-view'), heading: $('plugin-view-title'), back: $('plugin-view-back'),
-  before: $('open-settings'), api: featureApi, clusterId: () => S.sel.cluster ?? null,
+  before: $('open-settings'), switcher: $('view-switcher'), api: featureApi, clusterId: () => S.sel.cluster ?? null,
   openChat: (cluster) => { if (typeof cluster === 'string' && S.clusters.has(cluster)) select(cluster); }, theme: () => themeSnapshot().scheme, onChange: render,
-  // Under the view: the chat (but its global banners, raised over the view) and the member panel.
-  covered: () => [...[...$('chat').children].filter((node) => !node.matches('#update-banner, #trust-banner, #safe-mode-banner')), $('panel-divider'), $('member-panel')],
+  actions: {
+    openNewCluster: () => openCreate(),
+    openNewGroup: () => openNewGroupDialog(),
+    openAddMember: (cid) => { if (typeof cid === 'string' && S.clusters.has(cid)) openCreate(cid); },
+    openSettings: (section) => openSettingsDialog(section),
+    openExtensions: () => openExtensionsDialog(),
+    openTrash: () => openTrashDialog(),
+    togglePause: () => toggleGlobalPause(),
+    getPaused: () => ({ paused: Boolean(S.paused), clusters: [...pausedClusters] }),
+    requestQuit: () => requestQuit(),
+  },
+  pluginUi,
+  // Under the view: the chat (never #chat itself, so global banners stay clickable), member panel, and in fullscreen mode the sidebar too.
+  covered: (fullscreen = false) => [
+    ...[...$('chat').children].filter((node) => !node.matches('#global-banners, #update-banner, #trust-banner, #safe-mode-banner')),
+    $('panel-divider'), $('member-panel'),
+    ...(fullscreen ? [$('sidebar'), $('side-divider')] : []),
+  ],
   // Shown, and not in the narrow screen's closed sidebar drawer (opening a view closes it).
   canFocus: (node) => node.getClientRects().length > 0 && !(innerWidth <= 900 && !$('app').classList.contains('sidebar-open') && $('sidebar').contains(node)),
   fallbackFocus: () => [$('open-settings'), $('open-sidebar')],
@@ -4937,12 +4969,19 @@ try {
   ]);
   // The shared page helpers reach every module through register's host (the supported way for a full-trust module).
   pluginSlots = await loadPluginSlots(plugins, { api, nameOf, command: workbench.command,
+    workbench: Object.freeze({
+      mountEmbedded: workbench.mountEmbedded,
+      tasksEnabled: () => plugins?.installed?.some((p) => p.id === 'tasks' && p.enabled) !== false,
+      stalledCount: (cid) => (cid ? stalled.visible().filter((hint) => hint.clusterId === cid).length : stalled.visible().length),
+    }),
     ui: Object.freeze({ h, icon, emptyState, noticeDialog, confirmDialog, formDialog }) });
   // A plugin released later (detached, or a slot of it found wrong): its workbench tab goes, and kept message elements
   // are rebuilt without it before they are shown again.
-  pluginSlots.onRelease = (ids) => { workbench.detachPlugins(ids); viewHost.setViews(pluginSlots.view); render(); };
+  pluginSlots.onRelease = (ids) => { workbench.detachPlugins(ids); viewHost.setViews(pluginSlots.view); viewHost.setPanels(pluginSlots.panel); render(); };
+  pluginSlots.closePanels = (id) => viewHost.releasePanels(id);
   pluginSlots.closeView = (id) => viewHost.release(id);   // in release: after its typed input is kept, before its onDispose
   viewHost.setViews(pluginSlots.view);
+  viewHost.setPanels(pluginSlots.panel);
   pagePlugins = plugins;
   pluginsStart = typeof plugins?.instance === 'string' ? plugins.instance : null;   // the start this list came from
   hubCheckPending = plugins === null;

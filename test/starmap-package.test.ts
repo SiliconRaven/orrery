@@ -31,21 +31,21 @@ function releases() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const zips = new Map<string, Buffer>();
   const fetched: string[] = [];
-  // 1.0.1: the source as it is, through the documented release command (scripts/pack-official-plugin.ts).
+  // 2.0.1: the source as it is, through the documented release command (scripts/pack-official-plugin.ts).
   const key = join(dir, 'test-key.pem');
-  const metadata = join(dir, 'starmap-1.0.1.json');
-  const out = join(dir, 'starmap-1.0.1.zip');
+  const metadata = join(dir, 'starmap-2.0.1.json');
+  const out = join(dir, 'starmap-2.0.1.zip');
   writeFileSync(key, privateKey.export({ type: 'pkcs8', format: 'pem' }));
-  writeFileSync(metadata, JSON.stringify({ ...release, version: '1.0.1', keyId: KEY_ID }));
+  writeFileSync(metadata, JSON.stringify({ ...release, version: '2.0.1', keyId: KEY_ID }));
   const printed = execFileSync(process.execPath, [join(REPO_ROOT, 'scripts/pack-official-plugin.ts'), SOURCE, metadata, key, out], { encoding: 'utf8' });
-  zips.set('1.0.1', readFileSync(out));
-  assert.equal(printed.trim(), 'SHA-256 ' + sha256(zips.get('1.0.1')!));
-  // 1.0.2: the same source with an observable change in its web module's English.
-  const changed = join(dir, 'starmap-1.0.2');
+  zips.set('2.0.1', readFileSync(out));
+  assert.equal(printed.trim(), 'SHA-256 ' + sha256(zips.get('2.0.1')!));
+  // 2.0.2: the same source with an observable change in its web module's English.
+  const changed = join(dir, 'starmap-2.0.2');
   cpSync(SOURCE, changed, { recursive: true });
   const english = join(changed, 'web/i18n/en.json');
-  writeFileSync(english, JSON.stringify({ ...JSON.parse(readFileSync(english, 'utf8')), 星图: 'Star map 1.0.2' }, null, 2) + '\n');
-  zips.set('1.0.2', packOfficialPlugin(changed, { ...release, version: '1.0.2', keyId: KEY_ID }, privateKey));
+  writeFileSync(english, JSON.stringify({ ...JSON.parse(readFileSync(english, 'utf8')), 星图: 'Star map 2.0.2' }, null, 2) + '\n');
+  zips.set('2.0.2', packOfficialPlugin(changed, { ...release, version: '2.0.2', keyId: KEY_ID }, privateKey));
 
   const fetcher: typeof fetch = async (input) => {
     const url = new URL(String(input));
@@ -97,7 +97,7 @@ async function viewTitles(app: TestHub): Promise<[string, string]> {
   // A fresh page each time: plugin-slots.js remembers released plugins for the life of the page.
   const { loadPluginSlots, detachPluginSlots } = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/plugin-slots.js')).href + '?page=' + ++loads);
   const { setLanguage } = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/i18n.js')).href);
-  const slots = await loadPluginSlots(list, { api: async () => ({}) }, async () => ({ register: () => ({}) }), undefined, () => true, {
+  const slots = await loadPluginSlots({ ...list, officialFrontend: [entry] }, { api: async () => ({}) }, async () => ({ register: () => ({}) }), undefined, () => true, {
     loadOfficial: (path: string) => import(pathToFileURL(join(webRoot(app, path), posix.relative(posix.dirname(entry.entry), path))).href),
     loadEnglish: async (path: string) => (await rawFetch(app.url + path)).json(),
   });
@@ -178,12 +178,12 @@ test('star map package: built-in by default, two signed versions through the set
     await servedOffline(app);
     assert.equal((await app.api('GET', path)).status, 'unsupported', 'the mock session has no transcript of its own');
 
-    // Settings: check, prepare and confirm 1.0.1. Until the restart the built-in copy keeps running.
-    await stage(app, '1.0.1');
+    // Settings: check, prepare and confirm 2.0.1. Until the restart the built-in copy keeps running.
+    await stage(app, '2.0.1');
     row = await card(app);
-    assert.deepEqual([row.version, row.officialUpdate.source, row.officialUpdate.pendingVersion], [release.version, 'bundled', '1.0.1']);
+    assert.deepEqual([row.version, row.officialUpdate.source, row.officialUpdate.pendingVersion], [release.version, 'bundled', '2.0.1']);
     assert.equal((await entryOf(app)).entry, builtIn);
-    await assert.rejects(app.api('POST', UPDATE + '/prepare', { id: 'starmap', version: '1.0.2' }), /OFFICIAL_RESTART_PENDING/);
+    await assert.rejects(app.api('POST', UPDATE + '/prepare', { id: 'starmap', version: '2.0.2' }), /OFFICIAL_RESTART_PENDING/);
     await app.close();
 
     // Restart: only the star map changed. Hub and desktop versions are the same files, the switch stayed on.
@@ -191,26 +191,26 @@ test('star map package: built-in by default, two signed versions through the set
     app = await start();
     assert.equal(fetched.length, downloads, 'activation reads the local copy only');
     row = await card(app);
-    assert.deepEqual([row.version, row.enabled, row.officialUpdate.source, row.officialUpdate.pendingVersion], ['1.0.1', true, 'package', undefined]);
+    assert.deepEqual([row.version, row.enabled, row.officialUpdate.source, row.officialUpdate.pendingVersion], ['2.0.1', true, 'package', undefined]);
     assert.deepEqual(readPluginsFile(app.home).enabled, ['starmap']);
     assert.equal(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'), program);
     assert.equal(readFileSync(join(REPO_ROOT, 'desktop/package.json'), 'utf8'), desktop);
     const v1 = state(app).active.starmap;
-    assert.equal(v1.version, '1.0.1');
+    assert.equal(v1.version, '2.0.1');
     assert.equal((await entryOf(app)).entry, builtIn.replace(/[0-9a-f]{64}/, v1.digest));
     assert.equal((await rawFetch(app.url + builtIn)).status, 404, 'the old copy\'s files are gone with it');
     assert.deepEqual(await viewTitles(app), ['星图', 'Star map']);
     await servedOffline(app);
     await transcriptRoute(app, cluster.id, reader);
 
-    // 1.0.2 differs where a user sees it: its English title.
-    await stage(app, '1.0.2');
+    // 2.0.2 differs where a user sees it: its English title.
+    await stage(app, '2.0.2');
     await app.close();
     app = await start();
     row = await card(app);
-    assert.deepEqual([row.version, row.enabled, row.officialUpdate.english.name], ['1.0.2', true, 'Star map 1.0.2']);
+    assert.deepEqual([row.version, row.enabled, row.officialUpdate.english.name], ['2.0.2', true, 'Star map 2.0.2']);
     assert.deepEqual(state(app).previous.starmap, v1);
-    assert.deepEqual(await viewTitles(app), ['星图', 'Star map 1.0.2']);
+    assert.deepEqual(await viewTitles(app), ['星图', 'Star map 2.0.2']);
     const { entry } = await entryOf(app);
     // The real artifact's pure modules work from where the Hub keeps them.
     const T = await import(pathToFileURL(join(webRoot(app, entry), 'transcript.js')).href);
@@ -222,7 +222,7 @@ test('star map package: built-in by default, two signed versions through the set
     await app.close();
     app = await start();
     row = await card(app);
-    assert.deepEqual([row.version, row.enabled], ['1.0.2', false]);
+    assert.deepEqual([row.version, row.enabled], ['2.0.2', false]);
     assert.equal(await entryOf(app), undefined);
     assert.equal((await rawFetch(app.url + entry)).status, 404);
     assert.equal((await fetch(app.url + path)).status, 404);
@@ -276,7 +276,7 @@ test('star map package: a damaged built-in payload leaves the signed package sel
   let app = await start({ plugins });
   try {
     await app.api('PUT', '/api/plugins/starmap', { enabled: true });
-    await stage(app, '1.0.1');
+    await stage(app, '2.0.1');
     await app.close();
     app = await start({ plugins });
     assert.equal((await card(app)).officialUpdate.source, 'package');
@@ -285,9 +285,9 @@ test('star map package: a damaged built-in payload leaves the signed package sel
     damage();
     app = await start({ plugins });
     const row = await card(app);
-    assert.deepEqual([row.version, row.enabled, row.officialUpdate.source], ['1.0.1', true, 'package']);
+    assert.deepEqual([row.version, row.enabled, row.officialUpdate.source], ['2.0.1', true, 'package']);
     assert.equal(row.officialUpdate.error.code, 'OFFICIAL_PACKAGE_INVALID', 'the built-in copy\'s failure is on the card');
-    assert.equal(state(app).active.starmap.version, '1.0.1');
+    assert.equal(state(app).active.starmap.version, '2.0.1');
     const { cluster, members: [reader] } = await app.cluster('sky', ['reader']);
     assert.equal((await app.api('GET', transcriptPath(cluster.id, reader.id))).status, 'unsupported');
   } finally { await app.close(); }

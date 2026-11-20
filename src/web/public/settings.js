@@ -74,5 +74,14 @@ export function initSettings(dialog, theme = globalThis.orreryTheme) {
   });
   onLanguageChange(markLanguage);   // also a change from the desktop settings or another tab
   markLanguage();
-  return { opened: () => { mark(); markLanguage(); } };
+  return {
+    opened: (section) => {
+      mark();
+      markLanguage();
+      if (typeof section === 'string') {
+        const target = tabs.find((tab) => tab.id === `settings-tab-${section}` || tab.id === section);
+        if (target) show(target);
+      }
+    },
+  };
 }

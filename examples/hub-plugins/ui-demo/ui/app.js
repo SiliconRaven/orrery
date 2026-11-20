@@ -14,10 +14,19 @@ function request(data) {
   });
 }
 
+const POSITIONS = { titlebar: '标题栏面板', workbench: '任务工作台', starmap: '星图面板' };
+let currentPosition = '';
+
 function applyTheme(theme) {
   const root = document.documentElement;
   root.style.colorScheme = theme.scheme;
   for (const [token, colour] of Object.entries(theme.colors ?? {})) root.style.setProperty(`--${token}`, colour);
+  if (theme?.starmap?.theme) root.dataset.starmapTheme = theme.starmap.theme;
+  else delete root.dataset.starmapTheme;
+  if (currentPosition === 'starmap') {
+    const sm = theme?.starmap?.theme ? ` · ${theme.starmap.theme}` : '';
+    $('where').textContent = `${POSITIONS.starmap}${sm}`;
+  }
 }
 
 const show = (count) => { $('count').textContent = String(count); };
@@ -27,8 +36,9 @@ addEventListener('message', (event) => {
   if (event.source !== parent) return;
   const message = event.data;
   if (message?.type === 'orrery.init') {
+    currentPosition = message.position ?? '';
+    $('where').textContent = POSITIONS[currentPosition] ?? currentPosition;
     applyTheme(message.theme);
-    $('where').textContent = message.position === 'titlebar' ? '标题栏面板' : '任务工作台';
     request({ action: 'get' }).then((result) => { show(result.count); $('add').disabled = false; })
       .catch((error) => { $('note').textContent = error.message; });
   } else if (message?.type === 'orrery.theme') applyTheme(message.theme);

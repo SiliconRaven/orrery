@@ -154,7 +154,8 @@ function buildServer(hub: Hub, secret: string, caller: Caller, hubUrl: string): 
     if (hints.length) {
       const messages = hints.map((id) => hub.store.getMessage(id));
       const clusterId = messages[0]?.clusterId;
-      if (clusterId && messages.every((m) => m?.clusterId === clusterId)) return members.find((m) => m.clusterId === clusterId) ?? choose();
+      const member = members.find((m) => m.clusterId === clusterId);
+      if (member && messages.every((m) => m !== null && m.clusterId === clusterId && hub.messageVisibleToMember(member.id, m))) return member;
     }
     return choose();
   };
@@ -317,6 +318,7 @@ function buildServer(hub: Hub, secret: string, caller: Caller, hubUrl: string): 
         category: classified.category,
         annotations: classified.annotations,
         ...(m.fyi ? { fyi: true } : {}),
+        ...(m.privateTo ? { private: true } : {}),
         ...(attachments.length ? { attachments } : {}),
         acknowledgements: m.acknowledgements.map((a) => (compact ? { member: nameOf(a.memberId) } : { member: nameOf(a.memberId), at: a.at })),
         ...hub.store.plugins.pickMessageFields(m),

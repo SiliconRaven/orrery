@@ -37,7 +37,7 @@ createInterface({input:process.stdin}).on('line', (line) => {
 });
 `;
 
-interface PluginSpec { id: string; permissions: string[]; events?: string[]; publishes?: object[]; grant?: Record<string, unknown> }
+interface PluginSpec { id: string; permissions: string[]; events?: string[]; publishes?: object[]; ui?: { positions: string[] }; grant?: Record<string, unknown> }
 /** Writes plugin folders and an external-plugins.json under `home`; returns each plugin's folder. */
 function installPlugins(home: string, specs: PluginSpec[]): Record<string, string> {
   mkdirSync(home, { recursive: true });
@@ -47,6 +47,7 @@ function installPlugins(home: string, specs: PluginSpec[]): Record<string, strin
     folders[spec.id] = directory;
     writeFileSync(join(directory, 'orrery-plugin.json'), JSON.stringify({ id: spec.id, version: '1.0.0', apiVersion: 1, entry: 'main.mjs',
       permissions: spec.permissions, events: spec.events ?? [], ...(spec.publishes ? { publishes: spec.publishes } : {}),
+      ...(spec.ui ? { ui: spec.ui } : {}),
       commands: [{ id: 'test', title: 'Test' }] }));
     writeFileSync(join(directory, 'main.mjs'), recorder);
     return { manifest: join(directory, 'orrery-plugin.json'), permissions: spec.permissions, events: spec.events ?? [], clusterIds: ['one'], ...spec.grant };
@@ -287,6 +288,85 @@ test('message.created keeps the v1 kind for old plugins and names every stored k
     createdAt: 'x', ...(kind ? { kind } : {}) }, deliveries: [] }))[0].data);
   assert.deepEqual(out.map((d) => d.kind), [null, null, 'task_comment', 'system', 'plugin', null, null, null]);
   assert.deepEqual(out.map((d) => d.messageKind), ['chat', 'chat', 'task_comment', 'system', 'plugin', 'handover', 'handoff', 'resend']);
+});
+
+test('restricted plugin messages and events exclude private notes and their receipts, deliveries and guards', async () => {
+  const dir = tempDir();
+  const pluginHome = join(dir, 'probe-home');
+  const { probe } = installPlugins(pluginHome, [{ id: 'probe', permissions: ['events.read', 'messages.read', 'messages.send', 'ui.show'],
+    events: ['*'], ui: { positions: ['marks'] }, grant: { ui: ['marks'], writeClusterIds: ['one'] } }]);
+  const { installations, failures } = readExternalPlugins(pluginHome);
+  assert.deepEqual(failures, []);
+  const app = await startTestHub({ dir, plugins: [...officialPlugins, {
+    id: 'probe-source', name: 'Probe source', version: '1.0.0', description: 'Synthetic receipt projection',
+    eventSource: () => ({ types: [{
+      type: 'probe.receipt', from: 'read', description: 'A test event source', fields: 'messageIds',
+      build: (event) => ({ messageIds: (event.payload as { messageIds: string[] }).messageIds }),
+    }] }),
+  }] });
+  const manager = new ExternalPlugins(installations, app.store, ['probe'], undefined, [], app.hub);
+  try {
+    await manager.start();
+    const cluster = 'one';
+    const memberId = 'one-a';
+    app.store.insertCluster({ id: cluster, name: cluster, category: '', createdAt: '2026-01-01' }, [{
+      id: memberId, clusterId: cluster, name: 'a', avatar: null, harness: 'mock', model: null, effort: null,
+      workerSessionId: 'session-a', cwd: dir, origin: 'attached', removedAt: null,
+    }]);
+    const shared = app.hub.sendFromUser(cluster, 'Public message.');
+    const note: Message = { ...shared, id: 'hidden-note-id', chainId: 'hidden-note-id', body: 'Private note content.',
+      mentions: [memberId], privateTo: memberId, privateBindingGen: 1 };
+    const [delivery] = app.store.insertMessage(note, [memberId], true);
+    const post = (kind: HubEvent['kind'], payload: unknown) => manager.publish(hubEvent(kind, cluster, payload, memberId));
+    post('message', { message: note, deliveries: [delivery] });
+    post('message', { message: shared, deliveries: [] });
+    post('delivery', { delivery });
+    post('delivery', { delivery: { ...delivery, id: 'public-delivery', messageId: shared.id } });
+    post('read', { memberId, messageIds: [note.id], via: 'delivery' });
+    post('read', { memberId, messageIds: [note.id, shared.id], via: 'read_messages' });
+    post('read', { memberId, messageIds: [shared.id], via: 'read_messages' });
+    post('acknowledgement', { acknowledgements: [{ messageId: note.id }] });
+    post('acknowledgement', { acknowledgements: [{ messageId: shared.id }, { messageId: note.id }] });
+    post('guard', { reason: 'max_turns_per_chain', chainId: note.chainId, maxTurnsPerChain: 1 });
+    post('guard', { reason: 'max_turns_per_chain', chainId: shared.chainId, maxTurnsPerChain: 1 });
+    post('cluster', { cluster: { name: cluster, userReadMessageId: note.id } });
+    await manager.invoke('probe', { command: 'test' });
+    const events = received(probe);
+    assert.deepEqual(events.map((e) => e.type), ['message.created', 'delivery.updated', 'message.read', 'message.read', 'probe.receipt',
+      'message.acknowledged', 'guard.triggered', 'cluster.updated']);
+    assert.equal(events[0].data.body, shared.body);
+    assert.equal(events[1].data.messageId, shared.id);
+    assert.deepEqual(events[2].data.messageIds, [shared.id]);
+    for (const receipt of events.slice(3, 6)) assert.deepEqual(receipt.data.messageIds, [shared.id]);
+    assert.equal(events[6].data.chainId, shared.chainId);
+    assert.equal(events[7].data.userReadMessageId, null);
+    assert.ok(!JSON.stringify(events).includes(note.id));
+
+    const call = async (method: string, params: unknown) => {
+      const answer = await manager.invoke('probe', { command: 'test', arguments: { action: 'host', method, params } });
+      return answer as { result?: { messages?: { id: string }[]; message?: { body: string } }; error?: { code: number; data?: { code: string } } };
+    };
+    const page = await call('host.messages.list', { clusterId: cluster, limit: 1 });
+    assert.deepEqual(page.result?.messages?.map((message) => message.id), [shared.id], 'the page limit counts only shared rows');
+    assert.equal((await call('host.messages.get', { clusterId: cluster, messageId: shared.id })).result?.message?.body, shared.body);
+    for (const [method, fields, code] of [
+      ['host.messages.get', (id: string) => ({ messageId: id }), 'NOT_FOUND'],
+      ['host.messages.list', (id: string) => ({ before: id }), undefined],
+      ['host.messages.send', (id: string) => ({ causedBy: id, body: 'Plugin post.' }), undefined],
+      ['host.ui.mark', (id: string) => ({ targetId: id, target: 'message', text: 'probe' }), 'NOT_FOUND'],
+    ] as const) {
+      const hidden = await call(method, { clusterId: cluster, ...fields(note.id) });
+      const absent = await call(method, { clusterId: cluster, ...fields('absent-message-id') });
+      assert.ok(hidden.error, method);
+      assert.deepEqual(hidden.error, absent.error, method);
+      assert.equal(hidden.error.data?.code, code, method);
+    }
+    assert.deepEqual(app.store.listMessages(cluster, 10).map((message) => message.id), [shared.id], 'the refused writes stored nothing');
+    assert.equal((await call('host.messages.list', { clusterId: cluster, before: shared.id })).error, undefined);
+    assert.equal((await call('host.ui.mark', { clusterId: cluster, target: 'message', targetId: shared.id, text: 'probe' })).error, undefined);
+    assert.equal((await call('host.messages.send', { clusterId: cluster, causedBy: shared.id, body: 'Plugin post.' })).error, undefined);
+    assert.equal(app.store.listMessages(cluster, 10).at(-1)?.replyTo, shared.id, 'the public cause remains usable');
+  } finally { await manager.close(); await app.close(); }
 });
 
 test('Hub-generated bodies stay internal in events and host queries, while ordinary authored text stays intact', async () => {

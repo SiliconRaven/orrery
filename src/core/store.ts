@@ -14,6 +14,8 @@ import type { CollectionItem, MemberRoles, Role } from './collaboration-types.ts
 import { kindsOf } from './system-kinds.js';
 
 export type StoredMember = Omit<Member, 'status' | 'deliveryDisabled'>;
+/** Public by default; the user can browse a member's DMs, and a member sees only its current binding's DMs. */
+export type MessageAudience = { privateWith: string } | { viewerMemberId: string; viewerBindingGen: number };
 const PURGED_CHAIN_TURNS = 'purged_chain_turns:';
 const V30_SENDER_NOTICE = 'v30_sender_notice:';
 // JSON distinguishes the global null from every cluster ID and delimits even IDs containing ':' or SQL wildcards.
@@ -39,11 +41,11 @@ export const SEARCH_EXCERPT_BEFORE = 200;
 export type QueuedDelivery = Delivery & { message: Message; direct: boolean };
 /** Queue selection only needs this metadata. Read the message itself when a delivery is selected. */
 export type QueuedCandidate = Pick<Delivery, 'id' | 'memberId' | 'batchId'> & {
-  message: Pick<Message, 'id' | 'from' | 'chainId' | 'createdAt'>;
+  message: Pick<Message, 'id' | 'from' | 'chainId' | 'createdAt' | 'privateTo' | 'privateBindingGen'>;
   direct: boolean;
 };
 
-const SCHEMA_VERSION = 30;
+const SCHEMA_VERSION = 31;
 
 // The v16 collaboration tables, frozen: the v15 → v16 migration creates exactly this; v16 → v17 then adds the role
 // description column (the fresh schema below starts at the newest shape).
@@ -124,7 +126,8 @@ CREATE TABLE ${name} (
   effort TEXT,
   removed_at TEXT,
   unread_after_rowid INTEGER NOT NULL DEFAULT 0,  -- v27: messages at or before this rowid are pre-join and excluded from unread
-  hidden_at TEXT                                  -- v28: non-null while the member is hidden (docs/cluster-members.md「隐身」)
+  hidden_at TEXT,                                 -- v28: non-null while the member is hidden (docs/cluster-members.md「隐身」)
+  binding_gen INTEGER NOT NULL DEFAULT 1          -- v31: increments on rebind; private messages belong to one binding
 );`;
 const memberIndexesV5 = `
 CREATE UNIQUE INDEX members_active_name ON members(cluster_id, name) WHERE removed_at IS NULL;
@@ -275,7 +278,9 @@ CREATE TABLE messages (
   task_stamp_json TEXT,                  -- v23: task notifications: { taskId, revision, submissionId } when produced
   fyi INTEGER NOT NULL DEFAULT 0,        -- v26: 1 when sent with fyi=true (no wakeup, except replyTo may wake asker)
   system_kind TEXT,                      -- v27: sender-only system notice subtype ('receipt' | 'queue_warning')
-  explicit_mentions_json TEXT            -- v27: NULL = not a member/plugin @all; JSON array = explicit @-named IDs inside @all
+  explicit_mentions_json TEXT,           -- v27: NULL = not a member/plugin @all; JSON array = explicit @-named IDs inside @all
+  private_to TEXT,                       -- v31: private recipient; NULL for group messages
+  private_binding_gen INTEGER            -- v31: private recipient's binding when the message was sent
 );
 CREATE INDEX messages_cluster ON messages(cluster_id);
 CREATE INDEX messages_chain ON messages(chain_id);
@@ -327,7 +332,7 @@ type Row = Record<string, any>;
  * (reads.seen_at: read, acknowledged or delivered; a skip alone is not, a later real read is). Failed and
  * unknown-outcome deliveries go away only by hand-off, resend or 标为已知.
  */
-const PROBLEM_WHERE = `m.cluster_id = ? AND d.state != 'superseded' AND d.handoff_message_id IS NULL AND d.dismissed_at IS NULL
+const PROBLEM_WHERE = `m.cluster_id = ? AND m.private_to IS NULL AND d.state != 'superseded' AND d.handoff_message_id IS NULL AND d.dismissed_at IS NULL
   AND (d.state IN ('failed', 'offline') OR d.outcome = 'unknown')
   AND NOT (d.state = 'offline' AND d.outcome IS NULL AND EXISTS (SELECT 1 FROM reads r
     WHERE r.member_id = d.member_id AND r.message_id = d.message_id AND r.seen_at IS NOT NULL))`;
@@ -341,8 +346,10 @@ const CLUSTER_CHANGE_COLUMNS = { name: 'name', category: 'category', pinnedAt: '
 const toMember = (r: Row): StoredMember => ({
   id: r.id, clusterId: r.cluster_id, name: r.name, avatar: r.avatar, harness: r.harness, model: r.model,
   workerSessionId: r.worker_session_id, cwd: r.cwd, origin: r.origin, effort: r.effort, removedAt: r.removed_at ?? null,
-  hiddenAt: r.hidden_at ?? null,
+  hiddenAt: r.hidden_at ?? null, bindingGen: Number(r.binding_gen ?? 1),
 });
+const privateFields = (r: Row): Pick<Message, 'privateTo' | 'privateBindingGen'> => r.private_to == null
+  ? {} : { privateTo: r.private_to, privateBindingGen: Number(r.private_binding_gen) };
 const toMessage = (r: Row): Message => ({
   id: r.id, clusterId: r.cluster_id, from: r.from_id, mentions: JSON.parse(r.mentions_json), body: r.body,
   replyTo: r.reply_to, chainId: r.chain_id, hop: r.hop, createdAt: r.created_at,
@@ -352,19 +359,30 @@ const toMessage = (r: Row): Message => ({
   ...(r.fyi === 1 ? { fyi: true } : {}),
   ...(r.system_kind ? { systemKind: r.system_kind } : {}),
   ...(r.explicit_mentions_json != null ? { explicitMentions: JSON.parse(r.explicit_mentions_json) } : {}),
+  ...privateFields(r),
 });
 const toDelivery = (r: Row): Delivery => ({
   id: r.id, messageId: r.message_id, memberId: r.member_id, state: r.state, outcome: r.outcome ?? null,
   handoffMessageId: r.handoff_message_id ?? null, error: r.error, updatedAt: r.updated_at, batchId: r.batch_id ?? null, attempts: r.attempts,
 });
 const QUEUED_COLUMNS = `d.*, m.direct, m.cluster_id, m.from_id, m.mentions_json, m.body, m.reply_to, m.chain_id, m.hop,
-        m.created_at, m.kind, m.collab_event_id, m.task_stamp_json, m.fyi, m.system_kind, m.explicit_mentions_json`;
+        m.created_at, m.kind, m.collab_event_id, m.task_stamp_json, m.fyi, m.system_kind, m.explicit_mentions_json,
+        m.private_to, m.private_binding_gen`;
 const toQueued = (r: Row): QueuedDelivery => ({ ...toDelivery(r), message: toMessage({ ...r, id: r.message_id }), direct: r.direct === 1 });
-const QUEUE_CANDIDATE_COLUMNS = `d.id, d.member_id, d.batch_id, d.message_id, m.direct, m.from_id, m.chain_id, m.created_at`;
+const QUEUE_CANDIDATE_COLUMNS = `d.id, d.member_id, d.batch_id, d.message_id, m.direct, m.from_id, m.chain_id, m.created_at,
+         m.private_to, m.private_binding_gen`;
 const toQueuedCandidate = (r: Row): QueuedCandidate => ({
   id: r.id, memberId: r.member_id, batchId: r.batch_id, direct: r.direct === 1,
-  message: { id: r.message_id, from: r.from_id, chainId: r.chain_id, createdAt: r.created_at },
+  message: { id: r.message_id, from: r.from_id, chainId: r.chain_id, createdAt: r.created_at, ...privateFields(r) },
 });
+
+/** Shared by a page's rows and its cursor lookup, so a hidden row cannot serve as a paging anchor. */
+function messageAudience(audience?: MessageAudience): { where: string; params: (string | number)[] } {
+  if (!audience) return { where: 'm.private_to IS NULL', params: [] };
+  if ('privateWith' in audience) return { where: 'm.private_to = ?', params: [audience.privateWith] };
+  return { where: '(m.private_to IS NULL OR (m.private_to = ? AND m.private_binding_gen = ?))',
+    params: [audience.viewerMemberId, audience.viewerBindingGen] };
+}
 const toFile = (r: Row): FileInfo => ({
   id: r.id, clusterId: r.cluster_id, uploader: r.uploader, name: r.name, mime: r.mime, size: r.size, sha256: r.sha256, createdAt: r.created_at,
 });
@@ -487,7 +505,10 @@ export class Store {
         this.plugins.migrate(this);
         this.tasks = this.plugins.taskView?.(this) ?? null;
         this.coordinator = this.plugins.coordinatorView?.(this) ?? null;
-        if (retire) this.retireIsolatedMembers(hooks);
+        if (retire) {
+          this.retireIsolatedMembers(hooks);
+          this.addPrivateMessages();
+        }
       } catch (e) {
         if (from === 0 || from >= SCHEMA_VERSION) throw e;
         // Each step commits with its version: say where it stopped. Nothing is restored on its own.
@@ -733,6 +754,17 @@ export class Store {
         this.db.exec('PRAGMA user_version = 29');
       });
     }
+    if (version() === 30) this.addPrivateMessages();
+  }
+
+  /** v30 → v31: every existing message stays public, and every existing binding begins at generation 1. */
+  private addPrivateMessages(): void {
+    this.tx(() => {
+      this.db.exec(`ALTER TABLE members ADD COLUMN binding_gen INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE messages ADD COLUMN private_to TEXT;
+        ALTER TABLE messages ADD COLUMN private_binding_gen INTEGER;
+        PRAGMA user_version = 31`);
+    });
   }
 
   /**
@@ -925,7 +957,8 @@ export class Store {
 
   /** IDs in the cluster equal to `ref` or, when it is long enough, starting with it. instr, unlike LIKE, is case-sensitive and has no wildcards. */
   idsMatching(table: string, clusterId: string, ref: string, minPrefix: number): string[] {
-    return this.db.prepare(`SELECT id FROM ${table} WHERE cluster_id = ? AND (id = ? OR (length(?) >= ? AND instr(id, ?) = 1))`)
+    const visibility = table === 'messages' ? ' AND private_to IS NULL' : '';
+    return this.db.prepare(`SELECT id FROM ${table} WHERE cluster_id = ?${visibility} AND (id = ? OR (length(?) >= ? AND instr(id, ?) = 1))`)
       .all(clusterId, ref, ref, minPrefix, ref).map((row) => (row as Row).id as string);
   }
 
@@ -990,7 +1023,7 @@ export class Store {
 
   /** A page of the cluster's messages (alias m). `where`: code-authored SQL conditions with their parameters, never user text. */
   collaborationCollection(clusterId: string, opts: { limit: number; cursor?: string; q?: string; sender?: string; since?: string; until?: string; where?: { sql: string; args: (string | number)[] }[] }): { items: CollectionItem[]; nextCursor: string | null } {
-    const clauses = ['m.cluster_id = ?', 'm.rowid > ?'];
+    const clauses = ['m.cluster_id = ?', 'm.rowid > ?', 'm.private_to IS NULL'];
     const args: (string | number)[] = [clusterId, Number(opts.cursor) || 0];
     for (const condition of opts.where ?? []) { clauses.push(condition.sql); args.push(...condition.args); }
     if (opts.q) { clauses.push('instr(lower(m.body), lower(?)) > 0'); args.push(opts.q); }
@@ -1006,7 +1039,26 @@ export class Store {
   }
 
   eventInCluster(clusterId: string, seq: number): boolean {
-    return !!this.db.prepare('SELECT 1 FROM events WHERE cluster_id = ? AND seq = ?').get(clusterId, seq);
+    const event = this.getEvent(seq);
+    return event?.clusterId === clusterId && !this.eventHasPrivateMessage(event);
+  }
+
+  /** A private event, or a mixed receipt, cannot be attached to a shared operation or sent to a restricted plugin. */
+  eventHasPrivateMessage(event: HubEvent): boolean {
+    const payload = (event.payload ?? {}) as {
+      message?: Message; delivery?: Delivery; messageId?: string; messageIds?: string[];
+      acknowledgements?: MessageAcknowledgement[]; chainId?: string;
+    };
+    if (event.kind === 'message') return payload.message?.privateTo != null;
+    const ids = event.kind === 'read' ? payload.messageIds
+      : event.kind === 'acknowledgement' ? payload.acknowledgements?.map((ack) => ack.messageId)
+        : event.kind === 'delivery' ? [payload.delivery?.messageId]
+          : event.kind === 'agent' ? [payload.messageId]
+            : event.kind === 'guard' ? [payload.chainId]
+              : undefined;
+    return ids?.some((id) => typeof id === 'string') === true
+      && !!this.prepared(`SELECT 1 FROM messages WHERE private_to IS NOT NULL AND id IN (SELECT value FROM json_each(?)) LIMIT 1`)
+        .get(JSON.stringify(ids));
   }
 
   /** One stored event by sequence, or null. The caller still checks its cluster and kind. */
@@ -1083,18 +1135,23 @@ export class Store {
   }
 
   /**
-   * Moves an active native member to another conversation (Hub.rebindMember checks who may). Queued deliveries stay
-   * queued and follow the member; running ones went to the old conversation, so their result is unknown (still unread).
+   * Moves an active native member to another conversation (Hub.rebindMember checks who may). Queued group deliveries
+   * follow the member; queued DMs belong to the old binding. Running deliveries ended with an unknown result.
    */
-  rebindMember(memberId: string, to: Pick<StoredMember, 'workerSessionId' | 'cwd' | 'model'>): { member: StoredMember; interrupted: Delivery[] } {
+  rebindMember(memberId: string, to: Pick<StoredMember, 'workerSessionId' | 'cwd' | 'model'>):
+    { member: StoredMember; interrupted: Delivery[]; cancelled: Delivery[] } {
     return this.tx(() => {
-      const changed = this.db.prepare("UPDATE members SET worker_session_id = ?, cwd = ?, model = ?, origin = 'attached', effort = NULL WHERE id = ? AND removed_at IS NULL")
+      const changed = this.db.prepare(`UPDATE members SET worker_session_id = ?, cwd = ?, model = ?, origin = 'attached', effort = NULL,
+        binding_gen = binding_gen + 1 WHERE id = ? AND removed_at IS NULL`)
         .run(to.workerSessionId, to.cwd, to.model, memberId);
       if (changed.changes !== 1) throw new Error(`unknown active member ${memberId}`);
       this.db.prepare('DELETE FROM activity_snapshots WHERE member_id = ?').run(memberId);   // it described the old conversation
       const running = this.db.prepare("SELECT id FROM deliveries WHERE member_id = ? AND state = 'running'").all(memberId);
       const interrupted = running.map((d) => this.setDeliveryState(d.id as string, 'failed', '成员已换对话，投递结果未知；原对话可能仍在继续', 'unknown'));
-      return { member: this.getMember(memberId)!, interrupted };
+      const queued = this.db.prepare(`SELECT d.id FROM deliveries d JOIN messages m ON m.id = d.message_id
+        WHERE d.member_id = ? AND d.state = 'queued' AND m.private_to IS NOT NULL`).all(memberId);
+      const cancelled = queued.map((d) => this.setDeliveryState(d.id as string, 'failed', '成员已换绑，原私聊不再投递'));
+      return { member: this.getMember(memberId)!, interrupted, cancelled };
     });
   }
 
@@ -1135,7 +1192,7 @@ export class Store {
         (SELECT COALESCE(MAX(e.seq), 0) FROM events e WHERE e.cluster_id = c.id AND e.kind = 'cluster'
           AND json_extract(e.payload_json, '$.cluster.deletedAt') IS NOT NULL) AS trash_version` : '';
     return this.db.prepare(`SELECT c.*,
-        COALESCE((SELECT m.created_at FROM messages m WHERE m.cluster_id = c.id ORDER BY m.rowid DESC LIMIT 1), c.created_at)
+        COALESCE((SELECT m.created_at FROM messages m WHERE m.cluster_id = c.id AND m.private_to IS NULL ORDER BY m.rowid DESC LIMIT 1), c.created_at)
           AS last_message_at,
         (SELECT p.paused FROM collaboration_policies p WHERE p.cluster_id = c.id) AS paused${counts}
       FROM clusters c WHERE (c.deleted_at IS NOT NULL) = ? ORDER BY c.rowid`).all(deleted ? 1 : 0)
@@ -1163,11 +1220,11 @@ export class Store {
     return this.tx(() => {
       const cluster = this.getCluster(id);
       if (!cluster) throw new Error(`unknown cluster ${id}`);
-      const target = this.db.prepare('SELECT rowid FROM messages WHERE id = ? AND cluster_id = ?').get(messageId, id);
-      if (!target) throw new Error(`unknown message ${messageId} in this cluster`);
+      const target = this.messageRowid(id, messageId);
+      if (target === null) throw new Error(`unknown message ${messageId} in this cluster`);
       const current = cluster.userReadMessageId === null ? undefined
         : this.db.prepare('SELECT rowid FROM messages WHERE id = ?').get(cluster.userReadMessageId);
-      if (current && Number(current.rowid) >= Number(target.rowid)) return { cluster, changed: false };
+      if (current && Number(current.rowid) >= target) return { cluster, changed: false };
       this.db.prepare('UPDATE clusters SET user_read_message_id = ? WHERE id = ?').run(messageId, id);
       return { cluster: this.getCluster(id)!, changed: true };
     });
@@ -1270,11 +1327,12 @@ export class Store {
   insertMessage(msg: Message, recipientIds: string[], direct = false, fileIds: string[] = [], clientMessageId?: string): Delivery[] {
     return this.tx(() => {
       this.db.prepare(`INSERT INTO messages
-        (id, cluster_id, from_id, mentions_json, body, reply_to, chain_id, hop, created_at, direct, kind, collab_event_id, client_message_id, task_stamp_json, fyi, system_kind, explicit_mentions_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        (id, cluster_id, from_id, mentions_json, body, reply_to, chain_id, hop, created_at, direct, kind, collab_event_id,
+         client_message_id, task_stamp_json, fyi, system_kind, explicit_mentions_json, private_to, private_binding_gen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(msg.id, msg.clusterId, msg.from, JSON.stringify(msg.mentions), msg.body, msg.replyTo, msg.chainId, msg.hop, msg.createdAt, direct ? 1 : 0, msg.kind ?? 'chat', msg.collabEventId ?? null,
           clientMessageId ?? null, msg.taskStamp ? JSON.stringify(msg.taskStamp) : null, msg.fyi ? 1 : 0, msg.systemKind ?? null,
-          msg.explicitMentions !== undefined ? JSON.stringify(msg.explicitMentions) : null);
+           msg.explicitMentions !== undefined ? JSON.stringify(msg.explicitMentions) : null, msg.privateTo ?? null, msg.privateBindingGen ?? null);
       const link = this.db.prepare('INSERT INTO message_files (message_id, file_id, position) VALUES (?, ?, ?)');
       fileIds.forEach((id, i) => link.run(msg.id, id, i));
       const ins = this.db.prepare(
@@ -1311,12 +1369,14 @@ export class Store {
     const anchor = byBatch ? 'd.id = ? AND d.id = d.batch_id' : 'm.id = ? AND m.hop = ? AND m.direct = 0';
     const attempted = "(d.state IN ('running', 'done') OR d.outcome = 'unknown') AND d.attempts > 0";
     const params = byBatch ? [evidence.batchId] : [evidence.messageId, evidence.hop];
+    const visibility = messageAudience({ viewerMemberId: member.id, viewerBindingGen: member.bindingGen ?? 1 });
     return this.prepared(`WITH anchor AS (
       SELECT d.batch_id FROM deliveries d JOIN messages m ON m.id = d.message_id
-      WHERE ${anchor} AND d.member_id = ? AND m.cluster_id = ? AND ${attempted}
+      WHERE ${anchor} AND d.member_id = ? AND m.cluster_id = ? AND ${attempted} AND ${visibility.where}
     ) SELECT m.* FROM anchor a JOIN deliveries d ON d.batch_id = a.batch_id JOIN messages m ON m.id = d.message_id
-      WHERE d.member_id = ? AND m.cluster_id = ? AND ${attempted} ORDER BY d.rowid`)
-      .all(...params, member.id, member.clusterId, member.id, member.clusterId).map(toMessage);
+      WHERE d.member_id = ? AND m.cluster_id = ? AND ${attempted} AND ${visibility.where} ORDER BY d.rowid`)
+      .all(...params, member.id, member.clusterId, ...visibility.params,
+        member.id, member.clusterId, ...visibility.params).map(toMessage);
   }
 
   /**
@@ -1358,7 +1418,9 @@ export class Store {
     if (!match) return null;
     if (candidates.length !== 1 || match.member_id !== member.id || match.cluster_id !== member.clusterId) return {};
     const message = this.getMessage(match.id as string);
-    return message ? { message, deliveryId: match.delivery_id as string } : {};
+    if (!message || (message.privateTo !== undefined
+      && (message.privateTo !== member.id || message.privateBindingGen !== (member.bindingGen ?? 1)))) return {};
+    return { message, deliveryId: match.delivery_id as string };
   }
 
   /** Use the member event index; a later handoff changes updated_at without ending the delivery again. */
@@ -1434,7 +1496,8 @@ export class Store {
   recentDeliveryProblems(memberId: string, limit: number): { delivery: Delivery; message: Message; at: string | null }[] {
     const rows = this.db.prepare(`SELECT ${QUEUED_COLUMNS}, m.created_at AS message_created_at FROM deliveries d
       JOIN messages m ON m.id = d.message_id
-      WHERE d.member_id = ? AND (d.state IN ('failed', 'offline') OR d.outcome IN ('failed', 'unknown'))`).all(memberId) as Row[];
+      WHERE d.member_id = ? AND m.private_to IS NULL
+        AND (d.state IN ('failed', 'offline') OR d.outcome IN ('failed', 'unknown'))`).all(memberId) as Row[];
     if (!rows.length) return [];
     const endedAt = this.terminalDeliveryTimes(memberId);
     const problems = rows.map((row) => {
@@ -1456,7 +1519,7 @@ export class Store {
   lastDeliveryProblem(memberId: string): { state: 'failed' | 'offline'; error: string | null; at: string | null; messageId: string } | null {
     const rows = this.db.prepare(`SELECT d.*, m.created_at AS message_created_at FROM deliveries d
       JOIN messages m ON m.id = d.message_id
-      WHERE d.member_id = ? AND d.state IN ('failed', 'offline')`).all(memberId) as Row[];
+      WHERE d.member_id = ? AND m.private_to IS NULL AND d.state IN ('failed', 'offline')`).all(memberId) as Row[];
     if (!rows.length) return null;
     const endedAt = this.terminalDeliveryTimes(memberId);
     let best: { delivery: Delivery; at: string | null; order: string } | null = null;
@@ -1470,12 +1533,12 @@ export class Store {
   }
 
   /** Up to `limit` most recent messages of a cluster, older than message `before` if given; oldest first. */
-  listMessages(clusterId: string, limit: number, before?: string, filters: MessageFilters = {}): Message[] {
-    const cursor = before
-      ? (this.db.prepare('SELECT rowid AS r FROM messages WHERE id = ? AND cluster_id = ?').get(before, clusterId) as Row | undefined)?.r ?? 0
-      : Number.MAX_SAFE_INTEGER;
-    const where = ['m.cluster_id = ?', 'm.rowid < ?'];
-    const params: (string | number)[] = [clusterId, cursor];
+  listMessages(clusterId: string, limit: number, before?: string, filters: MessageFilters = {}, audience?: MessageAudience): Message[] {
+    const cursor = before ? this.messageRowid(clusterId, before, audience) : Number.MAX_SAFE_INTEGER;
+    if (cursor === null) return [];
+    const visibility = messageAudience(audience);
+    const where = ['m.cluster_id = ?', 'm.rowid < ?', visibility.where];
+    const params = [clusterId, cursor, ...visibility.params];
     this.messageFilter(where, params, filters);
     return this.db.prepare(`SELECT * FROM (
         SELECT m.rowid AS r, m.* FROM messages m WHERE ${where.join(' AND ')} ORDER BY m.rowid DESC LIMIT ?
@@ -1483,11 +1546,12 @@ export class Store {
   }
 
   /** Up to `limit` messages of a cluster newer than message `after` (unknown: none), oldest first. */
-  listMessagesAfter(clusterId: string, limit: number, after: string): Message[] {
-    const cursor = this.messageRowid(clusterId, after);
+  listMessagesAfter(clusterId: string, limit: number, after: string, audience?: MessageAudience): Message[] {
+    const cursor = this.messageRowid(clusterId, after, audience);
     if (cursor === null) return [];
-    return this.db.prepare('SELECT * FROM messages WHERE cluster_id = ? AND rowid > ? ORDER BY rowid LIMIT ?')
-      .all(clusterId, cursor, limit).map(toMessage);
+    const visibility = messageAudience(audience);
+    return this.db.prepare(`SELECT m.* FROM messages m WHERE m.cluster_id = ? AND m.rowid > ? AND ${visibility.where}
+      ORDER BY m.rowid LIMIT ?`).all(clusterId, cursor, ...visibility.params, limit).map(toMessage);
   }
 
   /**
@@ -1496,6 +1560,7 @@ export class Store {
    */
   unreadCounts(): Map<string, number> {
     const rows = this.db.prepare(`SELECT c.id, (SELECT COUNT(*) FROM messages m WHERE m.cluster_id = c.id AND m.from_id != 'user'
+        AND m.private_to IS NULL
         AND m.rowid > COALESCE((SELECT r.rowid FROM messages r WHERE r.id = c.user_read_message_id), 0)) AS unread
       FROM clusters c WHERE c.deleted_at IS NULL`).all();
     return new Map(rows.map((r) => [String(r.id), Number(r.unread)]));
@@ -1584,9 +1649,11 @@ export class Store {
     });
   }
 
-  /** The rowid of a message in the cluster, or null. */
-  messageRowid(clusterId: string, messageId: string): number | null {
-    const row = this.db.prepare('SELECT rowid AS r FROM messages WHERE id = ? AND cluster_id = ?').get(messageId, clusterId) as Row | undefined;
+  /** The rowid of a visible message in the cluster, or null. */
+  messageRowid(clusterId: string, messageId: string, audience?: MessageAudience): number | null {
+    const visibility = messageAudience(audience);
+    const row = this.db.prepare(`SELECT m.rowid AS r FROM messages m WHERE m.id = ? AND m.cluster_id = ? AND ${visibility.where}`)
+      .get(messageId, clusterId, ...visibility.params) as Row | undefined;
     return row ? Number(row.r) : null;
   }
 
@@ -1604,7 +1671,7 @@ export class Store {
   searchMessages(clusterId: string, search: MessageSearch, page: { cursor?: number; order: 'asc' | 'desc'; limit: number; scanCap: number; scanBytes: number }):
     { hits: SearchHit[]; next: { rowid: number; reason: 'limit' | 'scan' } | null } {
     const desc = page.order === 'desc';
-    const capped = `SELECT rowid AS r FROM messages WHERE cluster_id = ? AND rowid ${desc ? '<' : '>'} ?
+    const capped = `SELECT rowid AS r FROM messages WHERE cluster_id = ? AND private_to IS NULL AND rowid ${desc ? '<' : '>'} ?
       ORDER BY rowid ${desc ? 'DESC' : 'ASC'} LIMIT ?`;
     // Of those, the rows up to the byte budget, counting each row's own text (the first row always, even when it alone
     // is larger). octet_length reads the size from the record header, not the text; it is taken in its own step so the
@@ -1768,7 +1835,7 @@ export class Store {
         JOIN messages m ON m.id = d.message_id JOIN clusters c ON c.id = r.cluster_id
         LEFT JOIN collaboration_policies p ON p.cluster_id = r.cluster_id
       WHERE r.removed_at IS NULL AND c.deleted_at IS NULL AND COALESCE(p.paused, 0) = 0
-        AND d.state = 'queued' AND d.queue_warned = 0 AND m.created_at <= ? ORDER BY d.rowid`).all(cutoff).map(toQueued);
+         AND m.private_to IS NULL AND d.state = 'queued' AND d.queue_warned = 0 AND m.created_at <= ? ORDER BY d.rowid`).all(cutoff).map(toQueued);
   }
 
   markQueueWarned(ids: string[]): void {
@@ -1813,6 +1880,7 @@ export class Store {
   // unreadFrom takes (memberId); unreadWhere takes (clusterId, memberId, memberId, memberId).
   private readonly unreadFrom = 'FROM messages m JOIN members mem ON mem.id = ?';
   private readonly unreadWhere = `m.cluster_id = ? AND m.from_id != ?
+    AND (m.private_to IS NULL OR (m.private_to = mem.id AND m.private_binding_gen = mem.binding_gen))
     AND m.rowid > mem.unread_after_rowid AND mem.hidden_at IS NULL
     AND (m.system_kind IS NULL OR m.system_kind NOT IN ('receipt', 'queue_warning'))
     AND NOT EXISTS (SELECT 1 FROM reads r WHERE r.member_id = ? AND r.message_id = m.id)

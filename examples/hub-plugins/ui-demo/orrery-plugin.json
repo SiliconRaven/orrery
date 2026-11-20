@@ -2,11 +2,11 @@
   "id": "ui-demo",
   "version": "1.0.0",
   "name": "界面示例",
-  "description": "在群聊标题栏和任务工作台各显示一个小计数器页面：点按钮发一个请求，插件把新计数推给本群所有打开的界面，并在成员、最新消息和最近的任务上标出计数。",
+  "description": "在群聊标题栏、任务工作台和星图悬浮窗里显示一个小计数器页面：点按钮发一个请求，插件把新计数推给本群所有打开的界面，并在成员、最新消息和最近的任务上标出计数。",
   "apiVersion": 1,
   "entry": "main.mjs",
   "permissions": ["ui.show", "clusters.read", "messages.read", "events.read"],
   "events": ["task.created", "task.changed", "task.deleted"],
   "commands": [],
-  "ui": { "positions": ["titlebar", "workbench", "marks"], "panelHeight": 240 }
+  "ui": { "positions": ["titlebar", "workbench", "starmap", "marks"], "panelHeight": 240 }
 }

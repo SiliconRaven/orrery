@@ -101,6 +101,42 @@ test('ui manifest and grant: declared positions only, ui.show needed on both sid
   assert.deepEqual(write([{ id: 'ui-probe', grant: { ui: undefined } }]).installations[0].ui, []);
 });
 
+test('ui frames: starmap has its own grant and uses the same sandbox, channel and revocation', async () => {
+  const manifest = (m: Record<string, any>) => { m.ui.positions = ['titlebar', 'workbench', 'starmap']; };
+  const { app } = await hub([
+    { id: 'ui-star', manifest, grant: { ui: ['starmap'] } },
+    { id: 'ui-declared', manifest },
+  ]);
+  const sse = openSse(`${app.url}/api/stream`, bearer(TEST_TOKEN));
+  try {
+    await sse.status;
+    const items = (await app.api('GET', '/api/clusters/c1/plugin-ui')).items;
+    assert.deepEqual(items.map((item: any) => [item.pluginId, item.positions]),
+      [['ui-star', ['starmap']], ['ui-declared', ['titlebar', 'workbench']]]);
+    for (const [cluster, id] of [['c1', 'ui-declared'], ['c3', 'ui-star']]) {
+      const denied = await open(app, cluster, id, 'starmap');
+      assert.equal(denied.status, 409);
+      assert.equal(denied.data.code, 'NOT_GRANTED');
+    }
+    const opened = await open(app, 'c1', 'ui-star', 'starmap');
+    assert.equal(opened.status, 200);
+    const { frameId, url, position } = opened.data;
+    assert.equal(position, 'starmap');
+    const asset = await raw(app.url, url);
+    assert.equal(asset.status, 200);
+    framed(asset, app.url, frameId);
+    assert.deepEqual((await ask(app, frameId, { probe: true })).data.result, { echo: { probe: true }, position: 'starmap', clusterId: 'c1' });
+    assert.deepEqual(await hostCall(app, 'host.ui.push', { clusterId: 'c1', position: 'starmap', data: 'probe' }, 'ui-star'),
+      { result: { delivered: 1 } });
+
+    await app.api('PATCH', '/api/plugins/ui-star/lifecycle', { ui: false });
+    const revoked = await waitFor(() => sse.events.find((e) => e.event === 'plugin-ui' && e.data.kind === 'revoked'), 'starmap frame revocation');
+    assert.deepEqual(revoked.data, { kind: 'revoked', pluginId: 'ui-star', frameIds: [frameId], reason: 'UI_OFF' });
+    assert.equal((await raw(app.url, url)).status, 404);
+    assert.equal((await ask(app, frameId, {})).data.code, 'FRAME_CLOSED');
+  } finally { sse.close(); await app.close(); }
+});
+
 test('ui files: served from ui/ only, every answer carries the frame policy, no login is looked at, ids die with the frame', async () => {
   const { app, folders } = await hub();
   try {

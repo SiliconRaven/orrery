@@ -103,6 +103,124 @@ export function register(host = {}) {
     };
   }
 
+  const panelCleanups = new Map();
+
+  function detachPanel(el) {
+    if (el) {
+      const fn = panelCleanups.get(el);
+      panelCleanups.delete(el);
+      fn?.();
+      return;
+    }
+    for (const fn of panelCleanups.values()) fn?.();
+    panelCleanups.clear();
+  }
+
+  function mountPanel(el, ctx) {
+    detachPanel(el);
+    if (!ctx.clusterId) {
+      el.replaceChildren(emptyState(t('请先进入一个群聊再打开收藏面板。'), { compact: true }));
+      return () => {};
+    }
+    let alive = true;
+    let collection = null;
+    let queryText = '';
+    let error = '';
+    let seq = 0;
+
+    const search = h('input', { type: 'search', placeholder: t('按关键词或标签筛选收藏…'), 'aria-label': t('筛选收藏') });
+    const status = h('span', { class: 'muted' });
+    const list = h('div', { class: 'workbench-list' });
+    const moreBtn = h('button', { type: 'button', class: 'small', hidden: true, onclick: () => void load(true) }, t('加载更多收藏'));
+    const body = h('div', { class: 'workbench-content' },
+      h('div', { class: 'workbench-bar' }, search, status),
+      list,
+      moreBtn);
+    el.replaceChildren(h('div', { class: 'workbench-shell wb-embedded' }, body));
+
+    const draw = () => {
+      if (!alive) return;
+      status.textContent = error || t('已加载 {count} 条收藏消息', { count: collection?.items?.length ?? 0 });
+      moreBtn.hidden = !collection?.nextCursor;
+      if (error) {
+        list.replaceChildren(h('p', { class: 'form-error' }, error));
+        return;
+      }
+      if (!collection) {
+        list.replaceChildren(h('p', { class: 'muted' }, t('正在加载收藏…')));
+        return;
+      }
+      const items = collection.items ?? [];
+      if (!items.length) {
+        list.replaceChildren(emptyState(t('没有符合条件的收藏。'), { compact: true }));
+        return;
+      }
+      const bins = collectionBins(items);
+      list.replaceChildren(...[...bins].map(([binId, rows]) => h('section', { class: 'workbench-bin' },
+        h('h3', {}, h('span', { class: 'wb-author' }, binId ? `#${binId.slice(0, 8)}` : t('其他')),
+          h('span', { class: 'workbench-meta' }, t('{itemsCount} 条', { itemsCount: rows.length }))),
+        ...rows.map((item) => {
+          const msg = item.message;
+          const who = msg.from === 'user' ? t('你') : msg.from === 'system' ? t('Orrery 系统') : (nameOf?.(msg.from) ?? msg.from);
+          const labels = (item.bookmarks ?? []).flatMap((b) => b.labels ?? []);
+          const mine = (item.bookmarks ?? []).some((b) => b.memberId === 'user');
+          return h('article', { class: 'workbench-card' },
+            h('div', { class: 'workbench-card-head' },
+              h('span', { class: 'wb-author' }, who),
+              h('span', { class: 'workbench-meta' }, msg.createdAt ? new Date(msg.createdAt).toLocaleString(language() === 'en' ? 'en-US' : 'zh-CN') : '')),
+            h('p', {}, msg.body || t('附件消息')),
+            labels.length ? h('div', { class: 'wb-row' }, ...labels.map((lbl) => h('span', { class: 'wb-label' }, lbl))) : null,
+            h('div', { class: 'workbench-actions' },
+              h('button', { type: 'button', class: 'small', onclick: () => bookmark(ctx.clusterId, { ...msg, clusterId: ctx.clusterId, bookmarks: item.bookmarks }) },
+                mine ? t('编辑我的收藏') : t('收藏')),
+              mine ? h('button', { type: 'button', class: 'small', onclick: async () => {
+                try { await command({ action: 'bookmark.remove', messageId: msg.id }, ctx.clusterId); void load(false); }
+                catch (e) { await noticeDialog(e.message, lt('取消收藏失败')); }
+              } }, t('取消我的收藏')) : null));
+        }))));
+    };
+
+    async function load(append = false) {
+      const mine = ++seq;
+      const params = new URLSearchParams();
+      if (queryText) params.set('q', queryText);
+      if (append && collection?.nextCursor) params.set('cursor', collection.nextCursor);
+      try {
+        const data = await ctx.api('GET', `/api/clusters/${encodeURIComponent(ctx.clusterId)}/collections?${params}`);
+        if (!alive || mine !== seq) return;
+        collection = append && collection ? { ...data, items: [...collection.items, ...data.items] } : data;
+        error = '';
+      } catch (e) {
+        if (!alive || mine !== seq) return;
+        error = e.message;
+      }
+      draw();
+    }
+
+    let timer = null;
+    search.addEventListener('input', () => {
+      queryText = search.value.trim();
+      clearTimeout(timer);
+      timer = setTimeout(() => void load(false), 180);
+    });
+    const unsub = ctx.onEvent((ev) => {
+      if (ev?.kind === 'collaboration' && ev.clusterId === ctx.clusterId) void load(false);
+    });
+    const unsubLang = host?.i18n?.onLanguageChange?.(() => {
+      if (!alive) return;
+      ctx.setTitle(t('收藏'));
+      search.placeholder = t('按关键词或标签筛选收藏…');
+      search.setAttribute('aria-label', t('筛选收藏'));
+      moreBtn.textContent = t('加载更多收藏');
+      draw();
+    });
+    draw();
+    void load(false);
+    const cleanup = () => { alive = false; clearTimeout(timer); unsub?.(); unsubLang?.(); };
+    panelCleanups.set(el, cleanup);
+    return () => detachPanel(el);
+  }
+
   return {
     message: {
       render: message,
@@ -121,5 +239,20 @@ export function register(host = {}) {
       },
     },
     workbench,
+    // When Tasks is enabled, bookmarks already appear as the 成员收藏 tab inside the unified workbench window;
+    // register a standalone Star Map panel only when Tasks is disabled so bookmarks stay reachable.
+    ...(host.workbench?.tasksEnabled?.() ? {} : {
+      panel: {
+        id: 'bookmarks',
+        title: () => t('收藏'),
+        icon: 'star',
+        scope: 'cluster',
+        defaultSize: { w: 600, h: 480 },
+        mount: mountPanel,
+        unmount(el) {
+          detachPanel(el);
+        },
+      },
+    }),
   };
 }

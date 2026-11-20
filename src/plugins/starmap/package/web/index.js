@@ -43,6 +43,7 @@ export function register(host) {
       id: 'starmap',
       title: () => t('星图'),
       icon: 'orbit',
+      fullscreen: true,
       mount,
       unmount() {
         const closing = session;

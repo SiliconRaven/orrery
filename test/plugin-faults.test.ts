@@ -276,7 +276,7 @@ test('prepareRequired must name an action with a prepare step', () => {
 // ---- the automatic backup before a schema upgrade ----
 
 const CORE_V28 = 'DROP TRIGGER deliveries_state_seq_insert; DROP TRIGGER deliveries_state_seq_update; ALTER TABLE deliveries DROP COLUMN state_seq; '
-  + 'ALTER TABLE deliveries DROP COLUMN dismissed_at; ALTER TABLE reads DROP COLUMN seen_at; PRAGMA user_version = 28';
+  + 'ALTER TABLE deliveries DROP COLUMN dismissed_at; ALTER TABLE reads DROP COLUMN seen_at; ALTER TABLE members DROP COLUMN binding_gen; ALTER TABLE messages DROP COLUMN private_to; ALTER TABLE messages DROP COLUMN private_binding_gen; PRAGMA user_version = 28';
 const versionOf = (store: Store, id: string) =>
   (store.db.prepare('SELECT version FROM plugin_migrations WHERE plugin_id = ?').get(id) as { version: number } | undefined)?.version;
 
@@ -303,7 +303,7 @@ test('backup: only an existing database with core or plugin steps pending is bac
 
   store = new Store(path, new PluginHost([two, three]), undefined, undefined, upgrade);
   assert.equal(made.length, 2, 'a core upgrade is backed up as well');
-  assert.equal((store.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 30);
+  assert.equal((store.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 31);
   store.close();
   const backup = new Store(made[1], new PluginHost([two, three]));
   try {

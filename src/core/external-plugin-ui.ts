@@ -7,11 +7,11 @@ import { lstatSync, readdirSync, readFileSync, realpathSync, type Stats } from '
 import { extname, join, sep } from 'node:path';
 import { cleanText } from './external-plugin-commands.ts';
 
-/** The two places a plugin's own frame may appear: a chip with a popover panel in the cluster's title bar, a workbench tab. */
-export const FRAME_POSITIONS = ['titlebar', 'workbench'] as const;
+/** Where a plugin's own frame may appear: a title-bar popover, a workbench tab or a Star Map panel. */
+export const FRAME_POSITIONS = ['titlebar', 'workbench', 'starmap'] as const;
 export type FramePosition = typeof FRAME_POSITIONS[number];
 /**
- * Every position a manifest may declare and a user grant: the two frame positions, and `marks` (small host-drawn marks on
+ * Every position a manifest may declare and a user grant: the frame positions, and `marks` (small host-drawn marks on
  * messages, members and tasks, no frame: host.ui.mark).
  */
 export const UI_POSITIONS = [...FRAME_POSITIONS, 'marks'] as const;
@@ -52,7 +52,7 @@ export interface ExternalUi { positions: UiPosition[]; panelHeight: number }
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 
-/** `{"positions": ["titlebar", "workbench"], "panelHeight"?: 200..480}`: strict, like the rest of the manifest. */
+/** `{"positions": ["titlebar", "workbench", "starmap"], "panelHeight"?: 200..480}`: strict, like the rest of the manifest. */
 export function parseUi(value: unknown, pluginId: string): ExternalUi {
   const bad = (what: string) => new Error(`plugin ${pluginId}: invalid ui ${what}`);
   if (!isObject(value) || Object.keys(value).some((key) => !['positions', 'panelHeight'].includes(key))) throw bad('declaration');

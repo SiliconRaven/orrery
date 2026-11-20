@@ -1,8 +1,7 @@
-// The star map's three themes (docs/starmap.md「主题」): every number and colour that sets the look, one complete table per
-// theme, copied from mockups/orrery-theme-3d.html (`const THEMES = {`). Nothing else changes between themes.
-//   暗月 Luna  · deep-blue night, a warm-white star, blue-grey glass; the quietest (default)
-//   群星 Astra · deep indigo with violet and teal veils, a blue-white star; medium motion
-//   炽阳 Sol   · deep blue warmed around a big orange-gold sun with a corona, brass and amber; the liveliest
+// The star map's three themes (docs/starmap.md「主题」 & 「4. 三套主题真正 UI 差异化」):
+//   暗月 Luna  · deep slate observatory, cool moon-silver accent, crisp 8px matte glass, calm
+//   群星 Astra · frosted indigo-violet nebula glass, cyan & violet accents, rounded 16px HUD with luminous halo
+//   炽阳 Sol   · heavy obsidian-bronze astrolabe, gilded brass & corona amber, sharp 5px double-bevelled panels
 // prefers-reduced-motion still wins over any theme (no orbit, no twinkle, no breathing). `label`, `sub` and `note` are
 // msgids (i18n/en.json), translated where they are shown; `en` is a name and stays as it is.
 
@@ -13,13 +12,26 @@ export const THEMES = {
   luna: {
     label: '暗月', en: 'Luna', sub: '深蓝夜空', note: '月之暗面。群星噤声，轨道沉入深蓝，宜守望漫长的夜。（默认）',
     css: {
-      '--bg-solid': '#070c1a', '--surface': 'rgba(11, 16, 30, .9)', '--panel': 'rgba(13, 19, 35, .97)', '--bar': 'rgba(9, 14, 28, .64)',
-      '--edge': 'rgba(150, 168, 205, .16)', '--edge-hi': 'rgba(196, 208, 232, .34)', '--edge-c': '#96a8cd', '--quiet': 'rgba(255, 255, 255, .035)',
-      '--bar-grad': 'none', '--win-glow': '0 0 0 0 transparent',
-      '--ink': '#d6dae2', '--ink2': '#a3abba', '--ink3': '#7f8899',
-      '--brass': '#c9b48a', '--brass-hi': '#ddcba5', '--brass-lo': '#7d7058',
-      '--k-task': '#c9ad6e', '--k-warn': '#d98a76', '--k-info': '#8db5c0', '--ether': '#93a2c9', '--work': '#9fd4dc', '--ok': '#8fb79a',
-      '--badge': '#c9ced8', '--badge-ink': '#0c0f16', '--member-sat': '0.7',
+      '--bg-solid': '#080e1c', '--surface': 'rgba(13, 21, 39, .92)', '--panel': 'rgba(13, 21, 39, .97)', '--bar': 'rgba(10, 17, 32, .84)',
+      '--edge': 'rgba(154, 182, 222, .22)', '--edge-hi': 'rgba(197, 220, 248, .48)', '--edge-c': '#9ab6de', '--quiet': 'rgba(200, 220, 255, .04)',
+      '--bar-grad': 'linear-gradient(180deg, rgba(16, 26, 46, .92), rgba(10, 17, 32, .88))',
+      '--win-glow': '0 0 0 0 transparent',
+      '--ink': '#dde6f4', '--ink2': '#a6b7d0', '--ink3': '#798ca8',
+      '--brass': '#8fb4e2', '--brass-hi': '#c5dcf8', '--brass-lo': '#4c6587',
+      '--k-task': '#9fc3e8', '--k-warn': '#e08677', '--k-info': '#8fbcd0', '--ether': '#93a8d8', '--work': '#9fd4dc', '--ok': '#8fb79a',
+      '--badge': '#c9d7ea', '--badge-ink': '#08101e', '--member-sat': '0.7',
+      // Unified Star Map 2.0 tokens
+      '--starmap-bg': '#080e1c', '--starmap-surface': '#0d1527', '--starmap-surface-2': '#142038',
+      '--starmap-glass': 'rgba(11, 18, 33, .95)', '--starmap-glass-dim': 'rgba(9, 15, 28, .8)', '--starmap-blur': '10px',
+      '--starmap-edge': 'rgba(154, 182, 222, .22)', '--starmap-edge-strong': 'rgba(197, 220, 248, .48)',
+      '--starmap-ink': '#dde6f4', '--starmap-ink2': '#a6b7d0', '--starmap-ink3': '#798ca8', '--starmap-muted': '#8296b4',
+      '--starmap-accent': '#8fb4e2', '--starmap-accent-hi': '#c5dcf8', '--starmap-accent-soft': 'rgba(143, 180, 226, .16)', '--starmap-on-accent': '#08101e',
+      '--starmap-ether': '#93a8d8',
+      '--starmap-bar-grad': 'linear-gradient(180deg, rgba(16, 26, 46, .92), rgba(10, 17, 32, .88))',
+      '--starmap-win-head-grad': 'linear-gradient(180deg, rgba(143, 180, 226, .08), rgba(143, 180, 226, 0))',
+      '--starmap-win-glow': '0 0 0 0 transparent', '--starmap-win-shadow': '0 18px 46px -18px rgba(0, 0, 0, .82)',
+      '--starmap-radius': '8px', '--starmap-radius-sm': '6px',
+      '--starmap-k-task': '#9fc3e8', '--starmap-k-warn': '#e08677', '--starmap-k-info': '#8fbcd0',
     },
     bg: ['#0f1a33', '#0b1328', '#070c1a'],
     washes: [['40,70,130', 0.14, 0.2, 0.15, 0.9]],
@@ -41,13 +53,27 @@ export const THEMES = {
   astra: {
     label: '群星', en: 'Astra', sub: '星云紫青', note: '游走于日与月之间的星辰。不灼目，亦不沉寂，光与暗在此缔结停战协定。',
     css: {
-      '--bg-solid': '#0c0920', '--surface': 'rgba(24, 17, 46, .88)', '--panel': 'rgba(27, 20, 52, .97)', '--bar': 'rgba(22, 16, 44, .68)',
-      '--edge': 'rgba(164, 140, 236, .24)', '--edge-hi': 'rgba(120, 232, 232, .55)', '--edge-c': '#a48cec', '--quiet': 'rgba(190, 170, 255, .055)',
-      '--bar-grad': 'linear-gradient(180deg, rgba(150, 120, 240, .1), rgba(150, 120, 240, 0))', '--win-glow': '0 0 26px -6px rgba(110, 232, 232, .38)',
-      '--ink': '#e6e1f4', '--ink2': '#b3abcf', '--ink3': '#8d87ab',
-      '--brass': '#78e0e4', '--brass-hi': '#b5f3f2', '--brass-lo': '#3f7e86',
-      '--k-task': '#e2bb6c', '--k-warn': '#ff6f8e', '--k-info': '#7ec8ff', '--ether': '#b79cff', '--work': '#7ff0dc', '--ok': '#8fe0bb',
-      '--badge': '#d9cfff', '--badge-ink': '#140d2c', '--member-sat': '0.8',
+      '--bg-solid': '#0e0a24', '--surface': 'rgba(24, 17, 56, .84)', '--panel': 'rgba(26, 18, 58, .95)', '--bar': 'rgba(22, 15, 50, .72)',
+      '--edge': 'rgba(166, 134, 248, .34)', '--edge-hi': 'rgba(125, 211, 252, .7)', '--edge-c': '#a686f8', '--quiet': 'rgba(190, 170, 255, .07)',
+      '--bar-grad': 'linear-gradient(135deg, rgba(125, 211, 252, .14), rgba(183, 148, 246, .16) 55%, rgba(24, 16, 56, .78))',
+      '--win-glow': '0 0 34px -6px rgba(125, 211, 252, .45), 0 0 22px -8px rgba(183, 148, 246, .4)',
+      '--ink': '#ede8ff', '--ink2': '#beb5e6', '--ink3': '#948ac2',
+      '--brass': '#7dd3fc', '--brass-hi': '#c4f1ff', '--brass-lo': '#4b6ca0',
+      '--k-task': '#b794f6', '--k-warn': '#ff6f96', '--k-info': '#7dd3fc', '--ether': '#b794f6', '--work': '#7ff0dc', '--ok': '#8fe0bb',
+      '--badge': '#d9cfff', '--badge-ink': '#0e0a24', '--member-sat': '0.82',
+      // Unified Star Map 2.0 tokens
+      '--starmap-bg': '#0e0a24', '--starmap-surface': '#181139', '--starmap-surface-2': '#22194d',
+      '--starmap-glass': 'rgba(24, 16, 56, .82)', '--starmap-glass-dim': 'rgba(19, 12, 46, .64)', '--starmap-blur': '18px',
+      '--starmap-edge': 'rgba(166, 134, 248, .34)', '--starmap-edge-strong': 'rgba(125, 211, 252, .7)',
+      '--starmap-ink': '#ede8ff', '--starmap-ink2': '#beb5e6', '--starmap-ink3': '#948ac2', '--starmap-muted': '#9d93cc',
+      '--starmap-accent': '#7dd3fc', '--starmap-accent-hi': '#c4f1ff', '--starmap-accent-soft': 'rgba(125, 211, 252, .18)', '--starmap-on-accent': '#0e0a24',
+      '--starmap-ether': '#b794f6',
+      '--starmap-bar-grad': 'linear-gradient(135deg, rgba(125, 211, 252, .14), rgba(183, 148, 246, .16) 55%, rgba(24, 16, 56, .78))',
+      '--starmap-win-head-grad': 'linear-gradient(105deg, rgba(125, 211, 252, .16), rgba(183, 148, 246, .12) 60%, transparent)',
+      '--starmap-win-glow': '0 0 34px -6px rgba(125, 211, 252, .45), 0 0 22px -8px rgba(183, 148, 246, .4)',
+      '--starmap-win-shadow': '0 26px 70px -22px rgba(8, 4, 28, .9)',
+      '--starmap-radius': '16px', '--starmap-radius-sm': '10px',
+      '--starmap-k-task': '#b794f6', '--starmap-k-warn': '#ff6f96', '--starmap-k-info': '#7dd3fc',
     },
     bg: ['#1d1446', '#130d33', '#08061a'],
     washes: [['140, 85, 230', 0.18, 0.15, 0.2, 0.8], ['40, 195, 205', 0.11, 0.86, 0.78, 0.75]],
@@ -69,13 +95,27 @@ export const THEMES = {
   sol: {
     label: '炽阳', en: 'Sol', sub: '日冕金焰', note: '日冕全开。恒星解除封印，群星以第一纪元的速度公转——直视者后果自负。',
     css: {
-      '--bg-solid': '#070c1e', '--surface': 'rgba(32, 22, 14, .88)', '--panel': 'rgba(36, 25, 16, .97)', '--bar': 'rgba(30, 21, 13, .7)',
-      '--edge': 'rgba(201, 164, 92, .36)', '--edge-hi': 'rgba(240, 202, 124, .62)', '--edge-c': '#c9a45c', '--quiet': 'rgba(255, 220, 160, .055)',
-      '--bar-grad': 'linear-gradient(180deg, rgba(232, 172, 92, .14), rgba(232, 172, 92, .02))', '--win-glow': '0 0 32px -10px rgba(255, 188, 90, .32)',
-      '--ink': '#f0e6d0', '--ink2': '#c6b799', '--ink3': '#9d8e72',
-      '--brass': '#e2a84e', '--brass-hi': '#f7d38a', '--brass-lo': '#7a5f2e',
-      '--k-task': '#f2c35c', '--k-warn': '#ff5f45', '--k-info': '#7fd2ea', '--ether': '#9fb0ff', '--work': '#8ff0ff', '--ok': '#9be7a8',
-      '--badge': '#f6e4b8', '--badge-ink': '#1e1407', '--member-sat': '1',
+      '--bg-solid': '#150e08', '--surface': 'rgba(34, 22, 12, .92)', '--panel': 'rgba(38, 25, 14, .97)', '--bar': 'rgba(32, 21, 12, .84)',
+      '--edge': 'rgba(232, 178, 86, .42)', '--edge-hi': 'rgba(255, 206, 112, .76)', '--edge-c': '#e8b256', '--quiet': 'rgba(255, 215, 145, .07)',
+      '--bar-grad': 'linear-gradient(180deg, rgba(240, 185, 91, .18), rgba(34, 22, 12, .9) 75%)',
+      '--win-glow': 'inset 0 1px 0 rgba(255, 228, 168, .35), 0 0 36px -10px rgba(255, 152, 56, .44)',
+      '--ink': '#f8ecd6', '--ink2': '#d7c19e', '--ink3': '#aa906b',
+      '--brass': '#f0b95b', '--brass-hi': '#ffe09c', '--brass-lo': '#8b6324',
+      '--k-task': '#f2c35c', '--k-warn': '#ff6242', '--k-info': '#ffae5c', '--ether': '#ff8f40', '--work': '#ffd98a', '--ok': '#9be7a8',
+      '--badge': '#f6e4b8', '--badge-ink': '#1d1205', '--member-sat': '1',
+      // Unified Star Map 2.0 tokens
+      '--starmap-bg': '#150e08', '--starmap-surface': '#21160d', '--starmap-surface-2': '#2d1e12',
+      '--starmap-glass': 'rgba(34, 22, 12, .93)', '--starmap-glass-dim': 'rgba(26, 17, 10, .78)', '--starmap-blur': '12px',
+      '--starmap-edge': 'rgba(232, 178, 86, .42)', '--starmap-edge-strong': 'rgba(255, 206, 112, .76)',
+      '--starmap-ink': '#f8ecd6', '--starmap-ink2': '#d7c19e', '--starmap-ink3': '#aa906b', '--starmap-muted': '#b49972',
+      '--starmap-accent': '#f0b95b', '--starmap-accent-hi': '#ffe09c', '--starmap-accent-soft': 'rgba(240, 185, 91, .2)', '--starmap-on-accent': '#1d1205',
+      '--starmap-ether': '#ff8f40',
+      '--starmap-bar-grad': 'linear-gradient(180deg, rgba(240, 185, 91, .18), rgba(34, 22, 12, .9) 75%)',
+      '--starmap-win-head-grad': 'linear-gradient(180deg, rgba(240, 185, 91, .22), rgba(255, 143, 64, .06) 75%, transparent)',
+      '--starmap-win-glow': 'inset 0 1px 0 rgba(255, 228, 168, .35), 0 0 36px -10px rgba(255, 152, 56, .44)',
+      '--starmap-win-shadow': '0 24px 60px -18px rgba(10, 4, 0, .92)',
+      '--starmap-radius': '5px', '--starmap-radius-sm': '4px',
+      '--starmap-k-task': '#f2c35c', '--starmap-k-warn': '#ff6242', '--starmap-k-info': '#ffae5c',
     },
     bg: ['#11204a', '#0a1532', '#050a1a'],
     washes: [['255, 168, 72', 0.17, 0.5, 0.58, 0.55], ['60, 90, 170', 0.1, 0.15, 0.1, 0.8]],
@@ -95,6 +135,39 @@ export const THEMES = {
     bh: { n: 2300, inner: '#fff1c4', outer: '#e2641e', ring: '#ffc46e', glow: '#ff8a3a' },
   },
 };
+
+/** Snapshot sent to restricted third-party `position: 'starmap'` iframes in `orrery.init` / `orrery.theme`. */
+export function starmapThemeSnapshot(name) {
+  const id = Object.hasOwn(THEMES, name) ? name : 'luna';
+  const c = THEMES[id].css;
+  return {
+    name: `starmap:${id}`,
+    scheme: 'dark',
+    starmap: { theme: id },
+    colors: {
+      bg: c['--starmap-bg'],
+      surface: c['--starmap-surface'],
+      'surface-2': c['--starmap-surface-2'],
+      line: c['--starmap-edge'],
+      text: c['--starmap-ink'],
+      muted: c['--starmap-muted'],
+      accent: c['--starmap-accent'],
+      'accent-soft': c['--starmap-accent-soft'],
+      'on-accent': c['--starmap-on-accent'],
+      running: c['--work'],
+      done: c['--ok'],
+      failed: c['--starmap-k-warn'],
+      'warn-bg': 'rgba(224, 134, 119, 0.16)',
+      'warn-text': c['--starmap-k-warn'],
+    },
+  };
+}
+
+/** Theme object exposed to same-page `panel` plugins via `panelCtx.theme` and `panelCtx.onThemeChange`. */
+export function starmapPanelTheme(name) {
+  const id = Object.hasOwn(THEMES, name) ? name : 'luna';
+  return Object.freeze({ id, scheme: 'dark', tokens: Object.freeze({ ...THEMES[id].css }) });
+}
 
 /** The stored theme, or luna when there is none, it is unknown or storage is blocked. */
 export function readTheme(storage) {
@@ -117,21 +190,21 @@ export function saveTheme(storage, name) {
 export const THEME_ICON = {
   luna: [
     ['circle', { cx: 12, cy: 12, r: 8, fill: '#8fa6d6', opacity: '.22' }],
-    ['path', { d: 'M12.38 4A8 8 0 1 0 18.62 16.49A7 7 0 0 1 12.38 4Z', fill: '#f3e4c6' }],
-    ['circle', { cx: 8.2, cy: 13.6, r: 1.1, fill: '#d9c9a8', opacity: '.7' }],
+    ['path', { d: 'M12.38 4A8 8 0 1 0 18.62 16.49A7 7 0 0 1 12.38 4Z', fill: '#c5dcf8' }],
+    ['circle', { cx: 8.2, cy: 13.6, r: 1.1, fill: '#8fb4e2', opacity: '.8' }],
   ],
   astra: [
-    ['path', { d: 'M9 3.6Q9 10 15.4 10Q9 10 9 16.4Q9 10 2.6 10Q9 10 9 3.6Z', fill: '#8fe9ee' }],
-    ['path', { d: 'M17.4 3Q17.4 6.4 20.8 6.4Q17.4 6.4 17.4 9.8Q17.4 6.4 14 6.4Q17.4 6.4 17.4 3Z', fill: '#b9a0ff' }],
+    ['path', { d: 'M9 3.6Q9 10 15.4 10Q9 10 9 16.4Q9 10 2.6 10Q9 10 9 3.6Z', fill: '#7dd3fc' }],
+    ['path', { d: 'M17.4 3Q17.4 6.4 20.8 6.4Q17.4 6.4 17.4 9.8Q17.4 6.4 14 6.4Q17.4 6.4 17.4 3Z', fill: '#b794f6' }],
     ['path', { d: 'M16.6 13.4Q16.6 16.4 19.6 16.4Q16.6 16.4 16.6 19.4Q16.6 16.4 13.6 16.4Q16.6 16.4 16.6 13.4Z', fill: '#a9c2ff' }],
-    ['circle', { cx: 6, cy: 19.2, r: 1.3, fill: '#b9a0ff', opacity: '.85' }],
+    ['circle', { cx: 6, cy: 19.2, r: 1.3, fill: '#b794f6', opacity: '.85' }],
   ],
   sol: [
-    ['g', { stroke: '#ff9a3c', 'stroke-width': 1.8, 'stroke-linecap': 'round' }, [
+    ['g', { stroke: '#ff8f40', 'stroke-width': 1.8, 'stroke-linecap': 'round' }, [
       ['path', { d: 'M12 1.8v3M12 19.2v3M1.8 12h3M19.2 12h3' }],
       ['path', { d: 'M4.8 4.8l2 2M17.2 17.2l2 2M19.2 4.8l-2 2M6.8 17.2l-2 2', opacity: '.75' }],
     ]],
-    ['circle', { cx: 12, cy: 12, r: 5.4, fill: '#ffc45a' }],
-    ['circle', { cx: 12, cy: 12, r: 3, fill: '#ffe2a0', opacity: '.7' }],
+    ['circle', { cx: 12, cy: 12, r: 5.4, fill: '#f0b95b' }],
+    ['circle', { cx: 12, cy: 12, r: 3, fill: '#ffe09c', opacity: '.75' }],
   ],
 };

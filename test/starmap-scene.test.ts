@@ -277,6 +277,8 @@ test('unread counts follow new messages and the read position, as the Hub counts
   change = data.applySkyEvent(state, frame(16, 'cluster', { cluster: { ...cluster('c1', 'B'), userReadMessageId: 'elsewhere' }, members: [] }));
   assert.equal(change.recount, false);
   assert.equal(state.clusters.get('c1').unread, 1);
+  assert.equal(data.applySkyEvent(state, frame(17, 'message', { message: { ...msg('dm', 'user'), privateTo: 'a' }, deliveries: [] })), null);
+  assert.ok(!state.messages.get('c1').some((message: { id: string }) => message.id === 'dm'));
 });
 
 test('keys: shortcuts only from the sky, Esc one level at a time and left to the host at the top', () => {
@@ -324,4 +326,107 @@ test('themes: three complete tables, luna by default, unknown or blocked storage
   assert.equal(themes.readTheme({ getItem() { throw new Error('blocked'); } }), 'luna');
   assert.doesNotThrow(() => themes.saveTheme({ setItem() { throw new Error('blocked'); } }, 'sol'));
   assert.deepEqual(Object.keys(themes.THEME_ICON), themes.THEME_ORDER);
+});
+
+test('burst activity tracker: sliding window, deduplication, private exclusion, decay and expiry', () => {
+  const tracker = data.createActivityTracker();
+  const t0 = 1_700_000_000_000;
+  assert.deepEqual(data.clusterActivity(tracker, 'c1', t0), { count: 0, rate: 0, level: 'quiet', intensity: 0 });
+  assert.equal(data.nextActivityExpiry(tracker, t0), null, 'quiet tracker schedules no decay timer');
+
+  // Record 3 messages (active threshold) + 1 duplicate id (must not double count).
+  data.recordClusterActivity(tracker, 'c1', { id: 'm1', at: t0 }, t0);
+  data.recordClusterActivity(tracker, 'c1', { id: 'm1', at: t0 + 1000 }, t0 + 1000);
+  data.recordClusterActivity(tracker, 'c1', { id: 'm2', at: t0 + 2000 }, t0 + 2000);
+  data.recordClusterActivity(tracker, 'c1', { id: 'm3', at: t0 + 3000 }, t0 + 3000);
+  const active = data.clusterActivity(tracker, 'c1', t0 + 3000);
+  assert.equal(active.count, 3);
+  assert.equal(active.rate, 3);
+  assert.equal(active.level, 'active');
+  assert.ok(active.intensity > 0.2 && active.intensity < 0.6);
+
+  // Escalate to burst (>= 8 msgs/min).
+  for (let i = 4; i <= 9; i++) {
+    data.recordClusterActivity(tracker, 'c1', { id: `m${i}`, at: t0 + i * 1000 }, t0 + i * 1000);
+  }
+  const burst = data.clusterActivity(tracker, 'c1', t0 + 10_000);
+  assert.equal(burst.count, 9);
+  assert.equal(burst.rate, 9);
+  assert.equal(burst.level, 'burst');
+  assert.ok(burst.intensity > active.intensity);
+
+  // Earliest stamp expires at t0 + 60_000; at t0 + 10_000 wait is 50_000 ms.
+  assert.equal(data.nextActivityExpiry(tracker, t0 + 10_000), 50_000);
+  // Advance past all timestamps: rate returns to 0 and pruneActivity empties the tracker.
+  assert.deepEqual(data.clusterActivity(tracker, 'c1', t0 + 75_000), { count: 0, rate: 0, level: 'quiet', intensity: 0 });
+  assert.equal(data.pruneActivity(tracker, t0 + 75_000), false);
+  assert.equal(tracker.size, 0);
+  assert.equal(data.nextActivityExpiry(tracker, t0 + 75_000), null);
+
+  // Seeding ignores private messages and messages outside the 60s window, and deduplicates by id.
+  const now = Date.UTC(2026, 10, 20, 12, 0, 0);
+  const seeded = data.seedClusterActivity(tracker, 'c2', [
+    { id: 'old', createdAt: new Date(now - 90_000).toISOString() },
+    { id: 'priv', privateTo: 'm1', createdAt: new Date(now - 5_000).toISOString() },
+    { id: 'ok1', createdAt: new Date(now - 20_000).toISOString() },
+    { id: 'ok1', createdAt: new Date(now - 20_000).toISOString() },
+    { id: 'ok2', createdAt: new Date(now - 10_000).toISOString() },
+  ], now);
+  assert.equal(seeded, 2);
+  assert.equal(data.clusterActivity(tracker, 'c2', now).rate, 2);
+});
+
+test('activeClusterRows and searchSky activity sorting surface bursting clusters first while keeping quiet sky unchanged', () => {
+  const state = stateWith([
+    { ...cluster('c1', 'Alpha', 'work', '2026-11-01T00:00:00Z'), unread: 0 },
+    { ...cluster('c2', 'Beta', 'ops', '2026-11-02T00:00:00Z'), unread: 4 },
+    { ...cluster('c3', 'Gamma', 'work', '2026-11-03T00:00:00Z'), unread: 12 },
+    { ...cluster('c4', 'Delta', '', '2026-11-04T00:00:00Z'), unread: 0 },
+  ], []);
+  const model = data.skyModel(state);
+  const tracker = data.createActivityTracker();
+  const now = 1_700_000_000_000;
+
+  // When all clusters are quiet and have 0 unread, activeClusterRows is empty.
+  const quietState = stateWith([cluster('q1', 'Quiet')], []);
+  assert.deepEqual(data.activeClusterRows(data.skyModel(quietState), tracker, now), []);
+
+  // c3 bursts (10 msgs/min), c2 has unread (4) + 3 msgs/min (active), c1 has 1 msg/min, c4 is quiet & read.
+  for (let i = 0; i < 10; i++) data.recordClusterActivity(tracker, 'c3', { id: `g${i}`, at: now - i * 1000 }, now);
+  for (let i = 0; i < 3; i++) data.recordClusterActivity(tracker, 'c2', { id: `b${i}`, at: now - i * 1000 }, now);
+  data.recordClusterActivity(tracker, 'c1', { id: 'a0', at: now - 1000 }, now);
+
+  const radar = data.activeClusterRows(model, tracker, now, { currentCid: 'c1', limit: 5 });
+  assert.deepEqual(radar.map((r: any) => [r.system.cluster.id, r.activity.level, r.activity.rate, r.isCurrent]), [
+    ['c3', 'burst', 10, false],
+    ['c2', 'active', 3, false],
+  ], 'burst > active; current cluster c1 with unread=0 and quiet read c4 are omitted');
+
+  // Opening c3's Hub chat while unread > 0 still shows it until unread drops to 0; once read (unread=0), it clears immediately.
+  const openHubs = new Set(['c3']);
+  assert.equal(data.activeClusterRows(model, tracker, now, { currentCid: 'c1', openHubCids: openHubs }).some((r: any) => r.system.cluster.id === 'c3'), true);
+  state.clusters.get('c3').unread = 0;
+  assert.equal(data.activeClusterRows(model, tracker, now, { currentCid: 'c1', openHubCids: openHubs }).some((r: any) => r.system.cluster.id === 'c3'), false,
+    'open Hub chat with unread=0 clears cluster from active radar immediately');
+  assert.equal(data.activeClusterRows(model, tracker, now, { currentCid: 'c3' }).some((r: any) => r.system.cluster.id === 'c3'), false,
+    'current cluster with unread=0 clears cluster from active radar immediately');
+  state.clusters.get('c3').unread = 12;
+
+  // Empty-query searchSky with activityOf puts active/unread clusters at top in rate order, quiet ones below.
+  const byActivity = data.searchSky(model, '', '回收站', (cid: string) => data.clusterActivity(tracker, cid, now));
+  assert.deepEqual(
+    byActivity.rows.map((r: any) => (r.type === 'trash' ? '[trash]' : `${r.section ?? 'sky'}:${r.system.cluster.id}`)),
+    ['active:c3', 'active:c2', 'active:c1', 'sky:c4', '[trash]'],
+  );
+
+  // Non-empty query with same match score breaks ties by activity (both Alpha & Gamma contain "a").
+  const tied = data.searchSky(model, 'a', '回收站', (cid: string) => data.clusterActivity(tracker, cid, now));
+  assert.equal(tied.rows[0].system.cluster.id, 'c1', 'prefix match "Alpha" still beats substring match');
+  assert.equal(tied.rows[1].system.cluster.id, 'c3', 'among substring matches, bursting Gamma beats Beta & Delta');
+
+  // Public message events return `activity`; private DM events return null and never count.
+  const pub = data.applySkyEvent(state, frame(20, 'message', { message: msg('pub1', 'm1', 'c3'), deliveries: [] }));
+  assert.equal(pub?.activity?.id, 'pub1');
+  const dm = data.applySkyEvent(state, frame(21, 'message', { message: { ...msg('dm1', 'user', 'c3'), privateTo: 'm1' }, deliveries: [] }));
+  assert.equal(dm, null);
 });

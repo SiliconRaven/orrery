@@ -141,6 +141,7 @@ export function pluginToolsView(plugin) {
 // ---- its own web UI (docs/external-plugins.md「网页界面」) ----
 
 const UI_PLACES = { titlebar: '群聊标题栏（一个状态标签和它的面板）', workbench: '任务工作台（一个以插件命名的标签页）',
+  starmap: '星图面板（在星图悬浮窗里显示）',
   marks: '消息、成员和任务上的小标记（由 orrery 画，插件只给文字和状态）' };
 const UI_NOTE = '网页界面（ui.show）：插件自己的页面在隔离的框架里显示，外面由 orrery 画一圈写着插件名和“第三方插件”的边框。'
   + '它读不到你的登录、页面内容和 Hub 接口，只能和这个插件自己的进程通信；插件进程本身仍是不受限的本地程序。';
@@ -282,7 +283,7 @@ export function pluginRuntimeView(plugin, busy, act = () => {}) {
     ['devReload', '开发用：文件改动后自动重启', '监视插件目录（不含 node_modules 和 data），文件改动约半秒后重新读取登记和清单并重启。只在开发插件时打开。'],
     // The UI's master switch, only for a plugin granted a UI position: off closes its open frames at once.
     ...(plugin.ui?.granted?.length && typeof life.ui === 'boolean'
-      ? [['ui', '显示网页界面', '关闭后，这个插件在群聊标题栏和任务工作台里的界面立即移除，已打开的界面地址失效。']] : []),
+      ? [['ui', '显示网页界面', '关闭后，这个插件在群聊标题栏、任务工作台和星图里的界面立即移除，已打开的界面地址失效。']] : []),
   ].map(([field, label, hint]) => h('label', { class: 'plugin-switch', title: hint },
     h('input', { type: 'checkbox', role: 'switch', checked: Boolean(life[field]), disabled: busy, 'data-key': key(field), 'data-plugin-switch': field,
       'aria-label': `${plugin.name}：${label}`,

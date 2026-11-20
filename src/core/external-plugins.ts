@@ -267,6 +267,12 @@ function pluginMessageItem(message: Message): Record<string, unknown> {
     ...(content.bodyOmitted ? { bodyOmitted: true } : {}), ...(content.bodyTruncated ? { bodyTruncated: true } : {}) };
 }
 
+/** Restricted plugins may resolve only shared messages in the authorized cluster. */
+function sharedMessage(store: Store, clusterId: string, messageId: string): Message | null {
+  const message = store.getMessage(messageId);
+  return message?.clusterId === clusterId && message.privateTo === undefined ? message : null;
+}
+
 /** Fills one frame newest first: what gets dropped is older, so the page's first id still works as `before`. */
 function messagesPage(messages: readonly Message[]) {
   const page: Record<string, unknown>[] = [];
@@ -430,9 +436,8 @@ export class ExternalPlugins {
         if (method === 'host.messages.get') {
           const { clusterId, params } = readScope(store, installation, 'messages.read', raw, ['clusterId', 'messageId'],
             (p) => typeof p.messageId === 'string' && !!p.messageId && p.messageId.length <= 128);
-          const message = store.getMessage(params.messageId as string);
-          // One answer for "no such message" and "a message of another cluster": nothing about other clusters leaks.
-          if (message?.clusterId !== clusterId) throw new HostRefusal('NOT_FOUND');
+          const message = sharedMessage(store, clusterId, params.messageId as string);
+          if (!message) throw new HostRefusal('NOT_FOUND');
           return { message: pluginMessageItem(message) };
         }
         if (method === 'host.members.list') return this.listMembers(readScope(store, installation, 'clusters.read', raw, ['clusterId']).clusterId);
@@ -453,7 +458,7 @@ export class ExternalPlugins {
           const limit = params.limit ?? 20;
           if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('invalid limit');
           if (params.before !== undefined && (typeof params.before !== 'string' || params.before.length > 128)) throw new Error('invalid cursor');
-          if (typeof params.before === 'string' && store.getMessage(params.before)?.clusterId !== params.clusterId) throw new Error('cursor out of scope');
+          if (typeof params.before === 'string' && !sharedMessage(store, params.clusterId, params.before)) throw new Error('cursor out of scope');
           return messagesPage(store.listMessages(params.clusterId, limit, params.before as string | undefined));
         }
         if (method === 'host.messages.send') {
@@ -586,8 +591,8 @@ export class ExternalPlugins {
     blocks?.delete(clusterId);
 
     if (!this.store.getCluster(clusterId)) throw new Error('write cluster out of scope');
-    const cause = causedBy === undefined ? null : this.store.getMessage(causedBy);
-    if (causedBy !== undefined && cause?.clusterId !== clusterId) throw new Error('causedBy message out of scope');
+    const cause = causedBy === undefined ? null : sharedMessage(this.store, clusterId, causedBy);
+    if (causedBy !== undefined && !cause) throw new Error('causedBy message out of scope');
     const settings = this.writeSettings(installation);
     const sender = externalPluginSender(pluginId);
     for (const { setting, window, ms } of RATE_WINDOWS) {
@@ -1059,7 +1064,7 @@ export class ExternalPlugins {
    * while it is disabled), each of this cluster.
    */
   private markTargetExists(clusterId: string, target: MarkTarget, targetId: string): boolean {
-    if (target === 'message') return this.store.getMessage(targetId)?.clusterId === clusterId;
+    if (target === 'message') return sharedMessage(this.store, clusterId, targetId) !== null;
     if (target === 'member') return this.store.getMember(targetId)?.clusterId === clusterId;
     return this.store.tasks?.task(clusterId, targetId) != null;
   }
@@ -1108,7 +1113,9 @@ export class ExternalPlugins {
   openUiFrame(clusterId: string, raw: unknown) {
     const body = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
     if (!body || Object.keys(body).some((key) => !['pluginId', 'position'].includes(key)) || typeof body.pluginId !== 'string'
-      || !(FRAME_POSITIONS as readonly unknown[]).includes(body.position)) throw new UiRefusal('INVALID_REQUEST', '请求须是 {pluginId, position}，position 为 titlebar 或 workbench。');
+      || !(FRAME_POSITIONS as readonly unknown[]).includes(body.position)) {
+      throw new UiRefusal('INVALID_REQUEST', `请求须是 {pluginId, position}，position 为 ${FRAME_POSITIONS.join('、')} 之一。`);
+    }
     const slot = this.slots.get(body.pluginId);
     if (!slot) throw new UiRefusal('UNKNOWN_PLUGIN', '没有这个第三方插件。');
     const position = body.position as FramePosition;
@@ -1878,7 +1885,12 @@ export class ExternalPlugins {
       const payload = (event.payload ?? {}) as { sourcePluginId?: unknown; pluginId?: unknown };
       // A plugin never hears about its own message, nor about the guard record its own limit wrote.
       const source = event.kind === 'message' ? payload.sourcePluginId : event.kind === 'guard' ? payload.pluginId : undefined;
-      const wanted = (type: string) => this.installations.some((p) => eventGranted(p, type, null));
+      // Only the core receipt builders can remove private IDs from a mixed receipt. Other event sources must not
+      // build outward events from records associated with a private message.
+      const coreReceipt = event.kind === 'read' ? 'message.read' : event.kind === 'acknowledgement' ? 'message.acknowledged' : null;
+      let hasPrivateMessage: boolean | undefined;
+      const wanted = (type: string) => this.installations.some((p) => eventGranted(p, type, null))
+        && (type === coreReceipt || !(hasPrivateMessage ??= this.store.eventHasPrivateMessage(event)));
       for (const item of this.events.translate(event, wanted)) {
         // A checked member message: the plugins its check was sent to also get the checkId (no one else does).
         const checkId = item.type === 'message.created' ? this.storing.get(String(item.data.messageId)) : undefined;

@@ -84,6 +84,8 @@ export interface Member {
   model: string | null;
   effort: string | null;   // 原生 Claude 的 model/effort 由应用决定，Hub 只记录（可为 null）
   workerSessionId: string;
+  /** Increments when this member is rebound to another native conversation. */
+  bindingGen?: number;
   cwd: string;
   origin: 'attached' | 'created';  // 接入已有对话，还是由 orrery 新建
   status: MemberStatus;
@@ -118,6 +120,9 @@ export interface Message {
   chainId: string;         // 用户消息开新链；agent 发的消息继承它正在处理的那条
   hop: number;             // 用户消息为 0；agent 发的为所处理消息的 hop + 1
   createdAt: string;
+  /** User DM addressed only to this membership at its original binding generation. */
+  privateTo?: string;
+  privateBindingGen?: number;
   /** 'chat' (default, also the column default), a task comment, a system notice, or a synthetic user message: a handover
    *  package send, a delivery handoff, or a resend. The synthetic kinds are user messages but not user requests. */
   kind?: 'chat' | 'task_comment' | 'system' | 'handover' | 'handoff' | 'resend' | 'plugin';

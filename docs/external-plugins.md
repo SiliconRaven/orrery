@@ -2,7 +2,7 @@
 
 语言：**中文** | [English](external-plugins.en.md)
 
-orrery（`v0.10.0-beta.3` Beta 测试版）可以运行仓库以外的第三方 Hub 插件。第三方插件分两档：
+orrery（`v0.10.0-beta.4` Beta 测试版）可以运行仓库以外的第三方 Hub 插件。第三方插件分两档：
 
 | | 受限插件 | 完全信任插件 |
 |---|---|---|
@@ -95,6 +95,8 @@ Hub → 插件：`initialize`（只带实际授权；插件在结果里可用 `n
 
 拒绝统一为 `-32000` 错误，部分方法在 `error.data.code` 带稳定短码（`PERMISSION_DENIED`、`INVALID_DATA`、`CLUSTER_NOT_GRANTED`、`NOT_FOUND` 等）。读取不会标已读、确认或触发投递。协议不提供文件路径、附件内容、成员工作目录、原生会话 ID、凭据、数据库或任意 SQL。超时、进程退出、坏帧、超大输出或输出洪泛会把插件标为 `failed` 并结束进程，Hub 和其他插件继续工作。
 
+受限插件无法通过消息接口读取星图成员私聊，也不能用私聊作分页游标、发言来源或标记目标。私聊的消息、投递、回执和防循环事件不会推给受限插件。涉及群聊和私聊的混合回执只列群聊消息。
+
 ## 插件发言（`messages.send`）
 
 授予 `messages.send` 并在 `writeClusterIds` 里列出群后，插件可以发言（正文最多 8000 字；`causedBy` 可选，必须是同群已有消息，发言继承它的消息链）。消息署名“插件 <id>”，类型为 `plugin`。默认 `@` 按普通文字处理；要唤醒成员，须同时授予 `messages.mention` 并在**设置 → 插件 → 发言设置**里打开唤醒开关，唤醒仍遵守暂停、在线检查和防循环上限。每个插件在每个群默认每分钟 10 条、每小时 200 条，可调整，设为无限需确认。超限时返回错误并在群里留一条不唤醒任何人的限频提示。
@@ -176,6 +178,7 @@ Hub → 插件：`initialize`（只带实际授权；插件在结果里可用 `n
 
 - `titlebar`：群聊标题栏里的一个标签，点开是面板（高度 `panelHeight`，200～480 像素，默认 320）；
 - `workbench`：任务工作台里以插件命名的一个标签页；
+- `starmap`：星图 2.0 的插件面板，须单独授权，原有授权不会自动包含它；完整接入步骤见[把插件嵌入星图](starmap-plugins.md)；
 - `marks`：在消息、成员和任务上由 orrery 画的小标记，插件只给数据。
 
 **网页**只从插件目录的 `ui/` 提供，入口固定 `ui/index.html`；只认 `.html`、`.css`、`.js`、`.json`、`.svg`、`.png`、`.jpg`、`.webp`、`.woff2`，单个文件最多 1 MiB，整个 `ui/` 最多 200 个文件、4 MiB；路径逐段校验，不跟随链接或联接。页面每次打开界面时由 Hub 生成一个不可猜的界面 ID，地址 `/plugin-ui/<界面 ID>/index.html`，界面关闭、插件停止或重启、授权收回、Hub 重启后立即失效。
@@ -241,7 +244,7 @@ Hub 先只看数据决定能否加载（安全模式、确认和路径、依赖�
 
 ### 网页模块（`webEntry`）
 
-`webEntry` 所在的文件夹由 Hub 在 `/plugin-web/<id>/` 只读提供（只给脚本、样式、JSON、图片和字体，不给 HTML，单个文件最多 1 MiB，不跟随链接，永远不给 Hub 入口）。只有这次启动确认过、加载了、开关开着的插件出现在 `GET /api/plugins` 的 `trustedFrontend` 里，页面只导入这些模块（每个 5 秒内要导入完）。模块导出 `register(host)`，返回 `message`、`composer`、`workbench`、`settings` 四个插槽中用到的那些（见[官方插件](plugins.md#官方网页插槽)）；`host` 提供 `ui`、`api`、`nameOf`、`command` 和 `onDispose(fn)`。
+`webEntry` 所在的文件夹由 Hub 在 `/plugin-web/<id>/` 只读提供（只给脚本、样式、JSON、图片和字体，不给 HTML，单个文件最多 1 MiB，不跟随链接，永远不给 Hub 入口）。只有这次启动确认过、加载了、开关开着的插件出现在 `GET /api/plugins` 的 `trustedFrontend` 里，页面只导入这些模块（每个 5 秒内要导入完）。模块导出 `register(host)`，返回 `message`、`composer`、`workbench`、`settings`、`view`、`panel` 六个插槽中用到的那些（见[官方插件](plugins.md#官方网页插槽)与[把插件嵌入星图](starmap-plugins.md)）；`host` 提供 `ui`、`api`、`nameOf`、`command` 和 `onDispose(fn)`。
 
 **撤销信任时**：撤销、关掉开关或安全模式并重启 Hub 后，已经打开的页面会就地卸下这个插件：不再调用它的插槽，移除它经插槽加入的元素，关掉它打开的对话框（用户在里面打的字转进页面自己的只读提示，可复制），调用一次它登记的 `onDispose`。页面顶部显示“刷新页面后彻底生效”，页面不会自己刷新，也不碰没发出的输入；用户点“重新加载”才刷新。刷新之前，插件的模块代码仍在页面内存里，它自己开的定时器、监听器和绕开插槽的改动只能靠它自己的 `onDispose` 清理，所以要彻底停掉它就重新加载页面。
 
@@ -262,8 +265,8 @@ Hub 先只看数据决定能否加载（安全模式、确认和路径、依赖�
 
 - [消息计数示例](../examples/hub-plugins/message-counter/README.md)：读取和命令。
 - [验收提醒示例](../examples/hub-plugins/review-reminder/README.md)：事件订阅和受限发言。
-- [界面示例](../examples/hub-plugins/ui-demo/README.md)：标题栏、工作台网页和标记。
-- [群便签示例](../examples/hub-plugins/trusted-demo/README.md)：完全信任插件，带数据表、路由、群员工具和网页模块。
+- [界面示例](../examples/hub-plugins/ui-demo/README.md)：标题栏、工作台、星图 2.0 沙盒面板和标记。
+- [群便签示例](../examples/hub-plugins/trusted-demo/README.md)：完全信任插件，带数据表、路由、群员工具和同页网页模块（含星图 `panel` 面板）。
 
 ## 当前限制
 

@@ -76,8 +76,8 @@ const schema = (app: TestHub) => Number(app.store.db.prepare('SELECT version FRO
 test('the shipping Hub recognizes only the four IDs authorized by the built-in official publisher', async () => {
   const allowed = ['bookmarks', 'coordinator', 'starmap', 'tasks'];
   const releases = [...allowed, ID].map((id) => ({
-    id, version: '1.1.0', tag: 'fixture-1.1.0', asset: id + '.zip', sha256: '1'.repeat(64),
-    hub: { api: 1, minVersion: '0.10.0-beta.3' },
+    id, version: '2.1.0', tag: 'fixture-2.1.0', asset: id + '.zip', sha256: '1'.repeat(64),
+    hub: { api: 1, minVersion: '0.10.0-beta.4' },
   }));
   const app = await startTestHub({
     plugins: [...officialPlugins, builtIn],
@@ -85,7 +85,7 @@ test('the shipping Hub recognizes only the four IDs authorized by the built-in o
   });
   try {
     const result = await app.api('POST', UPDATE + '/check', {});
-    assert.deepEqual(result.candidates, allowed.map((id) => ({ id, version: '1.1.0', compatible: true })));
+    assert.deepEqual(result.candidates, allowed.map((id) => ({ id, version: '2.1.0', compatible: true })));
   } finally { await app.close(); }
 });
 

@@ -34,7 +34,8 @@ function deliveryItem(item: TranscriptItem, messages: Message[]): TranscriptItem
   const { text: _text, truncated: _truncated, ...meta } = item;
   return { ...meta, kind: 'orrery_delivery', parts: messages.map((message) => {
     const { text: body, truncated } = truncateTranscriptText(message.body);
-    return { messageId: message.id, from: message.from, kind: message.kind ?? 'chat', body, ...(truncated ? { truncated } : {}) };
+    return { messageId: message.id, from: message.from, kind: message.kind ?? 'chat', body,
+      ...(message.privateTo ? { private: true as const } : {}), ...(truncated ? { truncated } : {}) };
   }) };
 }
 

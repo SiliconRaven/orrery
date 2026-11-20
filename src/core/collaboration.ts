@@ -182,6 +182,11 @@ export class Collaboration {
 
   /** Every later check, the event and any suggestion see full IDs, whichever form the caller used. */
   private resolveRefs(clusterId: string, command: CollaborationCommand): CollaborationCommand {
+    // Full source message IDs can bypass the public-prefix resolver in independently installed plugins.
+    if (Array.isArray(command.sourceMessageIds)
+      && command.sourceMessageIds.some((id) => typeof id === 'string' && this.store.getMessage(id)?.privateTo !== undefined)) {
+      return fail('OUT_OF_SCOPE', 'unknown source message; use full message IDs from read_messages');
+    }
     const refs = this.store.plugins.refs(command.action);
     if (refs) return sync(refs({ store: this.store, clusterId, command, collaboration: this }), `refs for ${command.action}`);
     if (command.messageId && this.store.plugins.action(command.action)) {

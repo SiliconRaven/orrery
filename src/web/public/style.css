@@ -239,10 +239,30 @@ label > input, label > select { margin-top: 4px; color: var(--text); }
    menus and popovers (up to 70), below the host's global banners (raised while a view is open), its kept-input notice
    and its modal dialogs (top layer). */
 #plugin-view { grid-column: 3 / -1; grid-row: 1; z-index: 75; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface); }
+#app.view-open.view-fullscreen #plugin-view { grid-column: 1 / -1; }
+#app.view-open.view-fullscreen .plugin-view-head { display: none; }
 .plugin-view-head { display: flex; align-items: center; gap: 6px; padding: 12px 18px; border-bottom: 1px solid var(--line); min-height: 56px; }
 .plugin-view-head h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plugin-view-body { position: relative; flex: 1; min-height: 0; overflow: auto; }
-#app.view-open :is(#update-banner, #trust-banner, #safe-mode-banner) { position: relative; z-index: 76; }
+.global-banners { display: flex; flex-direction: column; flex: none; }
+#app.view-open #global-banners { position: relative; z-index: 76; }
+#app.view-open.view-fullscreen #global-banners { position: fixed; top: 0; left: 0; right: 0; z-index: 76; }
+/* While a full-screen Star Map theme is open, harmonize native host modals with its dark observatory palette. */
+html[data-starmap-overlay] dialog {
+  --bg: var(--starmap-overlay-bg, #0d1322);
+  --surface: var(--starmap-overlay-surface, #131c30);
+  --surface-2: var(--starmap-overlay-surface-2, #1a253d);
+  --line: var(--starmap-overlay-edge, rgba(168, 198, 232, .22));
+  --text: var(--starmap-overlay-ink, #e8f0fa);
+  --muted: var(--starmap-overlay-muted, #92a6c2);
+  --accent: var(--starmap-overlay-accent, #8db7e8);
+  --accent-soft: var(--starmap-overlay-accent-soft, rgba(141, 183, 232, .18));
+  --on-accent: var(--starmap-overlay-on-accent, #0a101d);
+  color-scheme: dark;
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--line);
+}
 /* A divider takes no width of its own (negative margins): it lies over the border between two panes. */
 .divider { position: relative; z-index: 3; width: 8px; margin: 0 -4px; cursor: col-resize; touch-action: none; outline: none; }
 .divider::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: transparent; transition: background .1s; }
@@ -259,6 +279,26 @@ body.resizing { cursor: col-resize; user-select: none; }
 .brand-name { position: relative; }
 .beta-label { position: absolute; top: 100%; left: 0; font-size: var(--f-xs); line-height: 1.1; font-weight: 500; letter-spacing: 0; white-space: nowrap; }
 .brand-mark { flex: none; width: 16px; height: 16px; color: var(--accent); }
+/* Prominent mode switcher between standard chat view and full-page views such as Star Map (plugin-view.js). */
+.view-switcher {
+  display: flex; flex-wrap: wrap; gap: var(--s-1); margin: 0 var(--s-2) var(--s-2); padding: 3px;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface);
+}
+.view-switch-btn {
+  flex: 1 1 0; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 5px 8px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent;
+  color: var(--muted); font-size: var(--f-sm); font-weight: 600; white-space: nowrap;
+}
+.view-switch-btn:hover { color: var(--text); background: var(--surface-2); }
+.view-switch-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-soft); color: var(--accent);
+}
+.view-switch-label { overflow: hidden; text-overflow: ellipsis; }
+.view-switch-tag {
+  flex: none; padding: 0 4px; border: 1px solid var(--line); border-radius: var(--r-pill);
+  font-size: var(--f-xs); font-weight: 500; color: var(--muted);
+}
 .conversation-nav { margin: 0 8px 4px; padding: 8px 10px; border: 0; text-align: left; background: transparent; font-weight: 600; }
 .conversation-nav:not(.active):hover { background: var(--line); }
 #cluster-list { flex: 1; overflow-y: auto; padding: 4px 8px; }

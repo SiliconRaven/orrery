@@ -13,7 +13,7 @@ const PERMISSIONS = {
   'tools.provide': '为群员提供工具',
   'ui.show': '显示插件界面',
 };
-const UI_POSITIONS = { titlebar: '群聊标题栏', workbench: '任务工作台', marks: '插件标记' };
+const UI_POSITIONS = { titlebar: '群聊标题栏', workbench: '任务工作台', starmap: '星图面板', marks: '插件标记' };
 const CLUSTER_PERMISSIONS = Object.keys(PERMISSIONS).filter((name) => name !== 'messages.send' && name !== 'messages.mention');
 const EVENTS = {
   'message.created': '新消息',

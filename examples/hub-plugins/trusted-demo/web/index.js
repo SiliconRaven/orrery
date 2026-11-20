@@ -31,11 +31,84 @@ export function register({ api, ui, onDispose }) {
   document.addEventListener('keydown', shortcut);
   onDispose(() => document.removeEventListener('keydown', shortcut));
 
+  const panelCleanups = new Map();
+
+  function detachPanel(el) {
+    if (el) {
+      const fn = panelCleanups.get(el);
+      panelCleanups.delete(el);
+      fn?.();
+      return;
+    }
+    for (const fn of panelCleanups.values()) fn?.();
+    panelCleanups.clear();
+  }
+
+  function mountPanel(el, panelCtx) {
+    detachPanel(el);
+    if (!panelCtx.clusterId) {
+      el.replaceChildren(h('p', { class: 'muted', style: 'padding:12px' }, '请先进入一个群聊再打开群便签。'));
+      return () => {};
+    }
+    let alive = true;
+    const listBox = h('div', { 'data-trusted-demo': 'panel-list', style: 'flex:1;overflow:auto;padding:12px;' });
+    const input = h('textarea', { rows: 2, maxlength: 500, placeholder: '写一条群便签…', 'data-trusted-demo': 'panel-input' });
+    const err = h('p', { class: 'form-error', hidden: true });
+    const sendBtn = h('button', { type: 'submit', class: 'primary small' }, '添加便签');
+    const form = h('form', { style: 'display:grid;gap:8px;padding:10px 12px;border-top:1px solid var(--line);' }, input, err, h('div', { class: 'row end' }, sendBtn));
+    const wrap = h('div', { style: 'display:flex;flex-direction:column;height:100%;min-height:0;' }, listBox, form);
+    el.replaceChildren(wrap);
+
+    async function refresh() {
+      try {
+        const { notes } = await panelCtx.api('GET', notesPath(panelCtx.clusterId));
+        if (!alive) return;
+        listBox.replaceChildren(notes.length
+          ? h('ul', { style: 'margin:0;padding-left:18px;display:grid;gap:6px;' }, notes.map((n) => h('li', {}, `${n.author}：${n.body}`)))
+          : h('p', { class: 'muted' }, `这个群还没有便签。群员也可以用工具 ${tool} 留便签。`));
+      } catch (e) {
+        if (alive) listBox.replaceChildren(h('p', { class: 'form-error' }, e.message));
+      }
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const body = input.value.trim();
+      if (!body) return;
+      err.hidden = true;
+      sendBtn.disabled = true;
+      try {
+        await panelCtx.api('POST', notesPath(panelCtx.clusterId), { body });
+        if (!alive) return;
+        input.value = '';
+        await refresh();
+      } catch (e) {
+        if (alive) { err.textContent = e.message; err.hidden = false; }
+      } finally {
+        sendBtn.disabled = false;
+      }
+    });
+
+    void refresh();
+    const cleanup = () => { alive = false; };
+    panelCleanups.set(el, cleanup);
+    return () => detachPanel(el);
+  }
+
   return {
     composer({ getClusterId }) {
       currentCluster = getClusterId;
       return h('button', { type: 'button', class: 'small', 'data-trusted-demo': 'open', title: `本群便签（完全信任示例插件 ${id}，Alt+Shift+N）`,
         onclick: () => open(getClusterId()) }, '便签');
+    },
+    panel: {
+      id: 'notes',
+      title: '群便签',
+      icon: 'file',
+      scope: 'cluster',
+      defaultSize: { w: 460, h: 400 },
+      mount: mountPanel,
+      unmount(el) { detachPanel(el); },
     },
   };
 }

@@ -56,8 +56,10 @@ class FakeElement {
   descendants(): FakeElement[] { return this.children.flatMap((child) => [child, ...child.descendants()]); }
   matches(selector: string) {
     if (selector === CONTROLS) return ['input', 'textarea', 'select'].includes(this.localName);
+    if (selector.startsWith('.')) return this.className.split(/\s+/).includes(selector.slice(1));
     return selector === this.localName;
   }
+  querySelector(selector: string) { return this.descendants().find((node) => node.matches(selector)) ?? null; }
   querySelectorAll(selector: string) {
     const slot = /^\[data-plugin-slot="(.+)"\]$/.exec(selector);
     return this.descendants().filter((node) => (slot ? node.getAttribute('data-plugin-slot') === slot[1] : node.matches(selector)));
@@ -512,4 +514,140 @@ test('view host: the covered area is inert, reads end with the opening, focus ne
   assert.equal(deltaButton.parent, null);
   assert.equal(chat.inert, false);
   assert.equal(doc.activeElement, settings);
+});
+
+test('panel slot: shape checks refuse bad descriptors and accept valid single or array panels', async () => {
+  const validPanel = (id = 'tasks', extra: Record<string, unknown> = {}) => ({
+    id, title: () => `Title ${id}`, icon: 'orbit', scope: 'cluster',
+    defaultSize: { w: 520, h: 420 }, badge: () => '3', mount() {}, unmount() {}, ...extra,
+  });
+  const bad: [string, unknown][] = [
+    ['empty array', []],
+    ['non-object', 'bad'],
+    ['unknown key', validPanel('a', { extra: 1 })],
+    ['bad id', validPanel('Bad_Id')],
+    ['duplicate id', [validPanel('dup'), validPanel('dup')]],
+    ['empty title', validPanel('a', { title: '   ' })],
+    ['unknown icon', validPanel('a', { icon: 'missing' })],
+    ['bad scope', validPanel('a', { scope: 'invalid' })],
+    ['bad size', validPanel('a', { defaultSize: { w: -1, h: 100 } })],
+    ['extra size key', validPanel('a', { defaultSize: { w: 100, h: 100, z: 1 } })],
+    ['non-fn badge', validPanel('a', { badge: '3' })],
+    ['missing unmount', { id: 'a', title: 'A', icon: 'orbit', scope: 'global', mount() {} }],
+    ['promise panel', Promise.resolve(validPanel('a'))],
+  ];
+  for (const [label, panel] of bad) {
+    const slots = await loadPluginSlots({ trustedFrontend: ['p'], plugins: [{ id: 'p' }] }, { api: async () => ({}) },
+      noOfficial, async () => ({ register: () => ({ panel }) }), hasIcon);
+    assert.equal(slots.panel.length, 0, `refused: ${label}`);
+  }
+  const ok = await loadPluginSlots({ frontend: ['ok'], plugins: [{ id: 'ok' }] }, { api: async () => ({}) },
+    async () => ({ register: () => ({ panel: [validPanel('one'), validPanel('two', { scope: 'global', badge: () => 5 })] }) }),
+    noOfficial, hasIcon);
+  assert.deepEqual(ok.panel.map((p: any) => [p.key, p.scope, p.title(), p.badge('c1')]), [
+    ['ok:one', 'cluster', 'Title one', '3'],
+    ['ok:two', 'global', 'Title two', '5'],
+  ]);
+  const badFs = await loadPluginSlots({ trustedFrontend: ['fs'], plugins: [{ id: 'fs' }] }, { api: async () => ({}) },
+    noOfficial, async () => ({ register: () => ({ view: { id: 'fs', title: 'FS', icon: 'orbit', fullscreen: 'yes', mount() {}, unmount() {} } }) }), hasIcon);
+  assert.equal(badFs.view.length, 0, 'non-boolean view.fullscreen refused');
+});
+
+test('view host fullscreen, switcher, ctx.leave, ctx.actions, ctx.panels and ctx.pluginUi', async (t) => {
+  const { doc, app, head, settings, layer, back, heading } = page(t);
+  const switcher = doc.createElement('div');
+  switcher.hidden = true;
+  app.append(switcher);
+  const sidebar = doc.createElement('aside');
+  const chatBody = doc.createElement('div');
+  const banner = doc.createElement('div');
+  app.append(sidebar, chatBody, banner);
+
+  const calls: string[] = [];
+  let allowLeave = false;
+  let themeSet: unknown = 'unset';
+  let frameClosed = 0;
+  const slots = await loadPluginSlots(
+    { frontend: ['star'], trustedFrontend: ['extp'], plugins: [{ id: 'star' }, { id: 'extp' }] },
+    { api: async () => ({}) },
+    async () => ({ register: () => ({ view: sampleView('star', calls, { fullscreen: true }) }) }),
+    async () => ({ register: () => ({ panel: { id: 'p1', title: 'Ext Panel', icon: 'orbit', scope: 'cluster', mount() {}, unmount() {} } }) }),
+    hasIcon,
+  );
+  const host = createViewHost({
+    doc, app, layer, heading, back, before: settings, switcher,
+    api: async () => ({}), clusterId: () => 'c1', openChat: () => {}, theme: () => 'dark',
+    actions: {
+      openSettings: (sec: string) => calls.push(`settings:${sec}`),
+      getPaused: () => ({ paused: true, clusters: ['c1'] }),
+      togglePause: async () => { calls.push('togglePause'); },
+    },
+    pluginUi: {
+      starmapItems: (cid: string) => [{ pluginId: 'tp', name: 'TP', clusterId: cid }],
+      mountStarmapFrame: () => ({ shell: doc.createElement('section'), close: () => { frameClosed++; } }),
+      setStarmapTheme: (snap: unknown) => { themeSet = snap; },
+    },
+    covered: (fullscreen: boolean) => (fullscreen ? [chatBody, sidebar] : [chatBody]),
+    confirmLeave: async () => allowLeave,
+  });
+  slots.onRelease = () => { host.setViews(slots.view); host.setPanels(slots.panel); };
+  slots.closePanels = (id: string) => host.releasePanels(id);
+  slots.closeView = (id: string) => host.release(id);
+  host.setViews(slots.view);
+  host.setPanels(slots.panel);
+
+  assert.equal(switcher.hidden, false, 'switcher visible when a view exists');
+  assert.equal(switcher.children.length, 2, 'standard button + star button');
+  assert.equal(switcher.children[0].getAttribute('aria-pressed'), 'true');
+  assert.equal(switcher.children[1].getAttribute('aria-pressed'), 'false');
+
+  // Open fullscreen view: app gets view-fullscreen, sidebar & chatBody inert, banner stays interactive.
+  switcher.children[1].dispatch('click', {});
+  assert.equal(app.classList.contains('view-open'), true);
+  assert.equal(app.classList.contains('view-fullscreen'), true);
+  assert.deepEqual([chatBody.inert, sidebar.inert, banner.inert], [true, true, false]);
+  assert.equal(switcher.children[1].getAttribute('aria-pressed'), 'true');
+
+  const ctx = sampleView.last.ctx;
+  ctx.actions.openSettings('plugins');
+  assert.deepEqual(ctx.actions.getPaused(), { paused: true, clusters: ['c1'] });
+  await ctx.actions.togglePause();
+  assert.equal(ctx.panels.list().length, 1);
+  const releasedPanels: unknown[] = [];
+  ctx.panels.onChange((rid: unknown) => releasedPanels.push(rid));
+  ctx.pluginUi.setStarmapTheme({ name: 'starmap:sol' });
+  assert.deepEqual(themeSet, { name: 'starmap:sol' });
+  ctx.pluginUi.mountStarmapFrame({ pluginId: 'tp', name: 'TP' }, 'c1');
+
+  // Releasing panel plugin notifies open view before DOM teardown.
+  detachPluginSlots(slots, ['extp']);
+  assert.deepEqual(releasedPanels, ['extp', null]);
+  assert.equal(ctx.panels.list().length, 0);
+
+  // ctx.hasTypedInput + ctx.trackTypedInput track typed drafts per panel container, matching ctx.leave().
+  const panelBox = doc.createElement('div');
+  sampleView.last.el.append(panelBox);
+  ctx.trackTypedInput(panelBox, 'star');
+  const input = doc.createElement('textarea');
+  input.type = 'textarea';
+  panelBox.append(input);
+  assert.equal(ctx.hasTypedInput(panelBox), false);
+  input.dispatch('focusin', { isTrusted: true, target: input });
+  input.value = 'draft dm';
+  input.dispatch('input', { isTrusted: true, target: input });
+  assert.equal(ctx.hasTypedInput(panelBox), true);
+  ctx.leave();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(host.isOpen(), true, 'cancelled leave keeps fullscreen view open');
+
+  allowLeave = true;
+  ctx.leave();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(host.isOpen(), false);
+  assert.equal(app.classList.contains('view-fullscreen'), false);
+  assert.deepEqual([chatBody.inert, sidebar.inert], [false, false]);
+  assert.equal(frameClosed, 1, 'leftover starmap iframe closed on view exit');
+  assert.equal(themeSet, null, 'starmap theme cleared on view exit');
+  await assert.rejects(ctx.actions.togglePause(), /closed/);
+  assert.deepEqual(calls.filter((c) => c.startsWith('settings:') || c === 'togglePause'), ['settings:plugins', 'togglePause']);
 });

@@ -1563,7 +1563,7 @@ export class Hub {
       built.push({
         id, clusterId: cluster.id, name: memberName, avatar, harness: spec.harness,
         model: session.model, effort: effort ?? null, workerSessionId: session.sessionId, cwd: session.cwd, origin: session.origin, removedAt: null,
-        hiddenAt: null,   // the same shape as a member read back from the store (toMember)
+        hiddenAt: null, bindingGen: 1,   // the same shape as a member read back from the store (toMember)
       });
     }
 
@@ -1640,8 +1640,11 @@ export class Hub {
     const events: HubEvent[] = [];
     const afterCommit: (() => void)[] = [];
     let publishNotice!: () => void;
-    const { member, rebind } = this.store.transaction(() => {
-      if (this.store.getMember(memberId)?.workerSessionId !== before.workerSessionId) throw new Error('the member changed meanwhile, try again');
+    const { member, rebind, cancelled } = this.store.transaction(() => {
+      const current = this.store.getMember(memberId);
+      if (!current || current.workerSessionId !== before.workerSessionId || current.bindingGen !== before.bindingGen) {
+        throw new Error('the member changed meanwhile, try again');
+      }
       if (this.store.getMembersBySession(before.harness, info.id).some((m) => m.clusterId === before.clusterId)) {
         throw new Error(`session ${info.id} is already a member of this cluster`);
       }
@@ -1650,7 +1653,7 @@ export class Hub {
         const answer: unknown = plugin.memberRebinding?.(this.store, before, { harness: before.harness, workerSessionId: info.id });
         if (isThenable(answer)) throw new PluginHookError(plugin.id, 'memberRebinding', asyncRefused(answer, 'memberRebinding'));
       }
-      const { member, interrupted } = this.store.rebindMember(memberId, { workerSessionId: info.id, cwd: info.cwd, model: info.model });
+      const { member, interrupted, cancelled } = this.store.rebindMember(memberId, { workerSessionId: info.id, cwd: info.cwd, model: info.model });
       for (const plugin of this.store.plugins.enabled) {
         runHook(plugin, 'memberRebound', () => plugin.memberRebound?.(this.store, before.clusterId, memberId, actorKey(before), actorKey(member)));
       }
@@ -1662,13 +1665,16 @@ export class Hub {
         events.push(this.store.appendEvent(member.clusterId, memberId, 'delivery', { delivery }));
         afterCommit.push(() => this.notifyFailedSender(delivery));
       }
+      for (const delivery of cancelled) events.push(this.store.appendEvent(member.clusterId, memberId, 'delivery', { delivery }));
       const event = this.store.appendEvent(member.clusterId, memberId, 'member', { member: this.withStatus(member), rebind });
       events.push(event);
-      publishNotice = this.rebindNotice(member, rebind, interrupted.length, event.seq);
-      return { member, rebind };
+      const publicInterruptions = interrupted.filter((delivery) => !this.store.getMessage(delivery.messageId)?.privateTo).length;
+      publishNotice = this.rebindNotice(member, rebind, publicInterruptions, event.seq);
+      return { member, rebind, cancelled };
     });
 
     // After the commit, as on removal. A late completion of the old run must not touch these results or a new run.
+    for (const delivery of cancelled) this.pending.delete(delivery.id);
     const run = this.running.get(memberId);
     if (run) {
       this.running.delete(memberId);
@@ -1777,7 +1783,7 @@ export class Hub {
     const list = (items: Task[]) => (items.length ? items.map((task) => `- 任务${task.number ? ` #${task.number}` : ''}【${task.title}】（${task.id}，${OPEN_STATUS_LABEL[task.status]}）`) : ['- 无']);
     const who = personName(this.store, member.clusterId, member.id);
     const lines = [
-      `用户把 ${who} 换到了新对话，并已确认原对话停止。成员身份、角色、${view ? '未读和任务' : '未读'}都没有变。`,
+      `用户把 ${who} 换到了新对话，并已确认原对话停止。成员身份、角色、${view ? '群聊未读和任务' : '群聊未读'}都没有变。`,
       `原对话：${rebind.fromSessionId}（${rebind.fromCwd}）`,
       `新对话：${rebind.toSessionId}（${rebind.toCwd}）`,
       ...(interrupted ? [`原对话有 ${interrupted} 条在途投递，结果记为未知，这些消息仍算 ${who} 未读。`] : []),
@@ -2084,9 +2090,34 @@ export class Hub {
    * `kind: 'handover'` marks a handover package send: it is a user message, but the package's own "user requests"
    * section excludes it (and delivery handoffs) so a sent package never becomes the cluster's goal.
    */
-  sendFromUser(clusterId: string, body: unknown, to?: unknown, attachments?: unknown, taskIds?: unknown, kind?: 'handover'): Message {
+  sendFromUser(clusterId: string, body: unknown, to?: unknown, attachments?: unknown, taskIds?: unknown, kind?: 'handover',
+    privateMessage?: unknown, expectedBindingGen?: unknown): Message {
     if (typeof body !== 'string') throw new Error('body is required');
     if (!this.store.getCluster(clusterId)) throw new Error(`unknown cluster ${clusterId}`);
+    if (privateMessage !== undefined && privateMessage !== true) throw new Error('private must be true or omitted');
+    if (expectedBindingGen !== undefined) {
+      if (privateMessage !== true) throw new Error('expectedBindingGen is only valid for private messages');
+      if (typeof expectedBindingGen !== 'number' || !Number.isSafeInteger(expectedBindingGen) || expectedBindingGen < 1) {
+        throw new Error('expectedBindingGen must be a positive integer');
+      }
+    }
+    let privateTarget: StoredMember | null = null;
+    if (privateMessage === true) {
+      if (!Array.isArray(to) || to.length !== 1 || typeof to[0] !== 'string') throw new Error('private messages require exactly one recipient');
+      privateTarget = this.store.getMember(to[0]);
+      if (!privateTarget || privateTarget.clusterId !== clusterId || privateTarget.hiddenAt) {
+        throw new Error('private messages require a shown, active member of this cluster');
+      }
+      if (expectedBindingGen !== undefined && (privateTarget.bindingGen ?? 1) !== expectedBindingGen) {
+        throw Object.assign(new Error('member binding changed; confirm the new conversation before sending'), { code: 'BINDING_CHANGED' });
+      }
+      if (kind !== undefined || (taskIds !== undefined && (!Array.isArray(taskIds) || taskIds.length))) {
+        throw new Error('private messages do not support tasks or handover');
+      }
+      if (attachments !== undefined && (!Array.isArray(attachments) || attachments.length)) {
+        throw new Error('private messages do not support attachments');
+      }
+    }
     const files = this.checkAttachments(clusterId, attachments);
     if (!body.trim() && !files.length) throw new Error('body is required');
     const members = this.store.listMembers(clusterId);
@@ -2108,7 +2139,8 @@ export class Hub {
     const recipients = fallback ? [fallback] : mentions;
     const id = randomUUID();
     return this.post({ id, clusterId, from: 'user', mentions, body, replyTo: null, chainId: id, hop: 0, createdAt: new Date().toISOString(),
-      ...(kind ? { kind } : {}) }, recipients, direct, files, linkedTaskIds);
+      ...(kind ? { kind } : {}), ...(privateTarget ? { privateTo: privateTarget.id, privateBindingGen: privateTarget.bindingGen ?? 1 } : {}) },
+    recipients, direct, files, linkedTaskIds);
   }
 
   /** Called by the external broker after it authenticates the plugin and validates the write grant and cause. */
@@ -2195,6 +2227,7 @@ export class Hub {
     const source = this.store.getDelivery(deliveryId);
     const original = source && this.store.getMessage(source.messageId);
     if (!source || !original || original.clusterId !== clusterId) throw new Error('unknown delivery in this cluster');
+    if (original.privateTo) throw new Error('private messages cannot be handed off');
     if (source.handoffMessageId) {
       const message = this.store.getMessage(source.handoffMessageId);
       if (!message || message.clusterId !== clusterId || message.mentions.length !== 1) throw new Error('stored handoff is invalid');
@@ -2256,10 +2289,11 @@ export class Hub {
       throw new Error('rejected: this message chain has reached its turn limit');
     }
     const what = source.outcome === 'unknown' ? '结果未知，可能已经执行过，请先确认没有重复' : source.state === 'offline' ? '离线，当时没有送到' : '失败';
-    const body = `用户重发：这条消息之前的投递${what}。\n原发送者：${original.from === 'system' ? '系统' : personName(this.store, clusterId, original.from)}`
+    const body = original.privateTo ? original.body : `用户重发：这条消息之前的投递${what}。\n原发送者：${original.from === 'system' ? '系统' : personName(this.store, clusterId, original.from)}`
       + `${source.error ? `\n原因：${source.error}` : ''}\n\n原请求：\n${original.body}`;
     return this.recordHandoff(source, original, { id: randomUUID(), clusterId, from: 'user', mentions: [current.id], body,
-      replyTo: original.id, chainId: original.chainId, hop: original.hop, createdAt: new Date().toISOString(), kind: 'resend' });
+      replyTo: original.id, chainId: original.chainId, hop: original.hop, createdAt: new Date().toISOString(), kind: 'resend',
+      ...(original.privateTo ? { privateTo: original.privateTo, privateBindingGen: original.privateBindingGen } : {}) });
   }
 
   /** The delivery a resend acts on, and its earlier resend if there is one (a retry after a lost response gets that one back). */
@@ -2267,6 +2301,10 @@ export class Hub {
     const source = this.store.getDelivery(deliveryId);
     const original = source && this.store.getMessage(source.messageId);
     if (!source || !original || original.clusterId !== clusterId) throw new Error('unknown delivery in this cluster');
+    if (original.privateTo) {
+      const target = this.store.getMember(source.memberId);
+      if (!target || !this.canSeeMessage(target, original)) throw new Error('the private message was addressed to a previous or removed binding');
+    }
     if (!source.handoffMessageId) return { source, original };
     const message = this.store.getMessage(source.handoffMessageId);
     if (!message || message.clusterId !== clusterId || message.mentions.length !== 1) throw new Error('stored handoff is invalid');
@@ -2323,12 +2361,12 @@ export class Hub {
   /** The new message, its deliveries, and the original delivery's link to it, in one transaction; then publish and schedule. */
   private recordHandoff(source: Delivery, original: Message, message: Message): { message: Message; sourceDelivery: Delivery } {
     const { clusterId, mentions: [targetId] } = message;
-    const files = this.store.attachmentsOf(original.id);
+    const files = message.privateTo ? [] : this.store.attachmentsOf(original.id);
     const pending: Delivery[] = [];
     let sourceDelivery!: Delivery;
     const events = this.store.transaction(() => {
       // The store checks the one-handoff invariant again in the same transaction as message and event writes.
-      const deliveries = this.store.insertMessage(message, [targetId], false, files.map((f) => f.id)).map((d) => this.decideOnline(d, pending));
+      const deliveries = this.store.insertMessage(message, [targetId], Boolean(message.privateTo), files.map((f) => f.id)).map((d) => this.decideOnline(d, pending));
       sourceDelivery = this.store.setHandoff(source.id, message.id);
       return [
         this.store.appendEvent(clusterId, null, 'message', { message, deliveries, ...(files.length ? { attachments: files } : {}) }),
@@ -2633,6 +2671,8 @@ export class Hub {
         : (replyTo ? this.store.lastDeliveredToSession(from.harness, from.workerSessionId, replyTo) : null)
           ?? this.store.lastDeliveredToSession(from.harness, from.workerSessionId);
     }
+    // A public post starts a fresh chain while or immediately after handling a private message.
+    if (handling?.privateTo) handling = null;
     const chainId = handling?.chainId ?? id;
     const hop = handling ? handling.hop + 1 : 0;
     // Unlimited skips only this check; chainId and hop are computed and stored as always.
@@ -2726,6 +2766,7 @@ export class Hub {
       const member = this.store.getMember(actor.memberId)!;
       handling = this.sessionRun(member)?.messages.at(-1) ?? this.store.lastDeliveredToSession(member.harness, member.workerSessionId);
     }
+    if (handling?.privateTo) handling = null;
     const id = randomUUID();
     const chainId = handling?.chainId ?? id;
     const hop = handling ? handling.hop + 1 : 0;
@@ -2857,7 +2898,7 @@ export class Hub {
       for (const [memberId, run] of this.running) {
         const clusterId = this.store.getMember(memberId)?.clusterId;
         if (!clusterId || !run.waiting || run.queueWarned || run.messages[0].createdAt > cutoff
-          || this.store.clusterPause(clusterId).paused) continue;
+          || run.messages[0].privateTo || this.store.clusterPause(clusterId).paused) continue;
         const e = entry(memberId);
         e.run = run;
         e.messages.unshift(...run.messages);
@@ -3014,7 +3055,7 @@ export class Hub {
 
   private deliveryNotification(event: HubEvent, delivery: Delivery): (() => void) | undefined {
     const original = this.store.getMessage(delivery.messageId);
-    if (!original || original.kind === 'system' || original.kind === 'plugin' || !this.store.getCluster(original.clusterId)) return;
+    if (!original || original.privateTo || original.kind === 'system' || original.kind === 'plugin' || !this.store.getCluster(original.clusterId)) return;
     const policy = this.store.coordinator?.policy(original.clusterId);
     if (!policy?.enabled || policy.memberId === delivery.memberId || policy.memberId === original.from) return;
     const view = this.store.tasks;
@@ -3161,7 +3202,7 @@ export class Hub {
   /** Per recipient, how the message's deliveries stand (read_messages shows them to the message's sender only). */
   deliveryOutcomes(messageId: string, viewerId = 'user'): DeliveryOutcome[] {
     const msg = this.store.getMessage(messageId);
-    if (!msg) return [];
+    if (!msg || (msg.privateTo && viewerId !== 'user' && !this.messageVisibleToMember(viewerId, msg))) return [];
     const members = this.store.listMembers(msg.clusterId, { includeRemoved: true });
     return this.deliveriesSeenBy(msg, viewerId).map((d) => ({
       to: memberLabel(members, d.memberId),
@@ -3169,15 +3210,27 @@ export class Hub {
     }));
   }
 
+  /** Message hints may select a caller's membership only if that caller can see the message. */
+  messageVisibleToMember(memberId: string, message: Message): boolean {
+    const member = this.store.getMember(memberId);
+    return member !== null && !member.hiddenAt && this.canSeeMessage(member, message);
+  }
+
+  private canSeeMessage(member: StoredMember, message: Message): boolean {
+    return member.clusterId === message.clusterId && (!message.privateTo
+      || (message.privateTo === member.id && message.privateBindingGen === (member.bindingGen ?? 1)));
+  }
+
   /** Read-only: current membership and coordinator authorization are checked on every call. */
   getDeliveries(memberId: string, messageId: string): DeliveryReport {
     const member = this.store.getMember(memberId);
     const message = this.store.getMessage(messageId);
-    if (!member || !message || message.clusterId !== member.clusterId) {
+    if (!member || !message || !this.canSeeMessage(member, message)) {
       throw new CollaborationError('FORBIDDEN', 'message is not in your cluster');
     }
     const coordinator = this.store.coordinator?.policy(member.clusterId);
-    if (message.from !== member.id && !(coordinator?.enabled && coordinator.memberId === member.id && coordinator.permissions.deliveryControl)) {
+    if (!message.privateTo && message.from !== member.id
+      && !(coordinator?.enabled && coordinator.memberId === member.id && coordinator.permissions.deliveryControl)) {
       throw new CollaborationError('FORBIDDEN', 'only the sender or the enabled coordinator with deliveryControl may inspect deliveries');
     }
     return {
@@ -3268,7 +3321,7 @@ export class Hub {
     const limit = opts.limit ?? 20;
     const filters = this.readFilters(member, opts);
     const msgs = opts.history || opts.before !== undefined
-      ? this.store.listMessages(member.clusterId, limit, opts.before, filters)
+      ? this.store.listMessages(member.clusterId, limit, opts.before, filters, { viewerMemberId: member.id, viewerBindingGen: member.bindingGen ?? 1 })
       : this.store.listUnread(member.id, member.clusterId, limit, filters);
     // Receipts and their event in one transaction: the web rebuilds read markers by replaying events.
     this.atomically((record) => this.markRead(member, msgs.filter((m) => m.from !== member.id).map((m) => m.id), 'read_messages', record));
@@ -3294,7 +3347,7 @@ export class Hub {
     let beforeRowid: number | undefined;
     let until: string | undefined;
     if (hasBefore) {
-      beforeRowid = this.store.messageRowid(member.clusterId, point.before!) ?? undefined;
+      beforeRowid = this.store.messageRowid(member.clusterId, point.before!, { viewerMemberId: member.id, viewerBindingGen: member.bindingGen ?? 1 }) ?? undefined;
       if (beforeRowid === undefined) throw new Error('before must be a message in this cluster');
     } else if (hasUntil) {
       until = this.isoTime(point.until!, 'until');
@@ -3359,7 +3412,7 @@ export class Hub {
     }
     for (const id of messageIds) {
       const message = this.store.getMessage(id);
-      if (!message || message.clusterId !== member.clusterId || message.from === member.id) {
+      if (!message || !this.canSeeMessage(member, message) || message.from === member.id) {
         throw new Error('cannot acknowledge one or more messages');
       }
     }
@@ -3716,6 +3769,18 @@ export class Hub {
     // The queued member messages are still over the cap: keep the guard and the recheck, even though this batch runs.
     if (limited && queue.some((q) => q.message.from !== 'system')) holdTurns();
     const messages = batch.map((q) => this.store.getMessage(q.message.id)!);
+    // A queued private turn can only start under the binding it was addressed to.
+    const stale = batch.filter((_, index) => messages[index].privateTo && !this.canSeeMessage(member, messages[index]));
+    if (stale.length) {
+      this.atomically((record) => {
+        for (const q of stale) {
+          const delivery = this.store.setDeliveryState(q.id, 'failed', '成员已换绑，原私聊不再投递');
+          record(member.clusterId, memberId, 'delivery', { delivery });
+        }
+      });
+      queueMicrotask(() => this.scheduleSession(member));
+      return;
+    }
     const batchId = first.batchId ?? first.id;
     const { deliveries, events, statuses } = this.store.transaction(() => {
       const events: HubEvent[] = [];
@@ -3894,6 +3959,7 @@ export class Hub {
    * written once the plugins answered (at most their timeout later), even if the run has ended meanwhile.
    */
   private postReply(member: StoredMember, run: Running, text: string): void {
+    if (run.messages[0].privateTo) return;  // the reply is already in the private native conversation
     if (this.closed || run.sentMcpMessage || !text.trim() || this.running.get(member.id) !== run || !this.store.getMember(member.id)) return;
     if (this.store.getMember(member.id)?.hiddenAt) return;   // hidden during the turn: its answer is not posted
     this.sendFromMemberGated(member.id, text, run.messages.at(-1)!.id).catch((e: unknown) => {

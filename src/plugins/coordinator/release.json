@@ -1,11 +1,12 @@
 {
   "format": 1,
   "id": "coordinator",
-  "version": "0.10.0-beta.2",
+  "version": "0.10.0-beta.4",
   "keyId": "orrery-official-1",
-  "hub": { "api": 1, "minVersion": "0.10.0-beta.3" },
-  "requires": [{ "id": "tasks", "minVersion": "0.10.0-beta.2", "beforeVersion": "2.0.0" }],
+  "hub": { "api": 1, "minVersion": "0.10.0-beta.4" },
+  "requires": [{ "id": "tasks", "minVersion": "0.10.0-beta.4", "beforeVersion": "2.0.0" }],
   "migrationVersion": 0,
   "entry": "hub/index.mts",
-  "icon": "icon.svg"
+  "icon": "icon.svg",
+  "web": { "entry": "web/index.js", "english": "web/i18n/en.json" }
 }

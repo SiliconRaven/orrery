@@ -881,10 +881,23 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
       // (half older, the message, the rest newer); always oldest first.
       const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 50, 1), 1000);
       const around = url.searchParams.get('around'), after = url.searchParams.get('after');
+      const privateWith = url.searchParams.get('privateWith');
+      if (privateWith !== null) {
+        if (around !== null || url.searchParams.has('q') || url.searchParams.getAll('privateWith').length !== 1
+          || (after !== null && url.searchParams.has('before'))) throw new Error('invalid private message query');
+        if (!hub.store.getCluster(m[0]) || hub.store.getMember(privateWith, { includeRemoved: true })?.clusterId !== m[0]) {
+          return json(res, 404, { error: 'not found' });
+        }
+        const audience = { privateWith };
+        const messages = after === null
+          ? hub.store.listMessages(m[0], limit, url.searchParams.get('before') ?? undefined, undefined, audience)
+          : hub.store.listMessagesAfter(m[0], limit, after, audience);
+        return json(res, 200, hub.store.withDeliveries(messages), { ...seqHeader(hub), 'cache-control': 'no-store' });
+      }
       let msgs;
       if (around !== null) {
         const message = hub.store.getMessage(around);
-        if (message?.clusterId !== m[0]) return json(res, 404, { error: 'not found' });
+        if (message?.clusterId !== m[0] || message?.privateTo !== undefined) return json(res, 404, { error: 'not found' });
         const older = Math.floor(limit / 2);
         msgs = [...hub.listMessages(m[0], older, around), message, ...hub.store.listMessagesAfter(m[0], limit - older - 1, around)];
       } else if (after !== null) msgs = hub.store.listMessagesAfter(m[0], limit, after);
@@ -907,21 +920,23 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
     }
     // The user's history search: read-only, every message of the cluster (removed and hidden members' too), bounded per call.
     if (method === 'GET' && (m = route(/^\/api\/clusters\/([^/]+)\/messages\/search$/))) {
+      if (url.searchParams.has('privateWith')) throw new Error('private message history does not support search');
       const answer = searchClusterMessages(hub.store, m[0], url.searchParams);
       return answer ? json(res, 200, answer) : json(res, 404, { error: 'not found' });
     }
     if (method === 'GET' && (m = route(/^\/api\/clusters\/([^/]+)\/messages\/([^/]+)$/))) {
       const message = hub.store.getMessage(m[1]);
-      if (!hub.store.getCluster(m[0]) || message?.clusterId !== m[0]) return json(res, 404, { error: 'not found' });
+      if (!hub.store.getCluster(m[0]) || message?.clusterId !== m[0] || message?.privateTo !== undefined) return json(res, 404, { error: 'not found' });
       return json(res, 200, hub.store.withDeliveries([message])[0], seqHeader(hub));
     }
     if (method === 'POST' && (m = route(/^\/api\/clusters\/([^/]+)\/messages$/))) {
-      const { body, to, attachments, taskIds, handover } = await readJson(req);
+      const { body, to, attachments, taskIds, handover, private: privateMessage, expectedBindingGen } = await readJson(req);
       if (handover !== undefined && handover !== true) throw new Error('handover must be true when given');
-      const message = hub.sendFromUser(m[0], body, to, attachments, taskIds, handover ? 'handover' : undefined);
+      const message = hub.sendFromUser(m[0], body, to, attachments, taskIds, handover ? 'handover' : undefined, privateMessage, expectedBindingGen);
       // An @-text that ran into the text after a member's name (`@张三你好`) reached nobody: the page shows why.
       const mentionHints = to === undefined ? hub.userMentionHints(m[0], body) : [];
-      return json(res, 201, mentionHints.length ? { ...message, mentionHints } : message);
+      return json(res, 201, mentionHints.length ? { ...message, mentionHints } : message,
+        privateMessage === true ? { 'cache-control': 'no-store' } : undefined);
     }
     if (method === 'POST' && (m = route(/^\/api\/clusters\/([^/]+)\/deliveries\/([^/]+)\/handoff$/))) {
       return answerHandoff(hub, res, hub.handoffDelivery(m[0], m[1], await readJson(req)));

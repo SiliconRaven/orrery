@@ -14,7 +14,8 @@ import { collaborationRecords, collaborationTask } from '../src/plugins/tasks/pa
 import type { Message } from '../src/core/types.ts';
 
 /** Back to the v18 clusters table: no pin, archive or read position. */
-const DROP_V29 = "DROP TRIGGER deliveries_state_seq_insert; DROP TRIGGER deliveries_state_seq_update; DELETE FROM settings WHERE key = 'delivery_state_sequence'; ALTER TABLE deliveries DROP COLUMN state_seq; ALTER TABLE deliveries DROP COLUMN dismissed_at; ALTER TABLE reads DROP COLUMN seen_at";
+const DROP_V31 = 'ALTER TABLE members DROP COLUMN binding_gen; ALTER TABLE messages DROP COLUMN private_to; ALTER TABLE messages DROP COLUMN private_binding_gen';
+const DROP_V29 = DROP_V31 + "; DROP TRIGGER deliveries_state_seq_insert; DROP TRIGGER deliveries_state_seq_update; DELETE FROM settings WHERE key = 'delivery_state_sequence'; ALTER TABLE deliveries DROP COLUMN state_seq; ALTER TABLE deliveries DROP COLUMN dismissed_at; ALTER TABLE reads DROP COLUMN seen_at";
 const DROP_V28 = DROP_V29 + '; ALTER TABLE members DROP COLUMN hidden_at';
 const DROP_V27 = DROP_V28 + '; ALTER TABLE members DROP COLUMN unread_after_rowid; ALTER TABLE messages DROP COLUMN system_kind; ALTER TABLE messages DROP COLUMN explicit_mentions_json';
 const DROP_V23 = `DROP INDEX messages_client_id; ALTER TABLE messages DROP COLUMN client_message_id; ALTER TABLE messages DROP COLUMN task_stamp_json; ALTER TABLE messages DROP COLUMN fyi; ALTER TABLE deliveries DROP COLUMN queue_warned; ${DROP_V27}`;
@@ -165,10 +166,10 @@ function v30FailureEvent(event: { kind?: unknown; payload_json?: unknown }) {
 /** A missing file (no WAL) holds no token. */
 const hasToken = (path: string) => existsSync(path) && TOKENS.some((t) => readFileSync(path).includes(t));
 
-/** Everything a database migrated to the current schema (v22) must satisfy. */
+/** Everything a database migrated to the current schema (v31) must satisfy. */
 function checkLatest(store: Store): void {
   const db = store.db;
-  assert.equal((db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+  assert.equal((db.prepare('PRAGMA user_version').get() as any).user_version, 31);
   // v22: the merge window table exists and starts empty; v21 added no tables.
   assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'merge_windows'").all().map((r) => r.name), ['merge_windows']);
   assert.deepEqual(db.prepare('SELECT * FROM merge_windows').all(), []);
@@ -206,7 +207,7 @@ function checkLatest(store: Store): void {
     [['d0', null], ['d1', 'd1'], ['d2', null], ['d3', null], ['d4', null], ['d-b', null]]);
   assert.deepEqual(db.prepare('SELECT member_id, message_id, via, at FROM reads ORDER BY member_id').all().map((r) => ({ ...r })),
     [{ member_id: 'm-a', message_id: 'msg2', via: 'delivery', at: T }, { member_id: 'm-b', message_id: 'msg0', via: 'delivery', at: T }]);
-  assert.deepEqual(db.prepare('PRAGMA table_info(members)').all().map((c) => c.name), [...MEMBER_COLUMNS, 'mode', 'effort', 'removed_at', 'unread_after_rowid', 'hidden_at'], 'no mcp_token column');
+  assert.deepEqual(db.prepare('PRAGMA table_info(members)').all().map((c) => c.name), [...MEMBER_COLUMNS, 'mode', 'effort', 'removed_at', 'unread_after_rowid', 'hidden_at', 'binding_gen'], 'no mcp_token column');
   assert.deepEqual(db.prepare('SELECT DISTINCT mode, effort FROM members').all().map((r) => ({ ...r })), [{ mode: 'isolated', effort: null }],
     'existing members became isolated (v4), and keep that mark');
   assert.deepEqual(db.prepare('SELECT DISTINCT direct FROM messages').all().map((r) => r.direct), [0]);
@@ -438,7 +439,7 @@ test('v24 upgrades with an index for the external plugin rate boundary', (t) => 
 
   const upgraded = new Store(path);
   try {
-    assert.equal((upgraded.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+    assert.equal((upgraded.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
     const prepare = upgraded.db.prepare.bind(upgraded.db);
     const calls = t.mock.method(upgraded.db, 'prepare');
     const since = '2026-01-01T00:00:00.000Z';
@@ -454,9 +455,9 @@ test('v24 upgrades with an index for the external plugin rate boundary', (t) => 
 test('an unknown schema version is refused', () => {
   const path = join(tempDir(), 'future.db');
   const db = new DatabaseSync(path);
-  db.exec('PRAGMA user_version = 31');
+  db.exec('PRAGMA user_version = 32');
   db.close();
-  assert.throws(() => new Store(path), /unsupported database schema version 31/);
+  assert.throws(() => new Store(path), /unsupported database schema version 32/);
 });
 
 test('activity schema migrates v14 without changing existing data', () => {
@@ -467,7 +468,7 @@ test('activity schema migrates v14 without changing existing data', () => {
   old.close();
   const migrated = new Store(path);
   try {
-    assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+    assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
     assert.equal(migrated.getCluster('c')?.name, 'existing');
     assert.deepEqual(migrated.db.prepare('SELECT * FROM activity_snapshots').all(), []);
     assert.deepEqual(migrated.db.prepare('PRAGMA foreign_key_check').all(), []);
@@ -488,7 +489,7 @@ test('v16 to v19 adds role descriptions and the message event link and keeps exi
   raw.close();
   const migrated = new Store(path);
   try {
-    assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+    assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
     assert.deepEqual(migrated.collaborationRoles('c'), [{ id: 'r1', clusterId: 'c', name: '执行者', description: '' }]);
     migrated.setCollaborationRoleDescription('r1', '负责实现并提交结果');
     assert.deepEqual(migrated.collaborationRoles('c').map((r) => r.description), ['负责实现并提交结果']);
@@ -511,7 +512,7 @@ test('v17 to v19 adds an empty collaboration event link and leaves existing mess
   raw.close();
   const migrated = new Store(path);
   try {
-    assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+    assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
     const message = migrated.getMessage('msg')!;
     assert.equal(message.body, 'keep me');
     assert.equal(message.collabEventId, undefined);
@@ -535,7 +536,7 @@ test('v18 to v19 gives every cluster an empty pin, archive and read position and
   for (let open = 0; open < 2; open++) {   // the second open finds the latest version and changes nothing
     const migrated = new Store(path);
     try {
-      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       assert.deepEqual(dump(migrated.db), before, 'every row kept');
       const [c] = migrated.listClusters();
       assert.deepEqual([c.id, c.name, c.category, c.pinnedAt, c.archivedAt, c.userReadMessageId], ['c', 'kept', 'work', null, null, null]);
@@ -557,7 +558,7 @@ test('v19 to v22 runs the version-only steps, preserves history and adds the mer
   for (let open = 0; open < 2; open++) {
     const migrated = new Store(path);
     try {
-      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       assert.deepEqual(dump(migrated.db), before);
       assert.deepEqual(migrated.db.prepare('PRAGMA foreign_key_check').all(), []);
     } finally { migrated.close(); }
@@ -578,7 +579,7 @@ test('v20 to v22 runs the task lifecycle and merge window migrations, preserving
   for (let open = 0; open < 2; open++) {
     const migrated = new Store(path, new PluginHost(officialPlugins));
     try {
-      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       // v20 -> v21 is the task lifecycle's version-only step; v21 -> v22 creates the window table.
       assert.deepEqual(migrated.db.prepare('SELECT * FROM merge_windows').all(), []);
       assert.equal(collaborationTask(migrated, 'c', 'task')!.mergeRequired, false);
@@ -602,7 +603,7 @@ test('v21 to v22 adds the empty merge window table and keeps every row', () => {
   for (let open = 0; open < 2; open++) {   // the second open finds the latest version and changes nothing
     const migrated = new Store(path, new PluginHost(officialPlugins));
     try {
-      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       assert.deepEqual(migrated.db.prepare('SELECT * FROM merge_windows').all(), []);
       assert.deepEqual(dump(migrated.db), before);
       assert.deepEqual(migrated.db.prepare('PRAGMA foreign_key_check').all(), []);
@@ -621,7 +622,7 @@ test('v22 to v23 adds the idempotency key, the task stamp and the warned flag wi
   for (let open = 0; open < 2; open++) {
     const migrated = new Store(path);
     try {
-      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       assert.deepEqual(dump(migrated.db), before);
       assert.equal(migrated.getMessage('m')!.taskStamp, undefined);
       assert.equal(migrated.messageByClientId('user', 'x'), null);
@@ -664,7 +665,7 @@ test('v13 to v14 preserves history and enforces a per-cluster session boundary; 
   const store = new Store(path);
   try {
     assert.deepEqual(withoutV30(dump(store.db), before), before);
-    assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+    assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
     store.insertMembers([{ ...native, id: 'native-two', clusterId: 'two', name: 'N2' }]);
     assert.deepEqual(store.getMembersBySession('mock', 'shared').map((m) => m.id), ['native', 'native-two']);
     assert.throws(() => store.insertMembers([{ ...native, id: 'duplicate', name: 'N3' }]), /UNIQUE/);
@@ -751,7 +752,7 @@ test('read state: v5 → v7 keeps every row, backfills reads from done deliverie
   for (let open = 0; open < 2; open++) {   // the second open finds v13 and changes nothing
     const store = new Store(path);
     try {
-      assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       assert.deepEqual(dump(store.db), before, 'every row of every table kept, rowids included');
       assert.deepEqual(store.db.prepare('SELECT * FROM reads').all().map((r) => ({ ...r })),
         [{ member_id: 'm-a', message_id: 'msg0', via: 'delivery', at: `${T}-0`, seen_at: `${T}-0` }]);
@@ -784,7 +785,7 @@ test('hop limit: v6 → v7 adds an empty settings table and keeps every row; a s
 
   const store = new Store(path);
   try {
-    assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+    assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
     assert.deepEqual(dump(store.db), before, 'every row kept');
     assert.deepEqual(store.db.prepare('SELECT * FROM reads').all().map((r) => r.message_id), ['msg0']);
     assert.deepEqual(store.db.prepare('SELECT * FROM settings').all(), []);
@@ -830,7 +831,7 @@ test('usage: a v10 database (with cluster categories) gets the empty usage table
   for (let open = 0; open < 2; open++) {
     const store = new Store(path);
     try {
-      assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       assert.deepEqual(store.listClusters().map((c) => [c.id, c.category]), [['c1', 'work']]);
       assert.deepEqual(store.db.prepare('SELECT * FROM turn_usage').all(), []);
       assert.equal(store.loadQuotas().size, 0);
@@ -859,7 +860,7 @@ test('acknowledgements: v11 migration preserves history and reads without invent
   for (let i = 0; i < 2; i++) {
     const migrated = new Store(path);
     try {
-      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       assert.deepEqual(dump(migrated.db), before);
       assert.deepEqual(migrated.db.prepare('SELECT via FROM reads').all().map((r) => r.via), ['delivery']);
       assert.deepEqual(migrated.acknowledgementsOf('msg'), []);
@@ -973,7 +974,7 @@ test('v25 to v26 adds fyi column (default 0) and preserves legacy messages witho
   for (let open = 0; open < 2; open++) {
     const migrated = new Store(path);
     try {
-      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       const oldMsg = migrated.getMessage('legacy')!;
       assert.equal(oldMsg.body, 'old record');
       assert.equal(oldMsg.fyi, undefined, 'migrated v25 message stays non-fyi');
@@ -994,7 +995,7 @@ test('v26 to v27 migrates both empty and populated databases cleanly', () => {
   emptyInit.close();
   const emptyUpgraded = new Store(emptyPath);
   try {
-    assert.equal((emptyUpgraded.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+    assert.equal((emptyUpgraded.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
     assert.deepEqual(emptyUpgraded.db.prepare('PRAGMA foreign_key_check').all(), []);
   } finally { emptyUpgraded.close(); }
 
@@ -1018,7 +1019,7 @@ test('v26 to v27 migrates both empty and populated databases cleanly', () => {
   for (let open = 0; open < 2; open++) {
     const migrated = new Store(path);
     try {
-      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       assert.equal((migrated.db.prepare("SELECT unread_after_rowid AS v FROM members WHERE id = 'm-old'").get() as any).v, 0);
       const msg2Rowid = (migrated.db.prepare("SELECT rowid FROM messages WHERE id = 'msg2'").get() as any).rowid;
       assert.equal((migrated.db.prepare("SELECT unread_after_rowid AS v FROM members WHERE id = 'm-mid'").get() as any).v, msg2Rowid);
@@ -1049,7 +1050,7 @@ test('v27 to v28 adds hidden_at: an old database upgrades with nobody hidden', (
   for (let open = 0; open < 2; open++) {
     const migrated = new Store(path);
     try {
-      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       assert.equal(migrated.getMember('m1')!.hiddenAt, null, 'nobody is hidden after the upgrade');
       assert.equal(migrated.queued('m1').length, 1, 'rows kept');
       assert.deepEqual(migrated.db.prepare('PRAGMA foreign_key_check').all(), []);
@@ -1079,7 +1080,7 @@ test('v28 to v29: dismissed_at, state_seq with its triggers, reads.seen_at backf
   for (let open = 0; open < 2; open++) {
     const migrated = new Store(path);
     try {
-      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+      assert.equal((migrated.db.prepare('PRAGMA user_version').get() as any).user_version, 31);
       assert.deepEqual(migrated.db.prepare('SELECT id, state, dismissed_at, state_seq FROM deliveries ORDER BY rowid').all().map((r) => ({ ...r })),
         offline.map((d) => ({ id: d.id, state: 'offline', dismissed_at: null, state_seq: 0 })), 'old rows: before any listing');
       assert.deepEqual(migrated.db.prepare('SELECT message_id, via, at, seen_at FROM reads ORDER BY message_id').all().map((r) => ({ ...r })),
@@ -1135,6 +1136,7 @@ test('v29 to v30: isolated members are moved out with the reason; history, other
     UPDATE clusters SET deleted_at = '2026-01-04T00:00:00.000Z' WHERE id = 'trash';
     INSERT INTO turn_usage VALUES ('${toIsoB.id}', 'iso-b', 10, 0, 0, 5, 0, '${T}');
     ${V29_MODE_TRIGGERS}
+    ${DROP_V31};
     PRAGMA user_version = 29`);
   seed.close();
   const before = readDump(path);
@@ -1143,7 +1145,7 @@ test('v29 to v30: isolated members are moved out with the reason; history, other
   let migrated: ReturnType<typeof dump>;
   try {
     const db = store.db;
-    assert.equal((db.prepare('PRAGMA user_version').get() as any).user_version, 30);
+    assert.equal((db.prepare('PRAGMA user_version').get() as any).user_version, 31);
     const members = Object.fromEntries(db.prepare('SELECT id, mode, removed_at, hidden_at FROM members').all().map((r) => [r.id, { ...r }]));
     for (const id of ['iso-a', 'iso-b', 'iso-t']) {
       assert.equal(members[id].mode, 'isolated', `${id}: the mode is kept as history`);
@@ -1308,6 +1310,7 @@ test('v29 to v30 with the official plugins: a retired isolated member ends as a 
   const raw = new DatabaseSync(join(aDir, 'test.db'));
   raw.exec(`UPDATE members SET mode = 'isolated' WHERE id IN (${isolated.map((id) => `'${id}'`).join(', ')});
     ${V29_MODE_TRIGGERS}
+    ${DROP_V31};
     UPDATE plugin_migrations SET version = 6 WHERE plugin_id = 'tasks';
     PRAGMA user_version = 29`);
   raw.close();
@@ -1374,6 +1377,7 @@ test('v30 retries installed plugin cleanup and persists startup notices through 
   const legacy = new DatabaseSync(path);
   legacy.exec(`UPDATE members SET mode = 'isolated' WHERE id IN (${retired.map((id) => `'${id}'`).join(', ')});
     ${V29_MODE_TRIGGERS}
+    ${DROP_V31};
     UPDATE plugin_migrations SET version = 6 WHERE plugin_id = 'tasks';
     PRAGMA user_version = 29`);
   legacy.close();
