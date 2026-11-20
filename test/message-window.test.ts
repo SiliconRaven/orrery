@@ -9,7 +9,7 @@ import { startTestHub, tempDir, waitFor } from './helpers.ts';
 
 const WAIT_MS = 15_000;
 const WINDOW_MS = 300;   // a real timer, short enough for a test
-const EARLY_MS = 5;      // a timer may fire a moment before its time
+const EARLY_MS = 20;     // a real timer may fire up to one Windows clock tick (~15.6 ms) early
 
 /** Two native mock members A and B; B writes to A. `startedAt` records when each of A's turns began. */
 async function fixture(name: string, limits: Partial<Limits> = {}) {

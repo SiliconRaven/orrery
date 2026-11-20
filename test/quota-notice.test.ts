@@ -85,7 +85,9 @@ async function hubFixture(name: string, limits: Partial<Limits> = {}) {
   const claude = createMockNativeAdapter({ harness: 'claude', sessions });
   let current: QuotaSnapshot | null = null;
   const asked: { refresh: boolean; at: number }[] = [];
-  claude.quota = async ({ refresh }) => { asked.push({ refresh, at: Date.now() }); return current; };
+  // performance.now() is monotonic with sub-millisecond precision, so the poll-spacing assertion measures the timer
+  // wait itself instead of the coarse wall clock.
+  claude.quota = async ({ refresh }) => { asked.push({ refresh, at: performance.now() }); return current; };
   const offline = new Set<string>();
   const online = mock.isOnline.bind(mock);
   mock.isOnline = (sessionId, bridge) => !offline.has(sessionId) && online(sessionId, bridge);
@@ -280,7 +282,10 @@ test('the Claude quota poll asks only while a coordinated Claude member has open
     timed.coordinate();
     timed.send(timed.user, { action: 'task.nominate', taskId: task.id, expectedRevision: task.revision, memberId: timed.b.id });
     await waitFor(() => timed.asked.length >= 2, 'two polls', WAIT_MS);
-    assert.ok(timed.asked[1].at - timed.asked[0].at >= interval - 5, `${timed.asked[1].at - timed.asked[0].at} ms apart`);
+    // Windows timers can fire up to one clock tick (~15.6 ms) early, so the floor keeps a tick of slack; an immediate
+    // re-poll would be single-digit milliseconds apart, so the periodic wait stays proven. shortcut: a loop stalled
+    // for a whole interval could still squeeze the gap below the floor; upgrade to mock timers if that ever bites.
+    assert.ok(timed.asked[1].at - timed.asked[0].at >= interval - 20, `${timed.asked[1].at - timed.asked[0].at} ms apart`);
     assert.ok(timed.asked.every((q) => q.refresh));
   } finally { await timed.app.close(); }
 });
