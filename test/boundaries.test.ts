@@ -1,7 +1,7 @@
 // Acceptance criterion 10: module dependency rules from docs/architecture.md and docs/native-mode.md, checked on every import in src/.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, posix, relative } from 'node:path';
 import { REPO_ROOT } from '../src/main.ts';
 
@@ -200,4 +200,17 @@ test('launcher 8: the launcher uses configuration and local discovery, with no H
   assert.deepEqual(specs('config.ts').filter((s) => !s.startsWith('node:')), []);
   assert.deepEqual(specs('hub-registry.ts').filter((s) => !s.startsWith('node:')), ['./bridge-protocol.ts']);
   assert.deepEqual(specs('bridge-protocol.ts').filter((s) => !s.startsWith('node:')), []);
+});
+
+test('the vendored three.js stays the exact reviewed set: no extra files, no outside links, one rewritten import', () => {
+  const dir = join(REPO_ROOT, 'src', 'web', 'public', 'vendor');
+  const files = readdirSync(dir, { recursive: true, encoding: 'utf8' }).map((f) => f.replaceAll('\\', '/')).filter((f) => !statSync(join(dir, f)).isDirectory()).sort();
+  assert.deepEqual(files, ['three/LICENSE', 'three/README.md', 'three/addons/OrbitControls.js', 'three/three.module.min.js']);
+  for (const f of files.filter((f) => f.endsWith('.js'))) {
+    const code = readFileSync(join(dir, f), 'utf8');
+    const links = [...code.matchAll(/https?:\/\/[^\s'"`)]+/g)].map((m) => m[0]).filter((u) => u !== 'http://www.w3.org/1999/xhtml');
+    assert.deepEqual(links, [], `${f} has no outside links`);
+    const specs = [...code.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"]([^'"]+)['"]/g)].map((m) => m[1]);
+    assert.deepEqual(specs, f === 'three/addons/OrbitControls.js' ? ['../three.module.min.js'] : [], `${f} imports only what the README says`);
+  }
 });
