@@ -4,8 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -109,30 +108,54 @@ test('hop 1: a new database and a migrated v6 database both default to 6; hop 6 
   }
 });
 
+// A Windows restart checks the registry, hubs directory, and existing key in separate PowerShell calls, each up to 8 s.
+const CLI_START_TIMEOUT_MS = 30_000;
+
 /** `node src/main.ts` (what `npm start` runs) with its own temp data and the given ORRERY_MAX_HOPS. */
 async function spawnHub(dir: string, maxHops: string) {
+  const home = join(dir, 'home');
+  const registry = join(dir, 'registry');
   const child = spawn(process.execPath, ['src/main.ts'], {
     cwd: REPO_ROOT,
-    env: { ...process.env, ORRERY_PORT: '0', ORRERY_DB: join(dir, 'h.db'), ORRERY_HOME: join(dir, 'home'), ORRERY_MAX_HOPS: maxHops, ORRERY_API_TOKEN: TEST_TOKEN },
-    stdio: ['ignore', 'pipe', 'inherit'],
+    env: { ...process.env, ORRERY_PORT: '0', ORRERY_HOME: home, ORRERY_DB: join(dir, 'h.db'), ORRERY_REGISTRY: registry,
+      ORRERY_MAX_HOPS: maxHops, ORRERY_API_TOKEN: TEST_TOKEN },
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let out = '';
-  child.stdout.on('data', (c) => { out += c; });
+  let stdout = '';
+  let stderr = '';
+  let exitReason: string | undefined;
+  child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout = (stdout + chunk).slice(-4096); });
+  child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
+  child.once('error', (error) => { exitReason = `could not spawn test Hub: ${error.message}`; });
+  const closed = new Promise<void>((resolve) => child.once('close', (code, signal) => {
+    exitReason ??= `test Hub exited with ${signal ? `signal ${signal}` : `code ${code}`} before ready`;
+    resolve();
+  }));
   try {
-    const url = await waitFor(() => /listening on (http:\S+)/.exec(out)?.[1], 'hub to start', 10_000);
+    const url = await waitFor(() => {
+      if (exitReason) throw new Error(exitReason);
+      return /listening on (http:\S+)/.exec(stdout)?.[1];
+    }, `test Hub to start within ${CLI_START_TIMEOUT_MS} ms`, CLI_START_TIMEOUT_MS);
     return {
       url,
       async stop() {
-        const exited = once(child, 'exit');
         await raw(url, 'POST', '/api/shutdown', { 'content-type': 'application/json' }, '{}');
-        await exited;
+        await closed;
       },
     };
   } catch (e) {
+    const markers = ['home', 'registry/hubs', 'registry/lock', 'registry/active.json', 'home/hub.json']
+      .filter((path) => existsSync(join(dir, path)));
     child.kill();
-    throw e;
+    await closed;
+    throw new Error(`${(e as Error).message}\nStartup paths present: ${markers.join(', ') || '(none)'}\n`
+      + `stdout: ${stdout.trim() || '(empty)'}\nstderr: ${stderr.trim() || '(empty)'}`, { cause: e });
   }
 }
+
+test('hop 2: a CLI startup error reports the exit and stderr', async () => {
+  await assert.rejects(spawnHub(tempDir(), 'invalid'), /test Hub exited with code 1 before ready[\s\S]*stderr:[\s\S]*ORRERY_MAX_HOPS/);
+});
 
 test('hop 2: ORRERY_MAX_HOPS applies until a value is saved; after a restart with the same variable the saved value wins', async () => {
   const dir = tempDir();
