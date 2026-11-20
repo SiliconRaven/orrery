@@ -37,6 +37,11 @@ export interface CodexNativeOptions {
   openWake?: (url: string) => void;
   /** The "is the desktop app running" check itself (tests). Default: `codexAppRunning()`. */
   appRunning?: () => Promise<boolean | null>;
+  /**
+   * Does an app instance run that a wake link goes to, so opening it starts no new process (tests)? Asked right before
+   * each wake, after `appRunning` confirmed the app runs. Default: `codexWakeTargetRunning()`.
+   */
+  wakeTarget?: () => Promise<boolean | null>;
   /** How old the answer isOnline returns may get before an isOnline call starts a refresh. Default 10 s. */
   appCheckMs?: number;
   /** Longest one try of the app check may take; a try still running then counts as unanswered. Default 25 s. */
@@ -169,6 +174,46 @@ export function codexAppIn(tasklistCsv: string): boolean {
   return /^"ChatGPT\.exe(?: \([^"\r\n]*\))?",[^\r\n]*,"OpenAI\.Codex_[^"\r\n]*"[ \t]*\r?$/im.test(tasklistCsv);
 }
 
+/**
+ * Command lines of the running ChatGPT.exe processes: Win32_Process through PowerShell's Get-CimInstance, reading only
+ * that one property (an entry is null when Windows does not give it, e.g. an elevated process). About 1-2 s here.
+ * Fixed script text, no input of any kind. Null when the query failed or timed out.
+ */
+function chatgptCommandLines(): Promise<(string | null)[] | null> {
+  const script = '[Console]::OutputEncoding=[Text.Encoding]::UTF8; ConvertTo-Json -Compress -InputObject @('
+    + `Get-CimInstance -ClassName Win32_Process -Filter "Name='ChatGPT.exe'" -Property CommandLine | ForEach-Object { $_.CommandLine })`;
+  return new Promise((resolve) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 20_000 }, (err, stdout) => {
+      if (err) { resolve(null); return; }
+      try {
+        const lines: unknown = JSON.parse(stdout);
+        resolve(Array.isArray(lines) ? lines.map((l) => (typeof l === 'string' ? l : null)) : null);
+      } catch { resolve(null); }
+    });
+  });
+}
+
+/**
+ * Is an instance of the desktop app running that a `codex://` wake link goes to, so the link starts no new process?
+ * Observed (docs/adapters/codex.md "唤醒链接交给哪个实例"): the app keeps its single-instance lock in a user-data folder
+ * named after how it was started. Started from the Start menu or by a link, its main process runs the package's own
+ * `app\ChatGPT.exe` and uses the folder `Codex`, the one a link is handed to; started through the execution alias
+ * `chatgpt-desktop.exe`, it uses a folder of that name, and a link then starts a second, windowless instance. So only a
+ * main process (no `--type=`) whose program is the package's `app\ChatGPT.exe` counts. Undocumented app behaviour.
+ * shortcut: Windows only; elsewhere true (the wake link is never opened there anyway).
+ */
+export function codexWakeTargetRunning(): Promise<boolean | null> {
+  if (process.platform !== 'win32') return Promise.resolve(true);
+  return chatgptCommandLines().then((lines) => (lines === null ? null : codexWakeTargetIn(lines)));
+}
+
+/** Does one of these ChatGPT.exe command lines belong to an app instance that wake links go to (see above)? */
+export function codexWakeTargetIn(commandLines: readonly (string | null)[]): boolean {
+  return commandLines.some((c) => typeof c === 'string'
+    && /^\s*"?[A-Za-z]:\\[^"\r\n]*\\WindowsApps\\OpenAI\.Codex_[^\\"\r\n]*\\app\\ChatGPT\.exe(?:"|\s|$)/i.test(c)
+    && !/\s--type=/i.test(c));
+}
+
 export function wakeUrl(threadId: string): string {
   if (!THREAD_ID_RE.test(threadId)) throw new Error(`not a Codex thread id: ${JSON.stringify(threadId)}`);
   return `codex://threads/wake/${threadId}`;
@@ -258,14 +303,31 @@ export function createCodexNativeAdapter(opts: CodexNativeOptions = {}): NativeA
   // takes longer than appQueryTimeoutMs) is tried once more and then keeps the last known state, but never counts as
   // confirming the app runs.
   const appRunning = opts.appRunning ?? codexAppRunning;
+  const wakeTarget = opts.wakeTarget ?? codexWakeTargetRunning;
   const appCheckMs = opts.appCheckMs ?? 10_000;
-  const appQueryTimeoutMs = opts.appQueryTimeoutMs ?? 25_000;   // tasklist's own limit (20 s) normally ends it first
-  const appQuery = (): Promise<boolean | null> => {
+  const appQueryTimeoutMs = opts.appQueryTimeoutMs ?? 25_000;   // the queries' own limit (20 s) normally ends them first
+  const bounded = (query: () => Promise<boolean | null>): Promise<boolean | null> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     return Promise.race([
-      (async () => appRunning())().catch(() => null),   // a throw (even a synchronous one) is no answer
+      (async () => query())().catch(() => null),   // a throw (even a synchronous one) is no answer
       new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), appQueryTimeoutMs); }),
     ]).finally(() => clearTimeout(timer));
+  };
+  const appQuery = () => bounded(appRunning);
+  // Wake-target checks are numbered like the app checks below: wakeSeq when a try starts, wakeNoSeq the newest try that
+  // answered "no receiver". An older "yes" never outweighs a newer completed "no", from this delivery or another.
+  let wakeSeq = 0;
+  let wakeNoSeq = 0;
+  /** Opening the wake link now starts no new app process: asked afresh before each wake, one retry, unknown = no. */
+  const wakeSafe = async (): Promise<{ ok: boolean; seq: number }> => {
+    let ok: boolean | null = null;
+    let seq = 0;
+    for (let tries = 0; tries < 2 && ok === null; tries++) {
+      seq = ++wakeSeq;
+      ok = await bounded(wakeTarget);
+    }
+    if (ok === false) wakeNoSeq = Math.max(wakeNoSeq, seq);
+    return { ok: ok === true, seq };
   };
   let appUp = false;
   let appAt = -Infinity;   // when the newest completed check returned, including a failed check
@@ -277,8 +339,8 @@ export function createCodexNativeAdapter(opts: CodexNativeOptions = {}): NativeA
   let scheduledCheck: Promise<boolean | null> | null = null;
   const unknownApp = 'Could not confirm whether Codex is running: the process check did not answer';
 
-  /** A new query, updating the cache. Null means the state is unknown. */
-  const appFresh = async (): Promise<boolean | null> => {
+  /** A new query, updating the cache. Null means the state is unknown; seq numbers the query that answered. */
+  const appCheck = async (): Promise<{ up: boolean | null; seq: number }> => {
     appChecks++;
     let up: boolean | null = null;
     let seq = 0;
@@ -289,12 +351,13 @@ export function createCodexNativeAdapter(opts: CodexNativeOptions = {}): NativeA
     }
     appChecks--;
     if (seq > Math.max(appSeen, appUnknownSeq)) appAt = Date.now();
-    if (up === null) { appUnknownSeq = Math.max(appUnknownSeq, seq); return null; }
+    if (up === null) { appUnknownSeq = Math.max(appUnknownSeq, seq); return { up: null, seq }; }
     if (seq > appSeen) { appSeen = seq; appUp = up; }
     if (up === false) appDownSeq = Math.max(appDownSeq, seq);
     // "Running" from a query that a newer one has already contradicted is stale (e.g. two deliveries checking at once).
-    return up === true && appDownSeq < seq;
+    return { up: up === true && appDownSeq < seq, seq };
   };
+  const appFresh = async (): Promise<boolean | null> => (await appCheck()).up;
 
   // One synchronous burst (e.g. a Hub fan-out) can share a check. Start it after every caller has captured its pending
   // deliveries, then clear the slot before sampling: a later burst needs a new check of its own.
@@ -560,10 +623,20 @@ export function createCodexNativeAdapter(opts: CodexNativeOptions = {}): NativeA
         // already under way, which may predate the app closing). If the check does not confirm it runs, try to take the
         // message back out. It may already have been picked up. Accepted residual risk: the user closing the app in the
         // moment between this query and the link.
+        // A running app is not enough: the link must go to an instance that is already there (wakeSafe), or Windows
+        // starts a second one. Without such an instance (or an answer) the message just stays queued; an app that has
+        // the thread loaded runs it on its own queue check (about 10 s), otherwise the pickup timeout applies as usual.
+        // Both answers must still stand when the link opens: a check of either kind that started later and has already
+        // answered "not running" (the app closed: withdraw as above) or "no receiver" (keep it queued) overrides them.
         if (!found) {
-          const up = await appFresh();
-          if (up) openWake(wakeUrl(threadId));
-          else if (!(await unqueue(threadId, deliveryId))) {
+          const app = await appCheck();
+          let up = app.up;
+          if (up) {
+            const wake = await wakeSafe();
+            if (appDownSeq > app.seq) up = false;
+            else if (wake.ok && wakeNoSeq < wake.seq) openWake(wakeUrl(threadId));
+          }
+          if (!up && !(await unqueue(threadId, deliveryId))) {
             const reason = up === null ? unknownApp : 'Codex closed after queueing';
             return { outcome: 'unknown', error: `${reason}; removal was attempted, but the message may still run` };
           }

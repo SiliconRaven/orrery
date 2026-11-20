@@ -1,6 +1,38 @@
-// Starting a supported app that is not running, from a click in the "+" strip (docs/desktop.md "启动应用"): what
-// happens after the click. Where the app is started from is looked up read-only by lib/locate.mjs locateApp, and the
-// shell's one launch function (shell.mjs launchApp) does the starting. Pure; nothing here starts anything.
+// Starting a supported app that is not running, from a click in the "+" strip (docs/desktop.md "启动应用"): the start
+// call and what happens after the click. Where the app is started from is looked up read-only by lib/locate.mjs
+// locateApp, and the shell's one launch function (shell.mjs launchApp) does the starting through startApp, with the
+// process start and the system's open action passed in. Pure; nothing here starts anything by itself.
+import { isAumid } from './locate.mjs';
+
+/** A Windows folder as %SystemRoot% names it: `X:\Name`, one segment, no separators or special characters. */
+const isSystemRoot = (p) => typeof p === 'string' && /^[A-Za-z]:\\[^\\/:*?"<>|\u0000-\u001f]+$/.test(p);
+
+/**
+ * Starts `target` (lib/locate.mjs Location) and resolves to '' when started or to an error text. An MSIX app is
+ * activated by app ID like the Start menu does: `%SystemRoot%\explorer.exe shell:AppsFolder\<aumid>` (the absolute
+ * path, so that no same-named program in the current folder is run), detached, nothing passed on to the app; started
+ * once the process exists (explorer's exit code means nothing, it is always 1), failed on its 'error' event. Any other
+ * app: the system's default action for its program file, without arguments (`openPath`, Electron's shell.openPath).
+ * @param {{ path: string, aumid?: string }} target
+ * @param {{ spawn: Function, openPath: (path: string) => Promise<string>, systemRoot: string | undefined }} io
+ * @returns {Promise<string>}
+ */
+export function startApp(target, { spawn, openPath, systemRoot }) {
+  if (!('aumid' in target)) return openPath(target.path);
+  if (!isAumid(target.aumid)) return Promise.resolve('invalid app ID');
+  if (!isSystemRoot(systemRoot)) return Promise.resolve('no Windows folder (%SystemRoot%)');
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(`${systemRoot}\\explorer.exe`, [`shell:AppsFolder\\${target.aumid}`], { detached: true, windowsHide: true, stdio: 'ignore' });
+    } catch (e) {
+      resolve(String(e?.message ?? e));
+      return;
+    }
+    child.once('error', (e) => resolve(String(e?.message ?? e)));
+    child.once('spawn', () => { child.unref(); resolve(''); });
+  });
+}
 
 /** How long the shell watches for the started app's new window, and how long it waits for others appearing with it. */
 export const WATCH_MS = 20_000;

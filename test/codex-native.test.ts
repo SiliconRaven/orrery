@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { nativeFactories } from '../src/adapters/index.ts';
-import { codexAppIn, codexBinary, createCodexNativeAdapter, initPrompt, wakeUrl, writerLockHeld, type CodexNativeOptions } from '../src/adapters/codex/native.ts';
+import { codexAppIn, codexBinary, codexWakeTargetIn, createCodexNativeAdapter, initPrompt, wakeUrl, writerLockHeld, type CodexNativeOptions } from '../src/adapters/codex/native.ts';
 import { decideServerRequest, type CodexProcess } from '../src/adapters/codex/protocol.ts';
 import { RpcPeer } from '../src/adapters/codex/rpc.ts';
 import { Hub } from '../src/core/hub.ts';
@@ -177,7 +177,7 @@ function setup(opts: Partial<CodexNativeOptions> & { held?: boolean } = {}) {
   const fake = new FakeCodex();
   const woken: string[] = [];
   const adapter = createCodexNativeAdapter({
-    launch: fake.launch, pollMs: 5, lockHeld: () => (opts.held ?? true) ? { state: 'held' } : { state: 'unknown', reason: 'test lock is not held' }, openWake: (u) => woken.push(u), appRunning: async () => true, ...opts,
+    launch: fake.launch, pollMs: 5, lockHeld: () => (opts.held ?? true) ? { state: 'held' } : { state: 'unknown', reason: 'test lock is not held' }, openWake: (u) => woken.push(u), appRunning: async () => true, wakeTarget: async () => true, ...opts,
   });
   opened.push(adapter);
   const deliver = (deliveryId: string, text = 'hello', signal = new AbortController().signal, threadId = T1) => {
@@ -913,6 +913,123 @@ test('codex native: the default check looks for the app executable of the app pa
   assert.equal(codexAppIn('INFO: No tasks are running which match the specified criteria.\r\n'), false);
 });
 
+// Main-process command lines of the desktop app as seen on Windows (Win32_Process.CommandLine), task #29/#30.
+const PKG = 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.2.3.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe';
+const VIA_ALIAS = '"C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\OpenAI.Codex_2p2nqsd0c76g0\\chatgpt-desktop.exe" ';
+const FROM_START_MENU = `"${PKG}" `;
+const FROM_LINK = `"${PKG}" --single-argument codex://threads/wake/${T1}`;
+const CHILD = `"${PKG}" --type=renderer --user-data-dir="C:\\x\\Codex\\web\\chatgpt-desktop" --field-trial-handle=1`;
+
+test('codex native: only a main app process started from the package program receives wake links, not one started through the alias', () => {
+  assert.equal(codexWakeTargetIn([VIA_ALIAS, CHILD, CHILD]), false, 'alias instance and its children');
+  assert.equal(codexWakeTargetIn([FROM_START_MENU, CHILD]), true);
+  assert.equal(codexWakeTargetIn([FROM_LINK]), true, 'an instance a link started is where later links go');
+  assert.equal(codexWakeTargetIn([VIA_ALIAS, FROM_LINK, CHILD]), true, 'mixed');
+  assert.equal(codexWakeTargetIn([FROM_START_MENU.toLowerCase()]), true, 'paths compare without case');
+  assert.equal(codexWakeTargetIn([CHILD]), false, 'a --type= child is not an instance');
+  assert.equal(codexWakeTargetIn([`"C:\\Program Files\\WindowsApps\\OpenAI.ChatGPT-Desktop_1.0.0.0_x64__abc\\app\\ChatGPT.exe" `]), false, 'another package');
+  assert.equal(codexWakeTargetIn([`"C:\\Temp\\ChatGPT.exe" codex://threads/wake/${T1} C:\\Program Files\\WindowsApps\\OpenAI.Codex_1\\app\\ChatGPT.exe`]), false, 'the package path only counts as the program');
+  assert.equal(codexWakeTargetIn([null, '']), false, 'a command line Windows did not give');
+  assert.equal(codexWakeTargetIn([]), false);
+  // The old rule asked tasklist /APPS only: the alias instance is a ChatGPT.exe of the package there, so it woke.
+  assert.equal(codexAppIn('"ChatGPT.exe (App)","100","10.000 K","OpenAI.Codex_1.2.3.0_x64__2p2nqsd0c76g0"\r\n'), true);
+});
+
+test('codex native: only the alias instance runs → online, queued, no wake link; the app picks it up on its own', async () => {
+  const asked: number[] = [];
+  const { fake, woken, adapter, deliver } = setup({ wakeTarget: async () => { asked.push(1); return codexWakeTargetIn([VIA_ALIAS, CHILD]); } });
+  assert.equal(await adapter.confirmOnline!(T1), true, 'the member stays online while the app runs at all');
+  const { p } = deliver('d-alias');
+  await until(() => asked.length === 1 && (fake.queue.get(T1) ?? []).length === 1, 'queued after the wake check');
+  await tick(20);
+  assert.deepEqual(woken, [], 'the link would start a second, windowless instance');
+  assert.equal((fake.queue.get(T1) ?? []).length, 1, 'not taken back out');
+  fake.pickUp(T1, 'completed', 'picked up by the app');   // e.g. its own queue check for a thread it has loaded
+  assert.equal(await p, 'completed');
+  await adapter.close!();
+});
+
+test('codex native: a main instance runs, alone or next to the alias instance → the wake link is opened', async () => {
+  for (const lines of [[FROM_START_MENU, CHILD], [VIA_ALIAS, FROM_LINK, CHILD]]) {
+    const { fake, woken, adapter, deliver } = setup({ wakeTarget: async () => codexWakeTargetIn(lines) });
+    const { p } = deliver('d-main');
+    await until(() => woken.length === 1, 'woken');
+    fake.pickUp(T1, 'completed');
+    assert.equal(await p, 'completed');
+    assert.deepEqual(woken, [`codex://threads/wake/${T1}`]);
+    await adapter.close!();
+  }
+});
+
+test('codex native: a wake check that fails, throws or hangs → tried once more, then no wake; the message stays queued', async () => {
+  const hang = () => new Promise<boolean | null>(() => {});
+  const failing: (() => Promise<boolean | null>)[] = [async () => null, async () => { throw new Error('no powershell'); }, hang];
+  for (const wakeTarget of failing) {
+    let calls = 0;
+    const { fake, woken, adapter, deliver } = setup({ wakeTarget: () => { calls++; return wakeTarget(); }, appQueryTimeoutMs: 20 });
+    const { p } = deliver('d-nowake');
+    await until(() => calls === 2, 'retried once');
+    await tick(60);
+    assert.equal(calls, 2, 'and not again');
+    assert.deepEqual(woken, []);
+    assert.equal((fake.queue.get(T1) ?? []).length, 1, 'still queued: the app runs, only the wake is skipped');
+    fake.pickUp(T1, 'completed');
+    assert.equal(await p, 'completed');
+    await adapter.close!();
+  }
+});
+
+// A wake-target check whose answers can be held back, like appProbe: each call samples `has` when it starts.
+function wakeProbe(has: boolean) {
+  const probe = { has, calls: 0, held: [] as (() => void)[], hold: false };
+  const wakeTarget = () => {
+    probe.calls++;
+    const sampled = probe.has;
+    if (!probe.hold) return Promise.resolve(sampled);
+    return new Promise<boolean>((resolve) => probe.held.push(() => resolve(sampled)));
+  };
+  return { probe, wakeTarget };
+}
+
+test('codex native: a held "receiver there" answer opens no link once a later check finds the app closed (review #30 r1, P1)', async () => {
+  const { probe: app, appRunning } = appProbe(true);
+  const { probe: wake, wakeTarget } = wakeProbe(true);
+  const { fake, woken, adapter, deliver } = setup({ appRunning, wakeTarget, pickupTimeoutMs: 1_000 });   // a regression fails fast
+  wake.hold = true;
+  const { p } = deliver('d-stale-wake');
+  await until(() => wake.calls === 1, 'app confirmed running, wake check asked (main instance there)');
+  app.up = false;                    // the user quits Codex
+  assert.equal(await adapter.confirmOnline!(T1), false, 'a later check has answered "not running"');
+  wake.held.pop()!();                // the older wake answer arrives: "receiver there"
+  const result = await p;
+  assert.deepEqual(woken, [], 'the link would reopen the app that just quit');
+  assert.deepEqual(result, { outcome: 'unknown', error: 'Codex closed after queueing; removal was attempted, but the message may still run' });
+  assert.deepEqual(fake.queue.get(T1), [], 'taken back out of the queue, as for any delivery that finds the app closed');
+  await adapter.close!();
+});
+
+test('codex native: an older "receiver there" answer opens no link once a later delivery found only the alias instance (review #30 r1, P1)', async () => {
+  const { probe: wake, wakeTarget } = wakeProbe(true);
+  const { fake, woken, adapter, deliver } = setup({ wakeTarget });   // the alias instance keeps the app running throughout
+  wake.hold = true;
+  const a = deliver('d-wa');
+  await until(() => wake.calls === 1, 'A asked while the main instance ran');
+  wake.hold = false;
+  wake.has = false;                  // the main instance closes; the alias instance stays
+  const b = deliver('d-wb');
+  await until(() => wake.calls === 2 && (fake.queue.get(T1) ?? []).length === 2, 'B found no receiver');
+  await tick(20);
+  wake.held.pop()!();                // A's older answer arrives: "receiver there"
+  await tick(20);
+  assert.deepEqual(woken, [], 'the link would start a second instance next to the alias one');
+  assert.equal((fake.queue.get(T1) ?? []).length, 2, 'both stay queued: the app still runs');
+  fake.pickUp(T1, 'completed');
+  fake.pickUp(T1, 'completed');
+  assert.equal(await a.p, 'completed');
+  assert.equal(await b.p, 'completed');
+  await adapter.close!();
+});
+
 test('codex native: abort while queued → taken out of the queue, then reject', async () => {
   const { fake, adapter, deliver } = setup();
   const ac = new AbortController();
@@ -1206,6 +1323,7 @@ async function liveNative(scenario: 'held' | 'wake', create: { model?: string; e
       codexHome: home,
       pollMs: 500,
       appRunning: async () => true,   // the second app-server plays the desktop app
+      wakeTarget: async () => true,
       launch: () => {
         const child = spawn(bin, ['-c', 'features.plugins=false', '-c', 'features.apps=false', 'app-server'], { stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, CODEX_HOME: home }, windowsHide: true });
         return {
@@ -1300,6 +1418,87 @@ test('codex native live: model/list of the backend lists models with their effor
     await adapter.close!();
     for (let i = 0; ; i++) {
       try { rmSync(home, { recursive: true, force: true }); break; } catch (e) { if (i >= 40) throw e; await tick(250); }
+    }
+  }
+});
+
+// Task #29: the "open in another app" banner. orrery's per-operation calls must never take the thread's writer lock; a
+// second app-server on the same CODEX_HOME (e.g. a second desktop app instance) is what gets "already has an active
+// writer", and it can resume once the holder exits (the banner's Retry).
+test('codex native live: queue/add, queue/list, turns/list, read and delete leave no writer lock that keeps another process from loading the thread; a second loader is refused until the holder exits', { skip: LIVE || process.platform !== 'win32', timeout: 120_000 }, async () => {
+  const bin = codexBinary();
+  const root = join(tmpdir(), 'orrery-sandbox', `codex-lock-${process.pid}-${Date.now()}`);
+  const home = join(root, 'home');
+  const work = join(root, 'work');
+  for (const d of [home, work]) mkdirSync(d, { recursive: true });
+  const model = createServer(async (req, res) => {
+    let raw = '';
+    for await (const c of req) raw += c;
+    if (!raw) { res.writeHead(404).end(); return; }
+    const item = { type: 'message', role: 'assistant', id: 'msg_1', status: 'completed', content: [{ type: 'output_text', text: 'ok', annotations: [] }] };
+    const ev = [{ type: 'response.created', response: { id: 'r1' } }, { type: 'response.output_item.done', output_index: 0, item },
+      { type: 'response.completed', response: { id: 'r1', usage: { input_tokens: 1, input_tokens_details: null, output_tokens: 1, output_tokens_details: null, total_tokens: 2 } } }];
+    res.writeHead(200, { 'content-type': 'text/event-stream' }).end(ev.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''));
+  });
+  await new Promise<void>((ok) => model.listen(0, '127.0.0.1', ok));
+  writeFileSync(join(home, 'config.toml'), 'model = "gpt-6-astra"\nmodel_provider = "fake"\n[features]\nplugins = false\napps = false\n'
+    + `[model_providers.fake]\nname = "fake"\nbase_url = "http://127.0.0.1:${(model.address() as any).port}/v1"\nwire_api = "responses"\n`);
+  const children: ReturnType<typeof spawn>[] = [];
+  const server = async (name: string) => {
+    const child = spawn(bin, ['app-server'], { stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, CODEX_HOME: home }, windowsHide: true });
+    children.push(child);
+    const notes: string[] = [];
+    const rpc = new RpcPeer(child.stdin!, child.stdout!, { onNotification: (m) => notes.push(m), onRequest: async () => { throw new Error('no'); }, onClose: () => {} });
+    // Saved at spawn: a child that exits before end() is called still settles it.
+    const exited = new Promise<void>((ok) => child.once('exit', () => { rpc.close('exited'); ok(); }));
+    child.once('error', () => {});
+    await rpc.request('initialize', { clientInfo: { name, title: null, version: '0' }, capabilities: { experimentalApi: true, requestAttestation: false } });
+    rpc.notify('initialized');
+    return { rpc, notes, end: () => { if (child.exitCode === null && child.signalCode === null) child.stdin!.end(); return exited; } };
+  };
+  try {
+    // A thread with one finished turn (an unrun thread cannot be resumed), then its creator exits.
+    const creator = await server('creator');
+    const id: string = (await creator.rpc.request<any>('thread/start', { cwd: work })).thread.id;
+    await creator.rpc.request('turn/start', { threadId: id, input: [{ type: 'text', text: 'hi', text_elements: [] }] });
+    await waitFor(() => creator.notes.includes('turn/completed'), 'the first turn', 30_000);
+    await creator.end();
+    assert.notEqual(writerLockHeld(home, id).state, 'held', 'no lock once the creator exited');
+
+    // orrery's calls, in one process that stays alive.
+    const orrery = await server('orrery');
+    await orrery.rpc.request('thread/queue/list', { threadId: id, cursor: null });
+    await orrery.rpc.request('thread/turns/list', { threadId: id, limit: 20 });
+    await orrery.rpc.request('thread/queue/add', { threadId: id, input: [{ type: 'text', text: 'queued', text_elements: [] }], clientUserMessageId: 'd1' });
+    await orrery.rpc.request('thread/read', { threadId: id, includeTurns: false });
+    // Withdraw by client id with nobody holding the thread (what orrery does on a timeout or an abort).
+    const mine: any = await orrery.rpc.request('thread/queue/list', { threadId: id, cursor: null });
+    const d1 = mine.data.find((q: any) => q.clientUserMessageId === 'd1') ?? mine.data.at(-1);
+    await orrery.rpc.request('thread/queue/delete', { threadId: id, queuedSubmissionId: d1.id });
+    assert.notEqual(writerLockHeld(home, id).state, 'held', 'orrery calls leave no writer lock');
+
+    // The desktop app loads it while that process is alive; orrery's calls keep working while it holds it.
+    const desktop = await server('desktop');
+    await desktop.rpc.request('thread/resume', { threadId: id });
+    assert.equal(writerLockHeld(home, id).state, 'held');
+    await orrery.rpc.request('thread/queue/add', { threadId: id, input: [{ type: 'text', text: 'queued 2', text_elements: [] }], clientUserMessageId: 'd2' });
+    await orrery.rpc.request('thread/turns/list', { threadId: id, limit: 20 });
+    await orrery.rpc.request('thread/read', { threadId: id, includeTurns: false });
+    const queued: any = await orrery.rpc.request('thread/queue/list', { threadId: id, cursor: null });
+    await orrery.rpc.request('thread/queue/delete', { threadId: id, queuedSubmissionId: queued.data.at(-1).id });
+
+    // A second loader on the same CODEX_HOME is refused (the banner), and succeeds once the holder has exited (Retry).
+    const second = await server('second desktop instance');
+    await assert.rejects(second.rpc.request('thread/resume', { threadId: id }), /already has an active writer/);
+    await orrery.end();
+    await desktop.end();
+    await second.rpc.request('thread/resume', { threadId: id });
+    await second.end();
+  } finally {
+    for (const c of children) if (c.exitCode === null && c.pid) spawn('taskkill', ['/pid', String(c.pid), '/T', '/F'], { stdio: 'ignore' });
+    await new Promise<void>((ok) => { model.close(() => ok()); model.closeAllConnections(); });
+    for (let i = 0; ; i++) {
+      try { rmSync(root, { recursive: true, force: true }); break; } catch (e) { if (i >= 40) throw e; await tick(250); }
     }
   }
 });

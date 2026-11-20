@@ -22,14 +22,15 @@ const appOf = (id: string): App => APPS.find((a: App) => a.id === id);
 const KIMI = 'C:\\Program Files\\Kimi Code\\Kimi Code.exe';
 const LAD = 'C:\\Users\\u\\AppData\\Local';
 
-/** Fake sources: files on disk (path → lstat), aliases, Start Menu shortcuts and app-paths.json's entries; reads logged. */
-function io(over: { files?: Record<string, Stat>; aliases?: Record<string, string>; links?: { target: string; args: string }[]; saved?: Record<string, unknown> } = {}) {
+/** Fake sources: files on disk (path → lstat), aliases, package manifests, Start Menu shortcuts and app-paths.json's entries; reads logged. */
+function io(over: { files?: Record<string, Stat>; aliases?: Record<string, string>; texts?: Record<string, string>; links?: { target: string; args: string }[]; saved?: Record<string, unknown> } = {}) {
   const log: string[] = [];
   const files = over.files ?? {};
   return {
     log,
     localAppData: LAD,
     readAlias: (p: string) => { log.push(`alias ${p}`); return over.aliases?.[p] ?? null; },
+    readText: (p: string) => { log.push(`text ${p}`); return over.texts?.[p] ?? null; },
     isFile: (p: string) => { log.push(`file ${p}`); return files[p]?.file === true; },
     shortcuts: () => { log.push('shortcuts'); return over.links ?? []; },
     lstat: (p: string) => { log.push(`lstat ${p}`); return files[p] ?? null; },
@@ -155,11 +156,13 @@ test('desktop app paths: a click starts a valid saved path first, re-checked at 
     const r = locate.startTarget(kimi, io({ ...shortcut, files: { ...both, [p]: file }, saved: { 'kimi-code': { path: p } } }));
     assert.equal(r.path, KIMI, p);
   }
-  // MSIX: a saved entry is never used; the alias is.
+  // MSIX: a saved entry is never used; the app ID is (found through the alias and the package manifest).
   const alias = `${LAD}\\Microsoft\\WindowsApps\\Claude_pzs8sxrjxfjjc\\claude-desktop.exe`;
   const evil = 'C:\\Windows\\System32\\Claude.exe';
-  const r = locate.startTarget(appOf('claude'), io({ files: { [evil]: file }, aliases: { [alias]: 'C:\\Program Files\\WindowsApps\\C\\app\\Claude.exe' }, saved: { claude: { path: evil } } }));
-  assert.equal(r.path, alias);
+  const dir = 'C:\\Program Files\\WindowsApps\\Claude_1.2.3.0_x64__pzs8sxrjxfjjc';
+  const texts = { [`${dir}\\AppxManifest.xml`]: '<Applications><Application Id="Claude" Executable="app\\Claude.exe"></Application></Applications>' };
+  const r = locate.startTarget(appOf('claude'), io({ files: { [evil]: file }, aliases: { [alias]: `${dir}\\app\\Claude.exe` }, texts, saved: { claude: { path: evil } } }));
+  assert.deepEqual([r.path, r.aumid], [alias, 'Claude_pzs8sxrjxfjjc!Claude']);
   // Another app's entry is not this app's.
   assert.equal(locate.startTarget(kimi, io({ files: both, saved: { cursor: saved['kimi-code'] } })).ok, false);
   assert.equal(locate.startTarget.length, 2, 'startTarget(app, sources): nothing else goes in');
@@ -196,9 +199,10 @@ test('desktop app paths: the settings rows: saved, invalid with its reason, foun
   // MSIX: found by its alias; never an offer, not even its running window; a saved entry shows as invalid.
   const alias = `${LAD}\\Microsoft\\WindowsApps\\OpenAI.Codex_2p2nqsd0c76g0\\chatgpt-desktop.exe`;
   const pkg = 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_1_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe';
-  r = row(appOf('codex'), { aliases: { [alias]: pkg }, files: { [pkg]: file } }, [pkg]);
+  const texts = { 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_1_x64__2p2nqsd0c76g0\\AppxManifest.xml': '<Application Id="App" Executable="app/ChatGPT.exe">' };
+  r = row(appOf('codex'), { aliases: { [alias]: pkg }, texts, files: { [pkg]: file } }, [pkg]);
   assert.deepEqual([r.status, r.msix, r.inUse.path, r.inUse.icon, r.offer], ['alias', true, alias, pkg, null]);
-  r = row(appOf('codex'), { aliases: { [alias]: pkg }, files: { [pkg]: file }, saved: { codex: { path: pkg, source: 'picked', savedAt: 't' } } });
+  r = row(appOf('codex'), { aliases: { [alias]: pkg }, texts, files: { [pkg]: file }, saved: { codex: { path: pkg, source: 'picked', savedAt: 't' } } });
   assert.deepEqual([r.status, r.inUse.path], ['invalid', alias]);
   // The view's window: under the gear, inside the shell, at most 560 × 640 DIP.
   assert.deepEqual(paths.settingsBounds({ x: 100, y: 50, width: 1280, height: 800 }, 1100, 44), { x: 100 + 1280 - 560 - 4, y: 96, width: 560, height: 640 });
@@ -274,9 +278,10 @@ test('desktop app paths: the state file, the page, the Hub or a docked window ne
   assert.doesNotMatch(fnBody(shell, 'persist'), /AppPaths|app-paths/, 'the state file\'s writer writes no paths');
   // The launch: launchTarget(a) at the click, a fresh lookup (system sources + app-paths.json); nothing else goes in.
   assert.match(fnBody(shell, 'launchApp'), /^ {4}const target = launchTarget\(a\);$/m);
-  // Looked up (and a saved path checked) right before the one openPath: nothing slow between them.
+  // Looked up (and a saved path checked) right before the one start call: nothing slow between them.
   const body = fnBody(shell, 'launchApp');
-  assert.doesNotMatch(body.slice(body.indexOf('const target = launchTarget(a);'), body.indexOf('shell.openPath(')), /listCandidates|readSettings|await/);
+  assert.ok(body.indexOf('startApp(target, ') > body.indexOf('const target = launchTarget(a);'));
+  assert.doesNotMatch(body.slice(body.indexOf('const target = launchTarget(a);'), body.indexOf('startApp(target, ')), /listCandidates|readSettings|await/);
   assert.doesNotMatch(fnBody(shell, 'launchApp'), /state\.|statePath|exePath|binding|hub\.|collab|wc\.|offered|settings/);
   // A running window's program is only offered (readSettings); it reaches the file only through useOffer → savePath.
   assert.doesNotMatch(fnBody(shell, 'readSettings'), /writeAppPaths|savePath/);

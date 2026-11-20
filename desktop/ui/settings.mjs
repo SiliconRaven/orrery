@@ -21,7 +21,7 @@ function make(tag, props = {}, text) {
   return el;
 }
 
-const VIA = { saved: '你保存的位置', alias: '应用自己的启动入口（应用执行别名）', shortcut: '开始菜单快捷方式' };
+const VIA = { saved: '你保存的位置', alias: '应用执行别名（只用来找到安装，按应用 ID 启动）', shortcut: '开始菜单快捷方式' };
 const OFFER = { shortcut: '开始菜单快捷方式', window: '正在运行的窗口的程序' };
 
 /** The status line: a short state and, where there is one, its reason. */
@@ -83,7 +83,7 @@ function row(r, icon) {
     offer.append(found, button(t('使用这个位置'), 'use', r.id, 'primary', r.offer.token));
     main.append(offer);
   }
-  if (r.msix) main.append(make('div', { className: 'note' }, t('应用商店安装的应用，只从它自己的启动入口启动。')));
+  if (r.msix) main.append(make('div', { className: 'note' }, t('应用商店安装的应用和开始菜单一样按应用 ID 启动；这里显示的应用执行别名只用来找到它的安装，不会被启动。')));
   if (r.message) main.append(make('div', { className: 'message', role: 'status' }, r.message));
   const actions = make('div', { className: 'actions' });
   if (confirming === r.id && r.saved) {

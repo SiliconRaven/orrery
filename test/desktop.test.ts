@@ -3,6 +3,7 @@
 // layer (desktop/test/fake-ffi.mjs); no Electron, no koffi, no real window is touched.
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -598,8 +599,9 @@ test('desktop C: only win32.mjs loads koffi, and only writer.mjs calls the Win32
       assert.ok(!code.includes(bad), `${bad} appears in ${path}`);
     }
     if (!path.startsWith('test/')) assert.doesNotMatch(code, /openExternal|showItemInFolder/, `${path} hands something to the system`);
-    // The one exception, shell.mjs launchApp starting a supported app, is pinned down in the "desktop launch" tests.
-    if (!path.startsWith('test/') && path !== 'shell.mjs') assert.doesNotMatch(code, /openPath/, `${path} hands something to the system`);
+    // The one exception, shell.mjs launchApp starting a supported app through lib/launch.mjs startApp, is pinned down
+    // in the "desktop launch" tests.
+    if (!path.startsWith('test/') && path !== 'shell.mjs' && path !== 'lib/launch.mjs') assert.doesNotMatch(code, /openPath/, `${path} hands something to the system`);
   }
   const writer = readFileSync(join(DESKTOP, 'lib', 'writer.mjs'), 'utf8');
   assert.doesNotMatch(writer, /SWP_FRAMECHANGED|SWP_HIDEWINDOW|SWP_SHOWWINDOW|HWND_TOPMOST|HWND_NOTOPMOST|SW_HIDE\b/);
@@ -1241,7 +1243,7 @@ test('desktop icons: the shell reads the program file only (opened read-only), n
 
 /** The source of `function name(...) { ... }` in a file, up to its closing brace at the same indentation. */
 function fnBody(src: string, name: string) {
-  const m = new RegExp(`^( *)function ${name}\\(`, 'm').exec(src);
+  const m = new RegExp(`^( *)(?:export )?function ${name}\\(`, 'm').exec(src);
   assert.ok(m, `function ${name}`);
   const end = src.indexOf(`\n${m[1]}}\n`, m.index);
   return src.slice(m.index, end + m[1].length + 3);
@@ -1249,34 +1251,106 @@ function fnBody(src: string, name: string) {
 
 const LAD = 'C:\\Users\\u\\AppData\\Local';
 const appOf = (id: string) => apps.APPS.find((a: { id: string }) => a.id === id);
-/** Fake read-only sources: aliases (path → target), Start Menu shortcuts, existing files; every read is logged. */
-function sources(over: { aliases?: Record<string, string>; links?: { target: string; args: string }[]; files?: string[]; lad?: string } = {}) {
+/** Fake read-only sources: aliases (path → target), text files (package manifests), Start Menu shortcuts, existing files; every read is logged. */
+function sources(over: { aliases?: Record<string, string>; texts?: Record<string, string>; links?: { target: string; args: string }[]; files?: string[]; lad?: string } = {}) {
   const log: string[] = [];
   return {
     log,
     localAppData: over.lad ?? LAD,
     readAlias: (p: string) => { log.push(`alias ${p}`); return over.aliases?.[p] ?? null; },
+    readText: (p: string) => { log.push(`text ${p}`); return over.texts?.[p] ?? null; },
     isFile: (p: string) => { log.push(`file ${p}`); return (over.files ?? []).includes(p); },
     shortcuts: () => { log.push('shortcuts'); return over.links ?? []; },
   };
 }
 
-test('desktop locate: an MSIX app is found through its execution alias, only while it points at the app\'s program', () => {
+// The shapes of the real package manifests (AppxManifest.xml), trimmed: the app's Application and the helpers next to it.
+const CLAUDE_DIR = 'C:\\Program Files\\WindowsApps\\Claude_9.9.9.0_x64__pzs8sxrjxfjjc';
+const CLAUDE_MANIFEST = `<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="Claude" Publisher="CN=x" Version="9.9.9.0" ProcessorArchitecture="x64" />
+  <Applications>
+    <Application Id="Claude" Executable="app\\Claude.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Claude" />
+    </Application>
+    <Application Id="SshAskpass" Executable="app\\resources\\claude-ssh-askpass.exe" EntryPoint="Windows.FullTrustApplication" />
+    <Application Id="SshProxy" Executable="app\\resources\\claude-ssh-proxy.exe" EntryPoint="Windows.FullTrustApplication" />
+    <Application Id="MakeDataFolder" Executable="app\\resources\\make-data-folder.exe" EntryPoint="Windows.FullTrustApplication" />
+  </Applications>
+</Package>`;
+const CODEX_DIR = 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1105.1.0_x64__2p2nqsd0c76g0';
+const CODEX_MANIFEST = `<Package>
+  <Applications>
+    <Application Id="App" Executable="app/ChatGPT.exe" EntryPoint="Windows.FullTrustApplication"><uap:VisualElements DisplayName="ChatGPT" /></Application>
+    <Application Id="CodexChromeNativeHost" Executable="app/resources/codex-chrome-native-host.exe" EntryPoint="Windows.FullTrustApplication" />
+    <Application Id="CodexCoreCommandRunner" Executable="app/resources/codex-command-runner.exe" EntryPoint="Windows.FullTrustApplication" />
+  </Applications>
+</Package>`;
+
+test('desktop locate: an MSIX app is found through its execution alias and its package manifest, started by app ID', () => {
   const alias = `${LAD}\\Microsoft\\WindowsApps\\Claude_pzs8sxrjxfjjc\\claude-desktop.exe`;
-  const real = 'C:\\Program Files\\WindowsApps\\Claude_9.9.9.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe';
-  assert.deepEqual(locate.locateApp(appOf('claude'), sources({ aliases: { [alias]: real } })), { ok: true, path: alias, icon: real });
+  const real = `${CLAUDE_DIR}\\app\\Claude.exe`;
+  const texts = { [`${CLAUDE_DIR}\\AppxManifest.xml`]: CLAUDE_MANIFEST };
+  assert.deepEqual(locate.locateApp(appOf('claude'), sources({ aliases: { [alias]: real }, texts })),
+    { ok: true, path: alias, icon: real, aumid: 'Claude_pzs8sxrjxfjjc!Claude' });
   const codexAlias = `${LAD}\\Microsoft\\WindowsApps\\OpenAI.Codex_2p2nqsd0c76g0\\chatgpt-desktop.exe`;
-  assert.equal(locate.locateApp(appOf('codex'), sources({ aliases: { [codexAlias]: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe' } })).path, codexAlias);
+  const codex = locate.locateApp(appOf('codex'), sources({ aliases: { [codexAlias]: `${CODEX_DIR}\\app\\ChatGPT.exe` }, texts: { [`${CODEX_DIR}\\AppxManifest.xml`]: CODEX_MANIFEST } }));
+  assert.deepEqual([codex.path, codex.aumid], [codexAlias, 'OpenAI.Codex_2p2nqsd0c76g0!App']);
   assert.equal(locate.locateApp(appOf('claude'), sources()).ok, false);
-  for (const other of ['C:\\Program Files\\WindowsApps\\Claude_9_x64__pzs8sxrjxfjjc\\app\\resources\\claude-ssh-proxy.exe', 'C:\\Windows\\System32\\calc.exe']) {
-    const r = locate.locateApp(appOf('claude'), sources({ aliases: { [alias]: other } }));
+  for (const other of [`${CLAUDE_DIR}\\app\\resources\\claude-ssh-proxy.exe`, 'C:\\Windows\\System32\\calc.exe']) {
+    const r = locate.locateApp(appOf('claude'), sources({ aliases: { [alias]: other }, texts }));
     assert.equal(r.ok, false, other);
     assert.match(r.reason, /不是这个应用/);
   }
-  assert.equal(locate.locateApp(appOf('claude'), sources({ lad: '', aliases: { [alias]: real } })).ok, false);
-  const io = sources({ aliases: { [alias]: real } });
+  assert.equal(locate.locateApp(appOf('claude'), sources({ lad: '', aliases: { [alias]: real }, texts })).ok, false);
+  const io = sources({ aliases: { [alias]: real }, texts });
   locate.locateApp(appOf('claude'), io);
-  assert.deepEqual(io.log, [`alias ${alias}`], 'the alias read is the only read');
+  assert.deepEqual(io.log, [`alias ${alias}`, `text ${CLAUDE_DIR}\\AppxManifest.xml`], 'the alias and the package manifest are the only reads');
+  assert.deepEqual(apps.APPS.filter((a: { package?: string }) => a.package).map((a: { package: string; appId: string }) => `${a.package}!${a.appId}`),
+    ['Claude_pzs8sxrjxfjjc!Claude', 'OpenAI.Codex_2p2nqsd0c76g0!App'], 'the app IDs are fixed in the supported app list');
+});
+
+test('desktop locate: the package manifest must declare the app\'s Application Id with the program the alias points at', () => {
+  const alias = `${LAD}\\Microsoft\\WindowsApps\\Claude_pzs8sxrjxfjjc\\claude-desktop.exe`;
+  const real = `${CLAUDE_DIR}\\app\\Claude.exe`;
+  const manifest = `${CLAUDE_DIR}\\AppxManifest.xml`;
+  const run = (xml: string | undefined, to = real) => locate.locateApp(appOf('claude'), sources({ aliases: { [alias]: to }, texts: xml === undefined ? {} : { [manifest]: xml } }));
+  assert.equal(run(CLAUDE_MANIFEST).ok, true);
+  // A tag over several lines, attributes in another order, Executable with forward slashes, another case in the path.
+  assert.equal(run('<Application\n  Executable="APP/claude.exe"\n  Id="Claude"\n  EntryPoint="Windows.FullTrustApplication">').ok, true);
+  const refused: [string, string | undefined, string?][] = [
+    ['no manifest', undefined],
+    ['the app ID is missing', CLAUDE_MANIFEST.replace('Id="Claude"', 'Id="Other"')],
+    ['the app ID differs in case', CLAUDE_MANIFEST.replace('Id="Claude"', 'Id="claude"')],
+    ['the app ID runs another program', '<Application Id="Claude" Executable="app\\resources\\claude-ssh-proxy.exe">'],
+    ['the program is under the app ID of a helper only', '<Application Id="SshProxy" Executable="app\\Claude.exe">'],
+    ['an attribute that only ends in Id', '<Application AppId="Claude" Executable="app\\Claude.exe">'],
+    ['no Executable', '<Application Id="Claude">'],
+    ['an Applications tag is not an Application', '<Applications Id="Claude" Executable="app\\Claude.exe">'],
+    ['larger than 1 MB', `<Application Id="Claude" Executable="app\\Claude.exe">${' '.repeat(locate.MAX_MANIFEST_BYTES)}`],
+    ['the program is not inside a folder of this package', CLAUDE_MANIFEST, 'C:\\Program Files\\WindowsApps\\Other_9.9.9.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe'],
+    ['another publisher', CLAUDE_MANIFEST, 'C:\\Program Files\\WindowsApps\\Claude_9.9.9.0_x64__evil\\app\\Claude.exe'],
+  ];
+  for (const [what, xml, to] of refused) {
+    const r = run(xml as string, to);
+    assert.equal(r.ok, false, what);
+    assert.ok(!('aumid' in r), what);
+  }
+  assert.equal(run(undefined).reason, '它的应用包清单里没有这个应用 ID，或者这个 ID 的程序不是这个应用');
+  // The package folder: the path up to the segment `<Name>_<version>_<arch>_<resource id>_<publisher id>`.
+  assert.equal(locate.packageDir('Claude_pzs8sxrjxfjjc', real), CLAUDE_DIR);
+  assert.equal(locate.packageDir('OpenAI.Codex_2p2nqsd0c76g0', `${CODEX_DIR}\\app\\ChatGPT.exe`), CODEX_DIR);
+  assert.equal(locate.packageDir('OpenAI.Codex_2p2nqsd0c76g0', 'C:\\Program Files\\WindowsApps\\OpenAIxCodex_1_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe'), null, 'a dot is not a wildcard');
+  assert.equal(locate.packageDir('nopublisher', real), null);
+  // The app ID: `<package family name>!<Application Id>`, letters, digits, dots, dashes and underscores only.
+  for (const ok of ['Claude_pzs8sxrjxfjjc!Claude', 'OpenAI.Codex_2p2nqsd0c76g0!App']) assert.equal(locate.isAumid(ok), true, ok);
+  for (const bad of ['', 'Claude_pzs8sxrjxfjjc', '!App', 'a!', 'a!b!c', 'a b!c', 'a!b c', 'a\\b!c', 'a!b"', 'a!b&calc', '..\\x!y', 7, null]) {
+    assert.equal(locate.isAumid(bad), false, String(bad));
+  }
+  const bent = { ...appOf('claude'), appId: 'Claude & calc' };
+  assert.equal(locate.locateApp(bent, sources({ aliases: { [alias]: real }, texts: { [manifest]: '<Application Id="Claude & calc" Executable="app\\Claude.exe">' } })).ok, false, 'an app ID that would not pass is never returned');
+  const { appId: _, ...noId } = appOf('claude');
+  assert.equal(locate.locateApp(noId, sources({ aliases: { [alias]: real }, texts: { [manifest]: '<Application Executable="app\\Claude.exe">' } })).ok, false, 'an MSIX app without an app ID in the list');
 });
 
 test('desktop locate: other apps are found through a Start Menu shortcut to their own program, without arguments, on a local drive', () => {
@@ -1321,11 +1395,65 @@ test('desktop locate: the install is never taken from the state file, the page, 
 const launch = await load('lib/launch.mjs');
 test('desktop launch rule 4: whatever locateApp finds for any app is a local .exe path: no arguments, protocol or namespace', () => {
   for (const a of apps.APPS) {
+    const dir = a.package ? `C:\\Program Files\\WindowsApps\\${a.package.replace(/_([^_]+)$/, '_1.0.0.0_x64__$1')}` : '';
     const r = locate.locateApp(a, sources({ links: [{ target: `C:\\Apps\\${a.exe}`, args: '' }], files: [`C:\\Apps\\${a.exe}`],
-      aliases: a.package ? { [`${LAD}\\Microsoft\\WindowsApps\\${a.package}\\${a.alias}`]: `C:\\Program Files\\WindowsApps\\x\\${a.exe}` } : {} }));
+      aliases: a.package ? { [`${LAD}\\Microsoft\\WindowsApps\\${a.package}\\${a.alias}`]: `${dir}\\app\\${a.exe}` } : {},
+      texts: a.package ? { [`${dir}\\AppxManifest.xml`]: `<Application Id="${a.appId}" Executable="app\\${a.exe}">` } : {} }));
     assert.equal(r.ok, true, a.id);
     assert.match(r.path, /^[A-Za-z]:\\[^:*?"<>|]+\.exe$/i, a.id);
+    // An MSIX app is started by its app ID alone; any other app has none, so its program file is opened.
+    if (a.package) assert.equal(r.aumid, `${a.package}!${a.appId}`, a.id);
+    else assert.ok(!('aumid' in r), a.id);
   }
+});
+
+test('desktop launch: startApp activates an MSIX app by app ID through the absolute explorer.exe, any other app via openPath', async () => {
+  const fakeSpawn = (behavior: 'spawn' | 'error' | 'throw') => {
+    const calls: unknown[][] = [];
+    let unrefs = 0;
+    const spawn = (...args: unknown[]) => {
+      calls.push(args);
+      if (behavior === 'throw') throw new Error('EINVAL');
+      const child = new EventEmitter() as EventEmitter & { unref(): void };
+      child.unref = () => { unrefs++; };
+      queueMicrotask(() => (behavior === 'error' ? child.emit('error', new Error('ENOENT')) : child.emit('spawn')));
+      return child;
+    };
+    return { spawn, calls, unrefs: () => unrefs };
+  };
+  const opened: string[] = [];
+  const openPath = async (p: string) => { opened.push(p); return ''; };
+  const msix = { ok: true, path: `${LAD}\\Microsoft\\WindowsApps\\OpenAI.Codex_2p2nqsd0c76g0\\chatgpt-desktop.exe`, icon: 'x', aumid: 'OpenAI.Codex_2p2nqsd0c76g0!App' };
+  // Started: the exact call, explorer by its absolute path, one argument, detached; no openPath, the alias is not run.
+  let s = fakeSpawn('spawn');
+  assert.equal(await launch.startApp(msix, { spawn: s.spawn, openPath, systemRoot: 'C:\\WINDOWS' }), '');
+  assert.deepEqual(s.calls, [['C:\\WINDOWS\\explorer.exe', ['shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App'], { detached: true, windowsHide: true, stdio: 'ignore' }]]);
+  assert.equal(s.unrefs(), 1, 'the shell does not wait for explorer');
+  assert.deepEqual(opened, []);
+  // Failing to start explorer is a failure (its exit code is never read).
+  s = fakeSpawn('error');
+  assert.equal(await launch.startApp(msix, { spawn: s.spawn, openPath, systemRoot: 'C:\\WINDOWS' }), 'ENOENT');
+  s = fakeSpawn('throw');
+  assert.equal(await launch.startApp(msix, { spawn: s.spawn, openPath, systemRoot: 'C:\\WINDOWS' }), 'EINVAL');
+  // An app ID or Windows folder that would not pass is never handed on.
+  for (const [what, target, systemRoot] of [
+    ['bad app ID', { ...msix, aumid: 'a!b & calc' }, 'C:\\WINDOWS'],
+    ['empty app ID', { ...msix, aumid: '' }, 'C:\\WINDOWS'],
+    ['no SystemRoot', msix, undefined],
+    ['relative SystemRoot', msix, 'WINDOWS'],
+    ['SystemRoot on a share', msix, '\\\\srv\\share'],
+    ['SystemRoot with a subfolder', msix, 'C:\\x\\y'],
+  ] as const) {
+    s = fakeSpawn('spawn');
+    assert.notEqual(await launch.startApp(target, { spawn: s.spawn, openPath, systemRoot }), '', what);
+    assert.deepEqual(s.calls, [], what);
+  }
+  assert.deepEqual(opened, []);
+  // Not MSIX: the program file, through openPath, its result passed back; nothing spawned.
+  s = fakeSpawn('spawn');
+  assert.equal(await launch.startApp({ ok: true, path: 'C:\\Apps\\Kimi Code.exe', icon: 'x' }, { spawn: s.spawn, openPath, systemRoot: 'C:\\WINDOWS' }), '');
+  assert.deepEqual([opened, s.calls], [['C:\\Apps\\Kimi Code.exe'], []]);
+  assert.equal(await launch.startApp({ ok: true, path: 'C:\\a.exe', icon: 'x' }, { spawn: s.spawn, openPath: async () => 'Access denied', systemRoot: 'C:\\WINDOWS' }), 'Access denied');
 });
 
 test('desktop launch rule 3: the target never comes from the state file, the collaboration page, the Hub or an earlier window', () => {
@@ -1364,7 +1492,19 @@ test('desktop launch rules 1, 4, 5: one launch function, one call site, reached 
   assert.deepEqual(calls, ['shell.mjs'], 'one openPath call in all desktop sources');
   assert.ok(!sources.some((f) => /openExternal|showItemInFolder/.test(f.code)), 'nothing else is handed to the system');
   const launchBody = fnBody(shellSrc, 'launchApp');
-  assert.match(launchBody, /^ {4}shell\.openPath\(target\.path\)\.then\(/m, 'the call is inside launchApp, with the target path alone (rule 4)');
+  assert.match(launchBody, /^ {4}startApp\(target, \{ spawn, openPath: \(path\) => shell\.openPath\(path\), systemRoot: process\.env\.SystemRoot \}\)\.then\(/m,
+    'the call is inside launchApp, with the target alone (rule 4)');
+  assert.equal((shellSrc.match(/\bstartApp\(/g) ?? []).length, 1, 'startApp is called once, in launchApp');
+  assert.equal((shellSrc.match(/\.openPath\(/g) ?? []).length, 1, 'shell.openPath only reaches startApp');
+  // lib/launch.mjs startApp is the one place that starts a program by app ID: the absolute explorer.exe under
+  // %SystemRoot% with `shell:AppsFolder\<aumid>`, nothing else; openPath only for a target without one.
+  const launchSrc = readFileSync(join(DESKTOP, 'lib', 'launch.mjs'), 'utf8');
+  const startBody = fnBody(launchSrc, 'startApp');
+  assert.match(startBody, /spawn\(`\$\{systemRoot\}\\\\explorer\.exe`, \[`shell:AppsFolder\\\\\$\{target\.aumid\}`\], \{ detached: true, windowsHide: true, stdio: 'ignore' \}\);/);
+  assert.equal((startBody.match(/\bspawn\(/g) ?? []).length, 1);
+  assert.equal((startBody.match(/\bopenPath\(/g) ?? []).length, 1);
+  const outsideStart = launchSrc.replace(startBody, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(outsideStart, /spawn|openPath|explorer|AppsFolder/i, 'nothing else in launch.mjs starts anything');
   const count = (re: RegExp) => (shellSrc.match(re) ?? []).length;
   assert.equal(count(/\blaunchApp\(/g), 2, 'defined once, called once');
   assert.equal(count(/\bpickApp\(/g), 2, 'pickApp defined once, called once');
@@ -1379,10 +1519,15 @@ test('desktop launch rules 1, 4, 5: one launch function, one call site, reached 
   ipcSenders(shellSrc);
   assert.equal(count(/\bspawn\(/g), 1, 'the only other process start is runEnsure (node + the launcher, fixed arguments)');
   assert.match(shellSrc, /spawn\(node, \[launcher, '--ensure'\],/);
+  assert.equal(count(/\bspawn\b/g), 3, 'spawn: imported, runEnsure, and handed to startApp only');
   for (const f of sources) {
     // shortcut.mjs is not part of the running shell: `npm run shortcut`, run by the user, writes the Desktop shortcut.
     const code = f.code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');   // comments may name them
-    if (f.path !== 'shell.mjs' && f.path !== 'shortcut.mjs') assert.doesNotMatch(code, /launchApp|pickApp|child_process|openPath/, `${f.path} has no launch path`);
+    if (f.path === 'lib/launch.mjs') {   // startApp, checked above, is its one start call
+      assert.doesNotMatch(code, /child_process|\bexecFile\b|\bexec\(|\bfork\(|launchApp|pickApp/, f.path);
+      continue;
+    }
+    if (f.path !== 'shell.mjs' && f.path !== 'shortcut.mjs') assert.doesNotMatch(code, /launchApp|pickApp|startApp|child_process|openPath/, `${f.path} has no launch path`);
     assert.doesNotMatch(f.code, /shell:AppsFolder|explorer\.exe|\bexecFile\b|\bexec\(|\bfork\(/i, `${f.path}: no other way to start a program`);
   }
   // Start-up, restoring tabs, an app going away, Hub or page events, second-instance activation, re-selecting a tab:

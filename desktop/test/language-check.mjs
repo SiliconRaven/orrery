@@ -38,7 +38,7 @@ const freePort = () => new Promise((ok) => {
 });
 const API_TOKEN = 'language-check-token-0123456789abcdefghij';
 // Nothing of this machine is read (no Start Menu, no aliases) and nothing can be started.
-const sources = () => ({ localAppData: '', readAlias: () => null, isFile: () => false, shortcuts: () => [], lstat: () => null });
+const sources = () => ({ localAppData: '', readAlias: () => null, readText: () => null, isFile: () => false, shortcuts: () => [], lstat: () => null });
 const launchTarget = () => ({ ok: false, reason: 'language check: nothing is started' });
 
 async function shot(wc, name) {

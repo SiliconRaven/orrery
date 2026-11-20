@@ -48,6 +48,7 @@ const WB1 = program('wb', 'WorkBuddy.exe');
 const sources = () => ({
   localAppData: '',
   readAlias: () => null,
+  readText: () => null,
   isFile: (p) => existsSync(p),
   shortcuts: () => [{ target: KIMI, args: '' }],
   lstat: (p) => { try { const st = lstatSync(p); return { file: st.isFile(), link: st.isSymbolicLink() }; } catch { return null; } },

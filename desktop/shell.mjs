@@ -7,8 +7,9 @@
 // state machine (lib/dock.mjs); the operations it returns go through the single writer (lib/writer.mjs), which checks
 // identity, flags and trigger before each Win32 write. The Win32 layer comes in as `ffi` (lib/win32.mjs from main.mjs,
 // a fake in desktop/test). The collaboration page gets no preload, no IPC and no permission; it may only stay on the
-// Hub's origin. Nothing is handed to the system to open, with one exception: launchApp starts a supported app on a
-// click in the "+" panel (docs/desktop.md "启动应用"), a small window of the shell's own under "+" (ui/strip.html).
+// Hub's origin. Nothing is handed to the system to open or start, with one exception: launchApp starts a supported
+// app on a click in the "+" panel (docs/desktop.md "启动应用"), a small window of the shell's own under "+"
+// (ui/strip.html).
 // Where it starts an app from can be saved by the user in the settings view (docs/desktop.md "应用位置"), another
 // small window of the shell's own, under the gear (ui/settings.html).
 import { BrowserWindow, Menu, WebContentsView, app, dialog, ipcMain, nativeImage, screen, session, shell } from 'electron';
@@ -21,8 +22,8 @@ import { APP_PATHS_FILE, MAX_APP_PATHS_BYTES, confirmOffer, isUseRequest, issueO
 import { APPS } from './lib/apps.mjs';
 import { LAYOUTS, ORRERY, afterOps, initialState, liveIn, loadLayout, loadTabs, runOps, savedState, step, view } from './lib/dock.mjs';
 import { PANE_GAP, TAB_BAR_HEIGHT, dockArea, paneRects, toPhysical } from './lib/geometry.mjs';
-import { createWatch } from './lib/launch.mjs';
-import { checkProgram, programNames, startTarget } from './lib/locate.mjs';
+import { createWatch, startApp } from './lib/launch.mjs';
+import { MAX_MANIFEST_BYTES, checkProgram, programNames, startTarget } from './lib/locate.mjs';
 import { allowNavigation, isHubShutdown, parseEnsure } from './lib/navigation.mjs';
 import { iconFromExe } from './lib/peicon.mjs';
 import { isAppId, panelBounds, panelStep, pickFor, stripEntries } from './lib/strip.mjs';
@@ -71,8 +72,8 @@ const stampOf = (path) => { try { const st = statSync(path); return st.isFile() 
 
 /**
  * The read-only places where an app's install is looked up (lib/locate.mjs locateApp; for its icon, and on a click
- * in the strip, its start target): MSIX app execution aliases (a
- * link read) and the Start Menu shortcuts of this user and of all users (read by the system's shortcut reader,
+ * in the strip, its start target): MSIX app execution aliases (a link read) with their package's AppxManifest.xml,
+ * and the Start Menu shortcuts of this user and of all users (read by the system's shortcut reader,
  * Electron's shell.readShortcutLink). Read afresh every time: the folders are listed again, and a shortcut is parsed
  * again whenever its file changed (reading all of them takes most of a second, so an unchanged file's last reading is
  * reused, in memory only; nothing is saved).
@@ -127,6 +128,8 @@ function systemSources() {
   return {
     localAppData: process.env.LOCALAPPDATA ?? '',
     readAlias: (path) => { try { return readlinkSync(path); } catch { return null; } },
+    // An MSIX package's AppxManifest.xml, read only and at most MAX_MANIFEST_BYTES (lib/locate.mjs locateApp).
+    readText: (path) => { try { return statSync(path).size > MAX_MANIFEST_BYTES ? null : readFileSync(path, 'utf8'); } catch { return null; } },
     isFile: (path) => stampOf(path) !== null,
     shortcuts: () => (links ??= shortcuts()),
     // For a saved path: the file itself, not what a link points at (lib/locate.mjs checkProgram refuses links).
@@ -661,14 +664,16 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
 
   /**
    * The only place the shell starts a program (docs/desktop.md "启动应用"), with one call site: pickApp, on a click in
-   * the "+" panel. The target is looked up now, read-only (lib/locate.mjs locateApp), and opened with the
-   * system's default action for a program file, without arguments (shell.openPath). Then, for WATCH_MS, the app's
-   * windows that were not there before the click are watched for: one goes into a new tab (identity captured and
-   * checked as for any pick), several are offered by title, none: nothing more happens. It is never started again.
+   * the "+" panel. The target is looked up now, read-only (lib/locate.mjs locateApp), and started by lib/launch.mjs
+   * startApp: an MSIX app by its app ID through the Windows shell's app activation, like the Start menu; any other
+   * app's program file with the system's default action, without arguments (shell.openPath). Then, for WATCH_MS,
+   * the app's windows that were not there before the click are watched for: one goes into a new tab (identity
+   * captured and checked as for any pick), several are offered by title, none: nothing more happens. It is never
+   * started again.
    */
   function launchApp(a) {
     // The windows there before the click are read first, so that the target is looked up (and a user-chosen path
-    // checked) right before shell.openPath, with nothing slow in between.
+    // checked) right before startApp, with nothing slow in between.
     const before = new Set(listCandidates(ffi, { apps, app: a.id }).map((c) => c.hwnd));
     const target = launchTarget(a);
     if (!target.ok) { notice = t('没有启动 {name}：{reason}。', { name: a.name, reason: target.reason }); render(); return; }
@@ -689,7 +694,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
       else if ('choose' in r) windowsMenu(r.choose);
     }, WATCH_TICK_MS);
     watches.add(timer);
-    shell.openPath(target.path).then((error) => {
+    startApp(target, { spawn, openPath: (path) => shell.openPath(path), systemRoot: process.env.SystemRoot }).then((error) => {
       if (!error || watch.done) return;
       stop();
       notice = t('没能启动 {name}（{error}）。', { name: a.name, error });

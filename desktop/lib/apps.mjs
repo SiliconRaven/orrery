@@ -11,19 +11,22 @@
 //
 // Installation lookup is read-only (lib/locate.mjs): the shell reads the icon from an installed app and starts it
 // only after a user click in the strip (docs/desktop.md "启动应用"). Claude and ChatGPT / Codex are MSIX packages:
-// `package` is their public package family name; `alias` is checked against `exe`. Other apps are found through
+// `package` is their public package family name and `appId` the Application Id in their package manifest whose
+// Executable is `exe`; they are started like the Start menu does, by app ID (`package!appId`). `alias` is only read
+// to find the installed package and its program (the icon); it is never started. Other apps are found through
 // Start Menu shortcuts. Qoder can point at its own launcher, `starter`; WorkBuddy and Cursor point at their app exe.
 
 /**
- * @typedef {{ id: string, name: string, exe: string, package?: string, alias?: string, starter?: string }} App
- *   exe: the image file name of the app's windows; package + alias: an MSIX app's family name and execution alias;
+ * @typedef {{ id: string, name: string, exe: string, package?: string, appId?: string, alias?: string, starter?: string }} App
+ *   exe: the image file name of the app's windows; package + appId + alias: an MSIX app's family name, the Application
+ *   Id it is started by, and its execution alias;
  *   starter: another image file name the app's own Start Menu shortcut may point at instead of `exe`
  */
 
 /** @type {readonly App[]} */
 export const APPS = Object.freeze([
-  { id: 'claude', name: 'Claude', exe: 'Claude.exe', package: 'Claude_pzs8sxrjxfjjc', alias: 'claude-desktop.exe' },
-  { id: 'codex', name: 'ChatGPT / Codex', exe: 'ChatGPT.exe', package: 'OpenAI.Codex_2p2nqsd0c76g0', alias: 'chatgpt-desktop.exe' },
+  { id: 'claude', name: 'Claude', exe: 'Claude.exe', package: 'Claude_pzs8sxrjxfjjc', appId: 'Claude', alias: 'claude-desktop.exe' },
+  { id: 'codex', name: 'ChatGPT / Codex', exe: 'ChatGPT.exe', package: 'OpenAI.Codex_2p2nqsd0c76g0', appId: 'App', alias: 'chatgpt-desktop.exe' },
   { id: 'deepseek', name: 'DeepSeek Harness', exe: 'DeepSeek Harness.exe' },
   { id: 'kimi-code', name: 'Kimi Code', exe: 'Kimi Code.exe' },
   { id: 'zcode', name: 'ZCode', exe: 'ZCode.exe' },
