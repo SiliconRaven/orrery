@@ -54,11 +54,19 @@ interface Flow {
   current(taskId: string): Promise<any>;
 }
 
+/**
+ * Real git in a test answers within the product budget (1.5 s) when the machine is idle, but not always under a full
+ * parallel run, which turned links into `timeout`. Tests use a long budget unless they test the budget itself.
+ */
+const TEST_BUDGET_MS = 60_000;
+const lookup = (options: { runner?: GitRunner; budgetMs?: number } = {}) => setBranchLookup({ budgetMs: TEST_BUDGET_MS, ...options });
+
 let serial = 0;
 async function flow(t: { after(fn: () => unknown): void }, options: { projectPath?: (dir: string, repo: string) => string } = {}): Promise<Flow> {
   const dir = tempDir();
   const repo = repository(dir);
   const app = await startTestHub({ dir });
+  lookup();
   t.after(async () => { setBranchLookup(); await app.close(); rmSync(dir, { recursive: true, force: true }); });
   const projectPath = options.projectPath ? options.projectPath(dir, repo.repo) : repo.repo;
   const { cluster, members: [a, b] } = await app.api('POST', '/api/clusters', { name: 'branch link', members: [
@@ -92,7 +100,7 @@ test('over MCP: a commit at the tip of one branch links it automatically; get_ta
   const repo = repository(dir);
   const hold = holdScript();
   const rec = recording();
-  setBranchLookup({ runner: rec.runner });
+  lookup({ runner: rec.runner });
   let app = await startTestHub({ dir, mock: { script: hold.script } });
   t.after(async () => { setBranchLookup(); hold.release(); await app.close(); rmSync(dir, { recursive: true, force: true }); });
   const { cluster, members: [a] } = await app.api('POST', '/api/clusters', { name: 'mcp link', members: [{ harness: 'mock', mode: 'native', name: 'A', projectPath: join(repo.repo) }] });
@@ -139,7 +147,7 @@ test('several, none, unknown and unusual branches: nothing is linked and the res
   const names = ['b1', 'b2', '__proto__', 'constructor', 'x/y', 'ünï', 'z'];
   for (const name of names) git(repo, 'branch', name, c3);
   const rec = recording();
-  setBranchLookup({ runner: rec.runner });
+  lookup({ runner: rec.runner });
   const several = await f.task();
   f.start(several.id);
   const one = await f.submit(several.id, c3);
@@ -218,7 +226,7 @@ test('a manual link is never changed; it warns when its branch lacks the commit'
   const blocked = Promise.withResolvers<void>();
   f.app.hub.collaboration.command({ kind: 'user' }, f.clusterId, { action: 'task.set_git_branch', taskId: task.id,
     expectedRevision: (await f.current(task.id)).revision, operationId: 'again', gitBranch: { repositoryPath: f.repo.repo, branch: 'other' } } as CollaborationCommand);
-  setBranchLookup({ runner: async (cwd, args, signal) => { if (args[0] === 'merge-base') { blocked.resolve(); await gate.promise; } return gitRead(cwd, args, signal); } });
+  lookup({ runner: async (cwd, args, signal) => { if (args[0] === 'merge-base') { blocked.resolve(); await gate.promise; } return gitRead(cwd, args, signal); } });
   const pending = f.submit(task.id, f.repo.c3, { expectedRevision: (await f.current(task.id)).revision + 1 });
   await blocked.promise;
   f.app.hub.collaboration.command({ kind: 'user' }, f.clusterId, { action: 'task.set_git_branch', taskId: task.id,
@@ -230,7 +238,7 @@ test('a manual link is never changed; it warns when its branch lacks the commit'
 test('an automatic link follows the next submit: moved, kept while it holds the commit, cleared when it does not', async (t) => {
   const f = await flow(t);
   const rec = recording();
-  setBranchLookup({ runner: rec.runner });
+  lookup({ runner: rec.runner });
   const task = await f.task();
   f.start(task.id);
   const auto = (branch: string) => ({ repositoryPath: f.repo.repo, branch, automatic: true });
@@ -306,24 +314,24 @@ test('a failed git query is not an answer: links stay, no warning, at the commit
   f.start(auto.id);
   await f.submit(auto.id, f.repo.c2);
   const kept = { status: 'kept', branch: 'topic', automatic: true, reason: 'git_error' };
-  setBranchLookup({ runner: fatal(atCommit) });
+  lookup({ runner: fatal(atCommit) });
   assert.deepEqual((await f.submit(auto.id, f.repo.c5)).gitBranch, kept, 'resolving the commit failed');
-  setBranchLookup({ runner: fatal(atBranch) });
+  lookup({ runner: fatal(atBranch) });
   assert.deepEqual((await f.submit(auto.id, f.repo.c5)).gitBranch, kept, 'checking that topic exists failed');
   // A failure that is a real "not found" (exit 1, nothing printed) is still an answer: the unknown commit clears it.
-  setBranchLookup({ runner: async (cwd, args, signal) => {
+  lookup({ runner: async (cwd, args, signal) => {
     if (atCommit(args)) throw Object.assign(new Error('not found'), { code: 1, stdout: '' });
     return gitRead(cwd, args, signal);
   } });
   assert.deepEqual((await f.submit(auto.id, f.repo.c5)).gitBranch, { status: 'cleared', branch: 'topic', reason: 'unknown_commit' });
   // A manual link: kept with git_error, and no unproven warning.
-  setBranchLookup();
+  lookup();
   const manual = await f.task();
   f.start(manual.id);
   f.app.hub.collaboration.command({ kind: 'user' }, f.clusterId, { action: 'task.set_git_branch', taskId: manual.id,
     expectedRevision: (await f.current(manual.id)).revision, operationId: 'manual', gitBranch: { repositoryPath: f.repo.repo, branch: 'other' } } as CollaborationCommand);
   for (const when of [atCommit, atBranch]) {
-    setBranchLookup({ runner: fatal(when) });
+    lookup({ runner: fatal(when) });
     assert.deepEqual((await f.submit(manual.id, f.repo.c2)).gitBranch, { status: 'kept', branch: 'other', reason: 'git_error' });
   }
 });
@@ -407,7 +415,7 @@ test('every path that submits a commit links: self review, after a reject, after
 test('a submit without a commit, by the sync entry or refused, links nothing', async (t) => {
   const f = await flow(t);
   const rec = recording();
-  setBranchLookup({ runner: rec.runner });
+  lookup({ runner: rec.runner });
   const free = await f.task({ mergeRequired: false });
   f.start(free.id);
   const plain = await f.submit(free.id, undefined);
@@ -436,7 +444,7 @@ test('a submit without a commit, by the sync entry or refused, links nothing', a
 test('only a submit that could succeed starts git: not another member, not a wrong assignment, not a malformed request', async (t) => {
   const f = await flow(t);
   const rec = recording();
-  setBranchLookup({ runner: rec.runner });
+  lookup({ runner: rec.runner });
   const task = await f.task();
   f.start(task.id);
   const refuse = async (extra: Record<string, unknown>, by: string, code: string) =>
@@ -479,7 +487,7 @@ test('lookups share four slots; a submit that waits past its budget goes on unli
   assert.equal(most, 4, 'never more than four lookups at once');
   gate.resolve();
   assert.deepEqual((await Promise.all(holders)).map((result) => result.gitBranch!.status), ['linked', 'linked', 'linked', 'linked']);
-  setBranchLookup({ runner });
+  lookup({ runner });
   const later = await f.task();
   f.start(later.id);
   assert.equal((await f.submit(later.id, f.repo.c2)).gitBranch?.status, 'linked', 'the slots were given back');
@@ -499,14 +507,14 @@ test('a missing folder, no repository, no git, a git error or a hung git never f
   f.start(other.id, f.b);
   assert.equal((await f.submit(other.id, f.repo.c2, {}, f.b)).gitBranch?.status, 'linked');
   const missing = Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' });
-  setBranchLookup({ runner: async () => { throw missing; } });
+  lookup({ runner: async () => { throw missing; } });
   assert.deepEqual((await f.submit(other.id, f.repo.c4, {}, f.b)).gitBranch, { status: 'kept', branch: 'topic', automatic: true, reason: 'git_unavailable' });
-  setBranchLookup({ runner: async (cwd, args, signal) => { if (args[0] === 'for-each-ref') throw Object.assign(new Error('fatal'), { code: 128 }); return gitRead(cwd, args, signal); } });
+  lookup({ runner: async (cwd, args, signal) => { if (args[0] === 'for-each-ref') throw Object.assign(new Error('fatal'), { code: 128 }); return gitRead(cwd, args, signal); } });
   assert.deepEqual((await f.submit(other.id, f.repo.c4, {}, f.b)).gitBranch, { status: 'kept', branch: 'topic', automatic: true, reason: 'git_error' });
 
   // A git that never answers (and ignores the abort): the submit returns once the budget is spent.
   let aborted = false;
-  setBranchLookup({ runner: (_cwd, _args, signal) => { signal.addEventListener('abort', () => { aborted = true; }); return new Promise(() => {}); } });
+  lookup({ budgetMs: BRANCH_LOOKUP_BUDGET_MS, runner: (_cwd, _args, signal) => { signal.addEventListener('abort', () => { aborted = true; }); return new Promise(() => {}); } });
   const begun = performance.now();
   const hung = await f.submit(other.id, f.repo.c4, {}, f.b);
   const took = performance.now() - begun;
@@ -523,7 +531,7 @@ test('concurrent submits: the link follows the submission stored last, and a lin
   // The lookup for the later-stored submit waits in for-each-ref until the other submit has committed.
   const gate = Promise.withResolvers<void>();
   const blocked = Promise.withResolvers<void>();
-  setBranchLookup({ runner: async (cwd, args, signal) => {
+  lookup({ runner: async (cwd, args, signal) => {
     if (args[0] === 'for-each-ref' && args[1] === `--points-at=${f.repo.c5}`) { blocked.resolve(); await gate.promise; }
     return gitRead(cwd, args, signal);
   } });
@@ -546,7 +554,7 @@ test('concurrent submits: the link follows the submission stored last, and a lin
   // A manual link set while a lookup runs is kept as it is.
   const gate2 = Promise.withResolvers<void>();
   const blocked2 = Promise.withResolvers<void>();
-  setBranchLookup({ runner: async (cwd, args, signal) => {
+  lookup({ runner: async (cwd, args, signal) => {
     if (args[0] === 'for-each-ref') { blocked2.resolve(); await gate2.promise; }
     return gitRead(cwd, args, signal);
   } });
@@ -564,7 +572,7 @@ test('concurrent submits: the link follows the submission stored last, and a lin
   f.start(fresh.id);
   const gate3 = Promise.withResolvers<void>();
   const blocked3 = Promise.withResolvers<void>();
-  setBranchLookup({ runner: async (cwd, args, signal) => {
+  lookup({ runner: async (cwd, args, signal) => {
     if (args[0] === 'for-each-ref') { blocked3.resolve(); await gate3.promise; }
     return gitRead(cwd, args, signal);
   } });
@@ -712,7 +720,7 @@ test('a linked repository moved away from inside a parent repository is not repl
   let nest!: ReturnType<typeof nestedRepositories>;
   const f = await flow(t, { projectPath: (dir) => (nest = nestedRepositories(dir)).inner });
   const rec = recording();
-  setBranchLookup({ runner: rec.runner });
+  lookup({ runner: rec.runner });
   const auto = await f.task();
   f.start(auto.id);
   const linked = await f.submit(auto.id, nest.c1);
