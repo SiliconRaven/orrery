@@ -45,6 +45,7 @@ reopen  -> pending
 3. **用户验收（`reviewer: { kind: "user" }`）**：适用于界面效果确认或需人工亲自把关的改动。`submit` 后停在 `review` 等用户在界面审批；通过后若需要合并则由**执行者**运行 `ship`（或经网页提交手动标记）。
 
 - **依赖关系**：任务通过 `dependencyIds` 声明前置依赖；所有前置结果有效且 `mergeRequired: true` 的前置均已 `merged` 后，下游任务方可执行。
+- **派工与版本号**：成员执行 `start`、无重新派工歧义的 `working`/`review` 态 `submit` 以及本人发起的 `release`/`handoff` 可省略 `assignmentId`，由 Hub 自动匹配当前活跃派工并校验归属；若同一成员曾在该任务被重新派工，则 `submit` 至少须带当前 `assignmentId` 或 `expectedRevision` 之一。`start`、进行中/待验收态 `submit`（省略时仍用请求到达快照防异步并发覆盖）、带 `submissionId` 锁版本的 `review` 与 `watch`/`unwatch` 可省略 `expectedRevision`（显式传入时仍严格核对）；变更任务定义/归属、关闭重开、待办事项、批次增删及对失效 `completed` 结果重新提交时，仍必须传当前 `expectedRevision`（失效重提还须传原获批 `assignmentId`）。
 
 ## 接管（`takeover`）、退回二选一与重开
 

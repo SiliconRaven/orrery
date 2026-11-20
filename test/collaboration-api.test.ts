@@ -67,9 +67,9 @@ test('HTTP and MCP share tasks and bookmarks, preserve caller identity, and dele
       assert.ok(tools.find((tool) => tool.name === name)?.inputSchema.required?.includes('expectedRevision'), name);
     }
     const taskAction = tools.find((tool) => tool.name === 'task_action')!;
-    // Optional in the schema only because watch and unwatch go without it; the Hub still requires it for every other action.
+    // Optional in the schema for start, active submit, review, watch and unwatch; high-risk mutating actions still require it.
     assert.ok(!taskAction.inputSchema.required?.includes('expectedRevision'));
-    assert.match(String((taskAction.inputSchema.properties as any).expectedRevision.description), /required for every action except watch and unwatch/);
+    assert.match(String((taskAction.inputSchema.properties as any).expectedRevision.description), /optional for start, submit while working\/in review, review, watch and unwatch/);
     assert.ok(taskAction.inputSchema.required?.includes('taskId'));
     for (const name of ['manage_roles', 'set_cluster_paused']) {
       assert.ok(tools.find((tool) => tool.name === name)?.inputSchema.required?.includes('generation'), name);
@@ -96,7 +96,12 @@ test('HTTP and MCP share tasks and bookmarks, preserve caller identity, and dele
     assert.equal(wrongVersions.isError, true);
     assert.match(wrongVersions.text, /DEPENDENCIES_CHANGED/);
     const submitted = await call('task_action', { ...submit, operationId: 'submit-current', expectedDependencyVersions: {} });
-    assert.deepEqual(submitted.data.submission.dependencyVersions, {});
+    assert.equal(submitted.data.submission.summary, undefined, 'MCP submit omits prose summary');
+    assert.equal(submitted.data.task.scope, undefined, 'MCP submit omits full task scope');
+    assert.equal(submitted.data.submission.dependencyVersions, undefined, 'MCP submit omits dependencyVersions');
+    assert.ok(typeof submitted.data.nextStep === 'string' && submitted.data.nextStep.length > 0);
+    const fullTask = await call('get_task', { taskId: memberTask.data.task.id });
+    assert.deepEqual(fullTask.data.submissions[0].dependencyVersions, {});
     assert.equal((await call('manage_roles', { action: 'create', operationId: 'no-role', name: 'admin', memberId: 'user', generation: 1 })).isError, true);
     // A business role's description is editable by the user and readable by members through list_tasks.
     const role = await app.api('POST', `${path}/collaboration`, {

@@ -16,7 +16,7 @@ import type { Store, StoredMember } from '../../core/store.ts';
 import type { HubEvent, SystemMessageKind } from '../../core/types.ts';
 import { allTasks, approvedResult, canShipFixTask, completionValid, displayTask, eligible, fail, memberName, missingRoleNames, participantKeys, resolveTaskRef, shipState, taskDependencyEvaluation, taskOf, versions } from './model.ts';
 import { batchLabel, batchShipFixAffectedTasks, batchShipState, batchSnapshot, batchTransitions, canBatchShipFix, checkJoin, refuseEarlyReview, resolveBatchRef } from './batches.ts';
-import { decideBranchLink, type BranchFacts, type ProductCodeDiff, type ShipFixFacts } from './branch-link.ts';
+import { decideBranchLink, preparedSubmitSnapshot, type BranchFacts, type ProductCodeDiff, type ShipFixFacts } from './branch-link.ts';
 import { announceLibrary, applyTaskLabels } from './labels.ts';
 import { noticeBody } from './notices.ts';
 import { allowsTaskRoles, requireTaskPermission, taskPermissions } from './permissions.ts';
@@ -43,6 +43,8 @@ const commitSha = (value: unknown, mandatory: boolean): string | null => {
   return value.toLowerCase();
 };
 const STORED_REPOSITORY_GONE = 'the task\'s linked repository is no longer at its path; clear the link with gitBranch null to use your own folder, or ask the user to choose the repository on the page';
+/** Low-conflict progression actions where expectedRevision may be omitted (checked strictly when provided, except completed resubmission). */
+const OPTIONAL_REVISION_ACTIONS = new Set(['task.start', 'task.submit', 'task.review']);
 const reviewReason = (value: unknown, mandatory: boolean): string => {
   if (mandatory) return required(value, 'reason', 50_000);
   if (value === undefined) return '';
@@ -168,8 +170,9 @@ function refuseCoordinator(store: Store, clusterId: string, memberId: string): v
 function executor(store: Store, actor: CollaborationActor, actorId: string, task: Task, assignmentId: unknown): Assignment {
   if (actor.kind !== 'member') return fail('FORBIDDEN', 'only the assigned member can report work; release or hand off the task instead');
   refuseCoordinator(store, task.clusterId, actorId);
-  const assignment = collaborationRecords<Assignment>(store, task.id, 'assignment').find((a) => a.id === assignmentId);
-  if (!assignment || task.currentAssignmentId !== assignment.id || assignment.endedAt || assignment.memberId !== actorId) {
+  const id = assignmentId === undefined ? task.currentAssignmentId : assignmentId;
+  const assignment = id ? collaborationRecords<Assignment>(store, task.id, 'assignment').find((a) => a.id === id) : undefined;
+  if (!assignment || task.currentAssignmentId !== assignment.id || assignment.endedAt || assignment.memberId !== actorId || task.assignedMemberId !== actorId) {
     return fail('STALE_ASSIGNMENT', 'the assignment is no longer active for this member');
   }
   return assignment;
@@ -341,8 +344,20 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
   let endedBy = actorId;
   if (action.startsWith('task.') && action !== 'task.create') {
     task = taskOf(store, clusterId, command.taskId);
-    if (!Number.isSafeInteger(command.expectedRevision) || command.expectedRevision !== task.revision) {
-      return fail('STALE_REVISION', 'task revision changed');
+    const revisionOptional = OPTIONAL_REVISION_ACTIONS.has(action)
+      && !(action === 'task.submit' && task.status === 'completed');
+    if (command.expectedRevision !== undefined || !revisionOptional) {
+      if (!Number.isSafeInteger(command.expectedRevision) || command.expectedRevision !== task.revision) {
+        return fail('STALE_REVISION', 'task revision changed');
+      }
+    } else if (action === 'task.submit') {
+      const snap = preparedSubmitSnapshot(ctx.prepared);
+      if (snap && (snap.taskId !== task.id
+        || snap.revision !== task.revision
+        || snap.assignmentId !== task.currentAssignmentId
+        || snap.latestSubmissionId !== task.latestSubmissionId)) {
+        return fail('STALE_REVISION', 'task changed while this submit was in flight; read get_task and retry with the current revision');
+      }
     }
     endBefore = taskEnd(store, task);
   }
@@ -596,7 +611,13 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       task.currentAssignmentId = assignment.id; task.assignedMemberId = actorId; task.approvedSubmissionId = null; task.status = 'working';
       out.assignment = assignment;
       resubmission = true;
-    } else assignment = executor(store, actor, actorId, task, command.assignmentId);
+    } else {
+      assignment = executor(store, actor, actorId, task, command.assignmentId);
+      if (command.assignmentId === undefined && command.expectedRevision === undefined
+        && records<Assignment>('assignment').some((a) => a.id !== assignment.id && (a.memberId === actorId || a.actorKey === assignment.actorKey))) {
+        return fail('STALE_ASSIGNMENT', 'this member was reassigned on this task; provide the current assignmentId or expectedRevision from get_task');
+      }
+    }
     if (task.status !== 'working' && task.status !== 'review') return fail('INVALID_STATE', 'task is not working or awaiting review; start it first and check its status with get_task');
     const current = versions(store, task);
     if (!current) return fail('DEPENDENCIES_NOT_READY', 'dependencies are not ready');
@@ -1017,7 +1038,8 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     } else if (action === 'task.cancel') management('cancelReopen', task.status === 'pending' && task.createdBy === actorId);
     else if (action === 'task.handoff') { if (!selfExecutor) management('recovery'); }
     else management('cancelReopen', (task.reviewer.kind === 'member' && task.reviewer.memberId === actorId) || shipReopenAllowed);
-    if (assignment && command.assignmentId !== assignment.id) return fail('STALE_ASSIGNMENT', 'assignment changed');
+    if (assignment && (!(selfExecutor && (action === 'task.release' || action === 'task.handoff')) || command.assignmentId !== undefined)
+      && command.assignmentId !== assignment.id) return fail('STALE_ASSIGNMENT', 'assignment changed');
     // management() above already checked the coordinator's permission and generation.
     const coordinator = store.coordinator?.policy(clusterId);
     const coordinatorStops = (action === 'task.cancel' || action === 'task.handoff') && coordinator?.enabled === true && coordinator.memberId === actorId;

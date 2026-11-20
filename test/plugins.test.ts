@@ -454,8 +454,8 @@ test('tools: enabled, the task tools match the versioned definitions', async () 
     const tools = (await toolsOf(app)).filter((tool) => TASK_TOOLS.includes(tool.name));
     assert.equal(tools.length, TASK_TOOLS.length);
     // shortcut: a golden hash of these thirteen definitions; update it only when the tools are meant to change
-    // (updated task_action/manage_batch definitions for takeover simplification, ship_fix, failure attribution, and cross-creator batch membership).
-    assert.equal(fingerprintTools(tools), 'sha256:00ef589d3ce464c096a7ed66991bd8a3e299923450bd04d92bfc0a9d7297f91c');
+    // (updated task command descriptions/schemas for compact MCP write results, optional assignmentId/reassignment guard, and tiered expectedRevision).
+    assert.equal(fingerprintTools(tools), 'sha256:d633d9288ce14a1f69ee5f18d31987ae23dec00c980890b2c3e5ef737ae6baf1');
   } finally { await app.close(); }
 });
 

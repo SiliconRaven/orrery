@@ -459,13 +459,14 @@ test('atomic reject+takeover on task_action review: single transaction, keeps re
     assert.equal(res.review.verdict, 'reject');
     assert.equal(res.takeover.action, 'task.review');
     assert.equal(res.takeover.baseCommitSha, 'abcdef0333');
-    assert.equal(res.takeover.reason, 'small fix myself');
+    assert.equal(res.takeover.reason, undefined, 'MCP write result omits takeover reason prose');
     const notice = f.noticeOf(res.eventId)!;
     assert.equal(notice.systemKind, 'review_downgraded');
     assert.deepEqual(notice.mentions, [b.id]);
     assert.deepEqual(f.woken(notice.id), [], 'original executor only gets infoOnly, never woken');
-    assert.equal((app.hub.collaboration.query(f.user, f.cluster.id, { kind: 'task', taskId: t.id, eventsOrder: 'desc', eventsLimit: 5 } as any) as any).events[0].payload.takeoverId,
-      res.takeover.id);
+    const detail = app.hub.collaboration.query(f.user, f.cluster.id, { kind: 'task', taskId: t.id, eventsOrder: 'desc', eventsLimit: 5 } as any) as any;
+    assert.equal(detail.events[0].payload.takeoverId, res.takeover.id);
+    assert.equal(detail.takeovers.at(-1).reason, 'small fix myself');
     const done = f.submit(t.id, c, 'abcdef0335');
     assert.equal(done.task.status, 'completed');
     assert.equal(done.review.takeover, true);

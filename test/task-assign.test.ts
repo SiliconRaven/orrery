@@ -278,3 +278,66 @@ test('every unfinished old task can continue after the upgrade', (t) => {
   // working: submits on the assignment it has.
   assert.equal(f.act(as('c'), 'working', { action: 'task.submit', assignmentId: 'as-working', summary: 'done', commitSha: 'abcdef0', evidenceMessageIds: proof() }).task!.status, 'review');
 });
+
+test('assignmentId is optional for the active executor on submit/release/handoff, and expectedRevision is optional on start/submit/review unless stale', (t) => {
+  const f = fresh(t);
+  const task = f.create(user, { memberId: 'a', reviewer: as('b'), mergeRequired: false });
+  // start without expectedRevision or assignmentId succeeds; wrong values still fail.
+  assert.throws(() => f.send(as('a'), { action: 'task.start', taskId: task.id, expectedRevision: 99 }), code('STALE_REVISION'));
+  const started = f.send(as('a'), { action: 'task.start', taskId: task.id });
+  assert.equal(started.task!.status, 'working');
+
+  // Executor can omit both assignmentId and expectedRevision on working/review submit; wrong assignmentId/revision fail.
+  assert.throws(() => f.send(as('a'), { action: 'task.submit', taskId: task.id, assignmentId: 'wrong', summary: 'x' }), code('STALE_ASSIGNMENT'));
+  assert.throws(() => f.send(as('a'), { action: 'task.submit', taskId: task.id, expectedRevision: started.task!.revision - 1, summary: 'x' }), code('STALE_REVISION'));
+  const sub1 = f.send(as('a'), { action: 'task.submit', taskId: task.id, summary: 'first draft' });
+  assert.equal(sub1.task!.status, 'review');
+  const sub2 = f.send(as('a'), { action: 'task.submit', taskId: task.id, summary: 'updated draft' });
+
+  // Review may omit expectedRevision; stale submissionId or stale expectedRevision still fail.
+  assert.throws(() => f.send(as('b'), { action: 'task.review', taskId: task.id, submissionId: sub1.submission!.id, verdict: 'reject', reason: 'old' }), code('STALE_SUBMISSION'));
+  assert.throws(() => f.send(as('b'), { action: 'task.review', taskId: task.id, expectedRevision: 99, submissionId: sub2.submission!.id, verdict: 'reject', reason: 'stale rev' }), code('STALE_REVISION'));
+  const rej = f.send(as('b'), { action: 'task.review', taskId: task.id, submissionId: sub2.submission!.id, verdict: 'reject', reason: 'try again' });
+  assert.equal(rej.task!.status, 'working');
+
+  // Executor can omit assignmentId on release/handoff (expectedRevision still required), while wrong assignmentId fails; user release still requires assignmentId.
+  assert.throws(() => f.send(as('a'), { action: 'task.handoff', taskId: task.id, memberId: 'c', reason: 'no rev' }), code('STALE_REVISION'));
+  assert.throws(() => f.act(as('a'), task.id, { action: 'task.handoff', assignmentId: 'wrong', memberId: 'c', reason: 'wrong id' }), code('STALE_ASSIGNMENT'));
+  assert.throws(() => f.act(user, task.id, { action: 'task.release', confirmStopped: true, reason: 'user must supply assignmentId' }), code('STALE_ASSIGNMENT'));
+  const handed = f.act(as('a'), task.id, { action: 'task.handoff', memberId: 'c', reason: 'pass to c' }).task!;
+  assert.equal(handed.assignedMemberId, 'c');
+  f.send(as('c'), { action: 'task.start', taskId: task.id });
+  const released = f.act(as('c'), task.id, { action: 'task.release', reason: 'free now' }).task!;
+  assert.deepEqual([released.status, released.assignedMemberId], ['pending', null]);
+});
+
+test('after same-member reassignment and scope change, bare submit omitting both assignmentId and expectedRevision is rejected', (t) => {
+  const f = fresh(t);
+  const runCase = (mode: 'assignmentId' | 'expectedRevision') => {
+    const task = f.create(user, { title: 'scope-v1', scope: 'old scope', memberId: 'a', reviewer: { kind: 'self' }, mergeRequired: false });
+    f.send(as('a'), { action: 'task.start', taskId: task.id });
+    f.act(as('a'), task.id, { action: 'task.release', reason: 'scope changed' });
+    f.act(user, task.id, { action: 'task.edit', scope: 'new scope' });
+    f.act(user, task.id, { action: 'task.assign', memberId: 'a' });
+    const restarted = f.send(as('a'), { action: 'task.start', taskId: task.id });
+    assert.equal(restarted.task!.definitionVersion, 2);
+
+    // Delayed bare submit from the old assignment must NOT record into assign2 or auto-complete self review.
+    assert.throws(() => f.send(as('a'), { action: 'task.submit', taskId: task.id, summary: 'stale old work' }), code('STALE_ASSIGNMENT'));
+    assert.equal(f.read(task.id).task.status, 'working');
+    assert.equal(f.read(task.id).submissions.length, 0);
+
+    // Disambiguating with either current assignmentId or current expectedRevision succeeds under definitionVersion 2.
+    const done = f.send(as('a'), {
+      action: 'task.submit',
+      taskId: task.id,
+      summary: 'verified new scope',
+      ...(mode === 'assignmentId' ? { assignmentId: restarted.assignment!.id } : { expectedRevision: restarted.task!.revision }),
+    });
+    assert.equal(done.task!.status, 'completed');
+    assert.equal(done.submission!.assignmentId, restarted.assignment!.id);
+    assert.equal(done.submission!.definitionVersion, 2);
+  };
+  runCase('assignmentId');
+  runCase('expectedRevision');
+});

@@ -45,6 +45,7 @@ Tasks use one of three `reviewer` configurations:
 3. **User review (`reviewer: { kind: "user" }`)**: For UI/visual verification or explicit user sign-off. `submit` stops at `review` for web approval; after approval, the **executor** runs `ship` if merging is required.
 
 - **Dependencies**: Tasks declare upstream links via `dependencyIds`; downstream tasks may start only after all upstream completions are valid and `mergeRequired` predecessors are `merged`.
+- **Assignment & Revision Tiers**: Active members may omit `assignmentId` on `start`, unambiguous first-assignment `submit` (`working`/`review`), and their own `release`/`handoff` (resolved to their active assignment and verified by actor identity); after the same member is reassigned on a task, `submit` requires at least the current `assignmentId` or `expectedRevision`. `start`, active `submit` (still guarded by an arrival snapshot against concurrent async submits), `review` (locked by `submissionId`), and `watch`/`unwatch` may omit `expectedRevision` (strictly validated when supplied). Mutating definitions/ownership, closing/reopening, attentions, batch membership, and resubmitting invalidated `completed` results still require `expectedRevision` (and the original `assignmentId` for completed resubmissions).
 
 Omitting `reviewer` when creating a task defaults to user review.
 

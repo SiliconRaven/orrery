@@ -871,3 +871,91 @@ test('detectProductCodeChanges inspects merges via read-only trees without invok
   assert.ok(trapMergeSha);
   noRemerge();
 });
+
+test('prepareSubmit runs when assignmentId and expectedRevision are omitted, and stale revision changes nothing', async (t) => {
+  const f = await flow(t);
+  const rec = recording();
+  lookup({ runner: rec.runner });
+  const task = await f.task();
+  const started = f.start(task.id);
+
+  // Stale expectedRevision is refused inside the transaction even when assignmentId is omitted, leaving the task unchanged.
+  await assert.rejects(
+    f.app.hub.collaboration.commandAsync(f.member(f.a), f.clusterId, {
+      action: 'task.submit', taskId: task.id, expectedRevision: started.revision - 1, summary: 'stale', commitSha: f.repo.c2, operationId: 'omit-stale-rev',
+    } as CollaborationCommand),
+    (error: any) => error.code === 'STALE_REVISION',
+  );
+  const untouched = await f.current(task.id);
+  assert.deepEqual([untouched.gitBranch, untouched.latestSubmissionId], [undefined, null]);
+
+  // Omitting both assignmentId and expectedRevision still prepares and auto-links the branch.
+  const submitted = await f.app.hub.collaboration.commandAsync(f.member(f.a), f.clusterId, {
+    action: 'task.submit', taskId: task.id, summary: 'omitted args', commitSha: f.repo.c2, operationId: 'omit-both',
+  } as CollaborationCommand);
+  assert.deepEqual(submitted.gitBranch, { status: 'linked', branch: 'topic', automatic: true });
+  assert.ok(rec.seen.length > 0);
+});
+
+test('concurrent submits omitting expectedRevision detect in-flight conflict while keeping serial replacement and replay', async (t) => {
+  const f = await flow(t);
+  const task = await f.task();
+  f.start(task.id);
+
+  // Slow git lookup pauses the earlier-arrived submit while a fast submit completes on the same assignment.
+  const gate = Promise.withResolvers<void>();
+  const blocked = Promise.withResolvers<void>();
+  lookup({ runner: async (cwd, args, signal) => {
+    if (args[0] === 'for-each-ref' && args[1] === `--points-at=${f.repo.c2}`) {
+      blocked.resolve();
+      await gate.promise;
+    }
+    return gitRead(cwd, args, signal);
+  } });
+
+  const slow = f.app.hub.collaboration.commandAsync(f.member(f.a), f.clusterId, {
+    action: 'task.submit', taskId: task.id, summary: 'slow old', commitSha: f.repo.c2, operationId: 'conc-slow',
+  } as CollaborationCommand);
+  await blocked.promise;
+
+  const fast = await f.app.hub.collaboration.commandAsync(f.member(f.a), f.clusterId, {
+    action: 'task.submit', taskId: task.id, summary: 'fast new', commitSha: f.repo.c4, operationId: 'conc-fast',
+  } as CollaborationCommand);
+  assert.equal(fast.submission!.commitSha, f.repo.c4);
+
+  gate.resolve();
+  await assert.rejects(slow, (error: any) => error.code === 'STALE_REVISION');
+  const afterRace = await f.current(task.id);
+  assert.equal(afterRace.latestSubmissionId, fast.submission!.id, 'slow concurrent submit must not overwrite newer result');
+
+  // Same operationId replays idempotently without expectedRevision.
+  const replay = await f.app.hub.collaboration.commandAsync(f.member(f.a), f.clusterId, {
+    action: 'task.submit', taskId: task.id, summary: 'fast new', commitSha: f.repo.c4, operationId: 'conc-fast',
+  } as CollaborationCommand);
+  assert.equal(replay.submission!.id, fast.submission!.id);
+
+  // Serial replacement sent after fast commits still succeeds cleanly without expectedRevision.
+  const serialNext = await f.app.hub.collaboration.commandAsync(f.member(f.a), f.clusterId, {
+    action: 'task.submit', taskId: task.id, summary: 'serial replace', commitSha: f.repo.c3, operationId: 'conc-serial',
+  } as CollaborationCommand);
+  assert.equal(serialNext.submission!.commitSha, f.repo.c3);
+  assert.equal((await f.current(task.id)).latestSubmissionId, serialNext.submission!.id);
+
+  // Two concurrent non-git submits (mergeRequired: false) omitting expectedRevision also admit only one winner.
+  const noGitTask = await f.task({ mergeRequired: false });
+  f.start(noGitTask.id);
+  const outcomes = await Promise.allSettled([
+    f.app.hub.collaboration.commandAsync(f.member(f.a), f.clusterId, {
+      action: 'task.submit', taskId: noGitTask.id, summary: 'no-git-1', operationId: 'nogit-1',
+    } as CollaborationCommand),
+    f.app.hub.collaboration.commandAsync(f.member(f.a), f.clusterId, {
+      action: 'task.submit', taskId: noGitTask.id, summary: 'no-git-2', operationId: 'nogit-2',
+    } as CollaborationCommand),
+  ]);
+  const fulfilled = outcomes.filter((o): o is PromiseFulfilledResult<CollaborationResult> => o.status === 'fulfilled');
+  const rejected = outcomes.filter((o): o is PromiseRejectedResult => o.status === 'rejected');
+  assert.equal(fulfilled.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.equal((rejected[0].reason as { code?: string }).code, 'STALE_REVISION');
+  assert.equal((await f.current(noGitTask.id)).latestSubmissionId, fulfilled[0].value.submission!.id);
+});

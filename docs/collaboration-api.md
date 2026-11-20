@@ -57,7 +57,7 @@
 
 ## 群员 MCP 工具清单（标准 23 项 / 后台等待 24 项）
 
-`standard` 档成员可见以下 **23 项**工具；后台等待路线（ZCode / Qoder / WorkBuddy）额外开放 `wait_for_messages`，共 **24 项**。授予了 `tools.provide` 的第三方插件可以给部分群员再加上 `p_<插件>_<工具>` 形式的工具（见[第三方插件](external-plugins.md#群员工具toolsprovide)）。任务、标签等协作命令工具须提供 `operationId`；聊天用 `clientMessageId`，确认回执用消息 ID。变更已有任务须带 `get_task` 返回的 `expectedRevision`（`watch` / `unwatch` 除外），协调员管理操作须带 `list_tasks.coordinator.generation`。
+`standard` 档成员可见以下 **23 项**工具；后台等待路线（ZCode / Qoder / WorkBuddy）额外开放 `wait_for_messages`，共 **24 项**。授予了 `tools.provide` 的第三方插件可以给部分群员再加上 `p_<插件>_<工具>` 形式的工具（见[第三方插件](external-plugins.md#群员工具toolsprovide)）。任务、标签等协作命令工具须提供 `operationId`；聊天用 `clientMessageId`，确认回执用消息 ID。变更任务定义、归属、关闭重开、`ship_fix`、`merge`、分支绑定、待办事项或批次增删须带 `get_task` 返回的 `expectedRevision`（`start`、进行中/待验收态 `submit`、已用 `submissionId` 锁版本的 `review` 与 `watch` / `unwatch` 可省略，传入时仍严格核对；失效 `completed` 重提仍必填 `expectedRevision` 与原 `assignmentId`），协调员管理操作须带 `list_tasks.coordinator.generation`。
 
 ### 聊天、确认与等待（6 项 / 7 项）
 
@@ -75,13 +75,15 @@
 
 任务、批次和相关操作的 MCP 结果带顶层 `members`。它按成员 ID 给出 `{name, removed}`，只列本次结果里引用且调用者可见的本群成员。例如 `members[task.assignedMemberId]` 给出执行者的当前名字。已移出的成员保留最后的名字并标记 `removed: true`。没有可显示的成员时返回 `{}`。`user`、`system` 等非成员直接按原值读取。HTTP 接口保持原有结构。
 
+MCP 任务写工具（`create_task`、`task_action`、`manage_batch`、`raise_attention`、`resolve_attention`、`set_task_summary`、`link_message_tasks`）采用紧凑返回：只返回核心摘要、`revision`、关键新建 ID、`gitBranch`/`ship`（如有）、`members` 与 `nextStep`，省略 `scope`、`acceptance` 及 `summary`/`reason`/`question`/`resolution`/批次失败长文；完整正文按需调用 `get_task`、`get_task_context` 或 `get_batch` 读取。网页 `POST /api/clusters/:id/collaboration` 返回完整对象不变。
+
 | 工具名 | 参数与行为 |
 |---|---|
 | `create_task` | 创建任务：`title`、`scope`、`acceptance`、`reviewer`（`{ kind: "user" | "self" }` 或 `{ kind: "member", memberId }`）、`priority`、`mergeRequired`、`requiresApproval`、`dependencyIds`、`executeRoleIds`、`reviewRoleIds`、`memberId`、`labels`、`fileIds`、`operationId` |
 | `list_tasks` | 按状态、标签或负责人列出群内任务（含 `coordinator.generation`） |
 | `get_task` | 读取任务完整字段、派工/提交/验收记录、`watchers`、`gitBranch` 与 `ship` 提示 |
 | `get_task_context` | 按需聚合关联任务及其上游已获批产出摘要 |
-| `task_action` | 执行短动作：`edit`、`assign`、`start`、`submit`（**必填 `assignmentId` 与 `summary`**，需要合并时带 `commitSha`）、`review`（**必填 `submissionId`、`verdict: "approve" | "reject"` 与 `reason`**；退回成员验收任务时可加 `takeover: true` 原子接手）、`ship_fix`（ship 失败后由有授权成员原地前向修复：`failureEventId`、`commitSha`、`summary`、`baseCommitSha?`）、`merge`、`release`、`cancel`、`reopen`、`handoff`、`takeover`、`nominate`、`claim`、`set_git_branch`、`watch`、`unwatch`。注：`task_action` 不提供 `block`/`unblock`/`mark_completed`/`mark_merged`（后者仅属于 HTTP `POST /api/clusters/:id/collaboration` 的 `task.*` 命令） |
+| `task_action` | 执行短动作：`edit`、`assign`、`start`、`submit`（必填 `summary`，需要合并时带 `commitSha`；未在同一任务经历重新派工且在 `working`/`review` 态可省 `assignmentId` 与 `expectedRevision`，同人重新派工后至少须提供其一，省略 `expectedRevision` 仍核对请求到达快照防并发覆盖，显式传入时严格校验；失效 `completed` 重提仍必填两者）、`review`（**必填 `submissionId`、`verdict: "approve" | "reject"` 与 `reason`**，可省 `expectedRevision`；退回成员验收任务时可加 `takeover: true` 原子接手）、`ship_fix`（ship 失败后由有授权成员原地前向修复：`failureEventId`、`commitSha`、`summary`、`baseCommitSha?`）、`merge`、`release`、`cancel`、`reopen`、`handoff`（当前执行者本人 `release`/`handoff` 可省 `assignmentId`）、`takeover`、`nominate`、`claim`、`set_git_branch`、`watch`、`unwatch`。注：`task_action` 不提供 `block`/`unblock`/`mark_completed`/`mark_merged`（后者仅属于 HTTP `POST /api/clusters/:id/collaboration` 的 `task.*` 命令） |
 | `get_batch` / `manage_batch` | 读取验收批次（`batchId` 可写 `B3`、完整 ID 或唯一 8+ 位前缀；不带时列出未取消的批次），结果带进度、`shipFailure`、`shipRunnerId`、`currentDigest`、`shipFixAllowed`、还差什么、按依赖顺序的任务，运行批次 ship 的成员另得 `ship.command`；`manage_batch` 的 `action` 为 `create`、`add`、`remove`、`attribute_failure`（checks 失败后独立批验收者归因 `failureEventId` 与 `taskIds`）、`cancel`、`merge`（ship 已合并但没能上报时补记），对应协作动作 `batch.*` |
 | `set_task_summary` | 更新任务结构化交付摘要 |
 | `raise_attention` / `resolve_attention` | 发起或消除阻塞/需求疑问求助提示 |

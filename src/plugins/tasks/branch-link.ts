@@ -56,10 +56,19 @@ export interface ProductCodeDiff {
   unverified?: boolean;
 }
 
+/** Snapshot captured at request arrival before any async prepare work, so omitted expectedRevision still detects concurrent submits. */
+export interface SubmitPreparedSnapshot {
+  taskId: string;
+  revision: number;
+  assignmentId: string | null;
+  latestSubmissionId: string | null;
+}
+
 /** What the lookup read, and for which submit; the decision checks the first five against what it reads in the transaction. */
 export interface BranchFacts {
   kind: 'branch-facts';
   taskId: string; memberId: string; commitSha: string;
+  snapshot?: SubmitPreparedSnapshot;
   /** The executor's saved project folder and the task's link, as the lookup read them. */
   cwd: string | null; link: TaskGitBranch | null;
   /** The repository looked in: the link's when the task had one, else the executor's (its representative worktree). */
@@ -73,6 +82,17 @@ export interface BranchFacts {
   /** When submitting a taken-over self-review task by another member: whether product files outside tests/docs changed. */
   takeoverBaseSha?: string | null;
   productCodeDiff?: ProductCodeDiff;
+}
+
+export interface SubmitPreparedSkip {
+  kind: 'submit-snapshot';
+  snapshot: SubmitPreparedSnapshot;
+}
+
+export function preparedSubmitSnapshot(prepared: unknown): SubmitPreparedSnapshot | undefined {
+  if (!prepared || typeof prepared !== 'object') return undefined;
+  const candidate = prepared as Partial<BranchFacts | SubmitPreparedSkip>;
+  return candidate.kind === 'branch-facts' || candidate.kind === 'submit-snapshot' ? candidate.snapshot : undefined;
 }
 
 /** Read-only git verification before `task.ship_fix` opens its transaction. */
@@ -352,11 +372,17 @@ async function readFacts(base: BranchFacts, signal: AbortSignal): Promise<Branch
  * executor resubmitting an invalidated completed result. The transaction stays the authority; this only keeps anyone
  * else from making the Hub start git.
  */
-function couldSubmit(store: Store, task: Task, actorId: string, assignmentId: unknown): boolean {
+function couldSubmit(store: Store, task: Task, actorId: string, assignmentId: unknown, expectedRevision: unknown): boolean {
   const assignments = collaborationRecords<Assignment>(store, task.id, 'assignment');
   if (task.status === 'working' || task.status === 'review') {
     const current = assignments.find((a) => a.id === task.currentAssignmentId);
-    return !!current && !current.endedAt && current.memberId === actorId && task.assignedMemberId === actorId && assignmentId === current.id;
+    if (!current || current.endedAt || current.memberId !== actorId || task.assignedMemberId !== actorId) return false;
+    if (assignmentId !== undefined) return assignmentId === current.id;
+    // After same-member reassignment, bare submit without assignmentId or expectedRevision is ambiguous and will be refused.
+    if (expectedRevision === undefined && assignments.some((a) => a.id !== current.id && (a.memberId === actorId || a.actorKey === current.actorKey))) {
+      return false;
+    }
+    return true;
   }
   if (task.status !== 'completed' || completionValid(store, task)) return false;
   const approved = collaborationRecords<Submission>(store, task.id, 'submission').find((s) => s.id === task.approvedSubmissionId);
@@ -366,17 +392,33 @@ function couldSubmit(store: Store, task: Task, actorId: string, assignmentId: un
 }
 
 /**
- * task.submit's `prepare`: what git says about the submitted commit, read before the transaction under one time budget.
- * Nothing for a submit without a valid commitSha, by someone who could not submit it, or for a task it cannot find.
+ * task.submit's `prepare`: captures the task snapshot synchronously at arrival, then reads what git says about the
+ * submitted commit before the transaction under one time budget. Even when git is skipped (no commitSha or not
+ * submittable), returns the arrival snapshot so omitted expectedRevision still detects concurrent mutations.
  */
 export const prepareSubmit: PluginPrepare = async ({ store, actor, actorId, clusterId, command, signal }) => {
-  if (actor.kind !== 'member' || typeof command.commitSha !== 'string' || !SHA.test(command.commitSha)) return undefined;
-  const task = collaborationTask(store, clusterId, resolveTaskRef(store, clusterId, command.taskId as string));
-  if (!task || !couldSubmit(store, task, actorId, command.assignmentId)) return undefined;
+  if (actor.kind !== 'member') return undefined;
+  let task: Task | null = null;
+  try {
+    task = collaborationTask(store, clusterId, resolveTaskRef(store, clusterId, command.taskId as string));
+  } catch {
+    return undefined;
+  }
+  if (!task) return undefined;
+  const snapshot: SubmitPreparedSnapshot = {
+    taskId: task.id,
+    revision: task.revision,
+    assignmentId: task.currentAssignmentId,
+    latestSubmissionId: task.latestSubmissionId,
+  };
+  if (typeof command.commitSha !== 'string' || !SHA.test(command.commitSha)
+    || !couldSubmit(store, task, actorId, command.assignmentId, command.expectedRevision)) {
+    return { kind: 'submit-snapshot', snapshot } satisfies SubmitPreparedSkip;
+  }
   const latestTakeover = task.reviewer.kind === 'self' ? takeoverRecords(store, task.id).at(-1) : undefined;
   const takeoverBaseSha = latestTakeover?.fromMemberId && latestTakeover.fromMemberId !== actorId ? (latestTakeover.baseCommitSha ?? null) : null;
   const base: BranchFacts = { kind: 'branch-facts', taskId: task.id, memberId: actorId, commitSha: command.commitSha.toLowerCase(),
-    cwd: store.getMember(actorId)?.cwd ?? null, link: task.gitBranch ? { ...task.gitBranch } : null,
+    snapshot, cwd: store.getMember(actorId)?.cwd ?? null, link: task.gitBranch ? { ...task.gitBranch } : null,
     ...(takeoverBaseSha ? { takeoverBaseSha } : {}),
     // A linked task is looked up in its linked repository, so even a lookup that times out or waits in vain names it.
     ...(task.gitBranch ? { repositoryPath: task.gitBranch.repositoryPath } : {}) };

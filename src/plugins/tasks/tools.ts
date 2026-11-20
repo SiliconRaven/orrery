@@ -1,9 +1,13 @@
 // The MCP task tools. Their names, descriptions and schemas are the contract members rely on; only their place in the tool
 // list moved when they became a plugin (they now follow the core tools).
 import { z } from 'zod';
-import type { CollaborationCommand, ContextResult, Task, TaskResult, WorkspaceResult } from '../../core/collaboration-types.ts';
+import type {
+  Assignment, Attention, CollaborationCommand, CollaborationResult, ContextResult, Merge, Review, Submission,
+  Takeover, Task, TaskResult, WorkspaceResult,
+} from '../../core/collaboration-types.ts';
 import type { PluginToolApi } from '../../core/plugin.ts';
 import type { HubEvent } from '../../core/types.ts';
+import type { TaskBatch } from './batches.ts';
 import { clusterLabelCatalog, PRESET_PACKS } from './labels.ts';
 import { batchShipForRunner, shipForRunner } from './ship.ts';
 
@@ -12,6 +16,7 @@ const LABEL_TOOL_ACTIONS: Record<string, string> = { create: 'label.create', edi
   create_group: 'label.group_create', edit_group: 'label.group_edit', delete_group: 'label.group_delete', add_pack: 'label.add_pack',
   select_group: 'label.select_group' };
 
+const WRITE_RESULT_NOTE = ' Returns compact summaries (without full scope, acceptance or prose), IDs and nextStep; read full text with get_task or get_task_context.';
 const MEMBER_NAMES = ' The result includes members, keyed by referenced member ID, with name and removed for each visible member.';
 const MEMBER_ID_FIELDS = new Set(['memberId', 'assignedMemberId', 'targetMemberId', 'fromMemberId', 'toMemberId',
   'createdBy', 'by', 'author', 'from', 'uploader', 'coordinatorConfirmedStop', 'runnerId', 'shipRunnerId']);
@@ -56,6 +61,125 @@ const TASK_SUMMARY = ['id', 'number', 'title', 'status', 'proposalState', 'prior
   // Only on tasks in a review batch, and on a dependency in the same batch: the submission to build on (batches.ts).
   'batchId', 'batchBase'] as const;
 export const taskSummary = (task: Task) => Object.fromEntries(TASK_SUMMARY.filter((key) => key in task).map((key) => [key, (task as unknown as Record<string, unknown>)[key]]));
+
+const slimTask = (task: Task) => ({
+  ...taskSummary(task),
+  currentAssignmentId: task.currentAssignmentId,
+  latestSubmissionId: task.latestSubmissionId,
+  ...(task.gitBranch ? { gitBranch: task.gitBranch } : {}),
+  ...(task.takeover ? { takeover: task.takeover } : {}),
+});
+const slimAssignment = (a: Assignment) => ({ id: a.id, memberId: a.memberId, startedAt: a.startedAt, endedAt: a.endedAt });
+const slimSubmission = (s: Submission) => ({
+  id: s.id, assignmentId: s.assignmentId, commitSha: s.commitSha, createdAt: s.createdAt,
+  ...(s.shipFix ? { shipFix: s.shipFix } : {}),
+});
+const slimReview = (r: Review) => ({
+  id: r.id, submissionId: r.submissionId, reviewer: r.reviewer, verdict: r.verdict,
+  ...(r.self ? { self: true as const } : {}), ...(r.takeover ? { takeover: true as const } : {}), createdAt: r.createdAt,
+});
+const slimTakeover = (tk: Takeover) => ({
+  id: tk.id, fromMemberId: tk.fromMemberId, toMemberId: tk.toMemberId, reviewTo: tk.reviewTo, basis: tk.basis,
+  ...(tk.action ? { action: tk.action } : {}),
+  ...(tk.baseSubmissionId !== undefined ? { baseSubmissionId: tk.baseSubmissionId } : {}),
+  ...(tk.baseCommitSha !== undefined ? { baseCommitSha: tk.baseCommitSha } : {}),
+  createdAt: tk.createdAt,
+});
+const slimMerge = (m: Merge) => ({ id: m.id, commitSha: m.commitSha, submissionId: m.submissionId, recordedBy: m.recordedBy, createdAt: m.createdAt });
+const slimAttention = (att: Attention) => ({
+  id: att.id, kind: att.kind, targetMemberId: att.targetMemberId, createdBy: att.createdBy, createdAt: att.createdAt, resolvedAt: att.resolvedAt,
+});
+const slimBatch = (batch: TaskBatch) => ({
+  id: batch.id, number: batch.number, title: batch.title, reviewer: batch.reviewer, createdBy: batch.createdBy,
+  ...(batch.cancelledAt ? { cancelledAt: batch.cancelledAt } : {}),
+  ...(batch.reviewedAt ? { reviewedAt: batch.reviewedAt } : {}),
+  ...(batch.shipFailure ? {
+    shipFailure: {
+      kind: batch.shipFailure.kind,
+      eventId: batch.shipFailure.eventId,
+      taskIds: batch.shipFailure.taskIds,
+      runnerId: batch.shipFailure.runnerId,
+      ...(batch.shipFailure.failedCheck ? { failedCheck: batch.shipFailure.failedCheck } : {}),
+      ...(batch.shipFailure.conflictFiles ? { conflictFiles: batch.shipFailure.conflictFiles } : {}),
+      ...(batch.shipFailure.attribution ? {
+        attribution: {
+          taskIds: batch.shipFailure.attribution.taskIds,
+          by: batch.shipFailure.attribution.by,
+          eventId: batch.shipFailure.attribution.eventId,
+        },
+      } : {}),
+      fixesCount: batch.shipFailure.fixes?.length ?? 0,
+    },
+  } : {}),
+});
+
+function nextStepFor(raw: CollaborationResult & { batch?: TaskBatch }, extended: Record<string, unknown>): string {
+  if ('suggestion' in extended && extended.suggestion) {
+    return 'suggestion recorded (suggest mode); ask the user or retry when coordinator executes directly';
+  }
+  const ship = extended.ship as { command?: string; error?: string } | undefined;
+  if (ship?.command) {
+    return raw.task?.batchId
+      ? 'run the returned ship.command (--batch) to merge and report, or inspect get_batch'
+      : 'run the returned ship.command to merge and report, or inspect get_task';
+  }
+  if (ship?.error) return 'configure your project folder in member settings or inspect get_task for ship readiness';
+  if (raw.action === 'task.watch') return 'watch active; you will be notified once when the task ends';
+  if (raw.action === 'task.unwatch') return 'watch removed; read task details with get_task';
+  if (raw.action === 'message.link') return 'message links updated; read get_task_context to inspect linked messages';
+  if (raw.action === 'task.summary') return 'task summary saved; read full summary with get_task_context';
+  if (raw.action === 'task.attention') return 'attention recorded; read full question with get_task_context';
+  if (raw.action === 'task.resolve_attention') return 'attention resolved; read get_task_context if other issues remain';
+  if (raw.action?.startsWith('batch.')) {
+    if (raw.action === 'batch.create') return 'add tasks with manage_batch (action: "add") or create_task (batchId); read get_batch for progress';
+    if (raw.action === 'batch.attribute_failure') return 'call task_action (action: "ship_fix") on attributed tasks with failureEventId';
+    if (raw.action === 'batch.cancel') return 'batch cancelled; open tasks returned to ordinary tasks (read list_tasks)';
+    if (raw.action === 'batch.merge') return 'batch marked merged; read get_batch or list_tasks for downstream readiness';
+    return 'read get_batch for ordered tasks, progress and dependencies';
+  }
+  const task = raw.task;
+  if (task?.status === 'pending') {
+    if (task.proposalState === 'proposed') return 'awaiting user approval before assignment or start';
+    return task.assignedMemberId
+      ? 'executor can start work with task_action (action: "start"); read full text with get_task'
+      : 'assign an executor with task_action (action: "assign"); read full text with get_task';
+  }
+  if (task?.status === 'working') return 'work in progress; submit results with task_action (action: "submit") or read full text with get_task';
+  if (task?.status === 'review') return 'awaiting review; reviewer inspects with get_task and submits task_action (action: "review")';
+  if (task?.status === 'completed') {
+    if (!task.mergeRequired) return 'task completed (no merge required); downstream dependencies may now start';
+    if (task.batchId) return 'task approved in batch; read get_batch for batch readiness and ship command';
+    return raw.action === 'task.ship_fix'
+      ? 'check ship.command (or get_task) to run the refreshed merge'
+      : 'task completed awaiting merge; read get_task for ship status or command';
+  }
+  if (task?.status === 'merged') return 'task merged; downstream dependencies are unblocked (read list_tasks)';
+  if (task?.status === 'cancelled') return 'task cancelled; read get_task if reopening later';
+  return 'operation recorded; read get_task or get_task_context for full details';
+}
+
+function slimCommandResult(extended: Record<string, unknown>, raw: CollaborationResult & { batch?: TaskBatch }): Record<string, unknown> {
+  return {
+    ...(extended.action !== undefined ? { action: extended.action } : {}),
+    ...(extended.eventId !== undefined ? { eventId: extended.eventId } : {}),
+    ...(extended.taskId !== undefined ? { taskId: extended.taskId } : {}),
+    ...(extended.watch !== undefined ? { watch: extended.watch } : {}),
+    ...(extended.removed !== undefined ? { removed: extended.removed } : {}),
+    ...(extended.messageId !== undefined ? { messageId: extended.messageId } : {}),
+    ...(raw.task ? { task: slimTask(raw.task) } : {}),
+    ...(raw.assignment ? { assignment: slimAssignment(raw.assignment) } : {}),
+    ...(raw.submission ? { submission: slimSubmission(raw.submission) } : {}),
+    ...(raw.review ? { review: slimReview(raw.review) } : {}),
+    ...(raw.takeover ? { takeover: slimTakeover(raw.takeover) } : {}),
+    ...(raw.merge ? { merge: slimMerge(raw.merge) } : {}),
+    ...(raw.attention ? { attention: slimAttention(raw.attention) } : {}),
+    ...(raw.batch ? { batch: slimBatch(raw.batch) } : {}),
+    ...(extended.gitBranch !== undefined ? { gitBranch: extended.gitBranch } : {}),
+    ...(extended.ship !== undefined ? { ship: extended.ship } : {}),
+    ...(extended.suggestion !== undefined ? { suggestion: extended.suggestion } : {}),
+    nextStep: nextStepFor(raw, extended),
+  };
+}
 /**
  * An event whose payload carries `changes` names the changed fields only, unless the full values are asked for. A
  * review event drops its reason too: up to 50 000 characters, and get_task already returns it in `reviews`.
@@ -75,7 +199,10 @@ export function taskTools({ page, hub, secret, hubUrl, query, command }: PluginT
     query(name, description + MEMBER_NAMES, kind, schema, prepare,
       (result, params, me) => withMemberNames(hub, me, project(result, params, me)));
   const taskCommand: typeof command = (name, description, schema, action, extend = (result) => result) =>
-    command(name, description + MEMBER_NAMES, schema, action, (result, me) => withMemberNames(hub, me, extend(result, me)));
+    command(name, description + WRITE_RESULT_NOTE + MEMBER_NAMES, schema, action, (result, me) => {
+      const extended = extend(result, me) as Record<string, unknown>;
+      return withMemberNames(hub, me, slimCommandResult(extended, result as CollaborationResult & { batch?: TaskBatch }));
+    });
   const taskRef = 'Accepts #number (e.g. #12), full ID, or a unique 8+ character ID prefix (bare 8+ digit numbers remain ID prefixes).';
   const reviewer = z.union([
     z.object({ kind: z.literal('user') }),
@@ -165,9 +292,11 @@ export function taskTools({ page, hub, secret, hubUrl, query, command }: PluginT
     originMessageId: z.string().nullable().optional(), generation: version.generation,
     sourceEventId: z.number().int().optional(),
   }, 'task.create');
-  taskCommand('task_action', "New assignments, starts and member reviews also check the group task permissions shown by list_tasks. Edit, assign, start, submit, review, ship_fix, merge, release, cancel, reopen, hand off or take over a task. Edit accepts requiresApproval and mergeRequired; approval itself is user-only through HTTP. Any member may edit only the title, priority and labels of an unfinished task; other edit fields need the creator, the user or the coordinator. The creator may change the reviewer until the first review of the task, but not to self review once work has started. Assign sets or changes the executor before work starts: it requires memberId (or null to clear it). Deprecated, kept for one version: nominate is another name for assign, and claim assigns the task to yourself. The executor starts the task directly; start returns the assignment, and submit requires its assignmentId. Submit requires summary, and commitSha when mergeRequired is true; evidenceMessageIds and evidenceFileIds are optional. Resubmit during review to replace the latest submission. After dependencies change or when resubmitting an invalid completed result, use get_task_context to obtain each dependency’s current approvedSubmissionId and provide expectedDependencyVersions. Review requires the latest submissionId, verdict and reason (immutable review notes, up to 50000 characters); when verdict is reject on a member-reviewed task, pass takeover: true to reject and take over directly into working state with self review bound to the reviewer. Merge is the way out when ship landed the merge but could not report it: commitSha is that merge commit, and it is refused unless read-only git shows it on the target branch with the reviewed commit as its second parent. When ship fails, completed state is preserved so the ticket holder can rerun the existing command, use reopen to return to pending, or (if authorised as the independent member reviewer or self-review executor) call ship_fix with a forward descendant commitSha, summary, active failureEventId and optional baseCommitSha to refresh the ship ticket without reverting to pending. Release, cancel, reopen and handoff require reason; include assignmentId when an assignment exists, and memberId for handoff. Cancel takes an optional closeReason (default other); duplicate and superseded also require relatedTaskId, another task of this cluster, and reopen clears it. On task.* actions, taskId, dependencyIds and relatedTaskId accept #number (e.g. #12), a full ID, or a unique prefix of at least 8 characters in this cluster (bare 8+ digit numbers remain ID prefixes); evidenceMessageIds accept a full ID or a unique prefix of at least 8 characters; memberId (assign, handoff) and reviewer.memberId also accept a unique member name. The current executor may release or hand off their own started assignment without user confirmation; a handoff target needs the execute roles and cannot be the task reviewer (use takeover for that). Takeover hands a task with a member reviewer to that reviewer, who becomes its executor with self review bound through merge: only the designated reviewer (from review or submitted working state) or the user (from pending, working or review) may invoke it, and explicit non-self reviewer options are refused. The previous assignment ends, a result waiting for review is superseded, earlier submissions and reviews stay, and review rounds keep counting. On a task that was taken over, self review is bound to one executor: switching it to self with edit, or giving a self-reviewed task to another executor (assign, claim, handoff), needs the user, and only the bound executor can submit a self review. On a self-review task submit writes the self review and completes the task immediately. Submit links the task to the one local branch whose tip is commitSha in your saved project folder, unless a branch was set by hand; the result's gitBranch says what happened. The current executor can use set_git_branch with gitBranch to set a branch by hand or clear it; the Hub uses the task's linked repository or the executor's saved project folder. Watch: use it when you want to do something after a task finishes but do not depend on it (with a real dependency, use dependencyIds instead); you are woken once when the task is merged, completed without needing a merge, or cancelled, and the watch then ends. A watch and its optional note are visible to everyone in the cluster (members and the user): get_task lists them, and the notice at the end names each watcher with its note. Watching again replaces the note; unwatch stops it. Watch and unwatch need no expectedRevision and change nothing on the task.", {
+  taskCommand('task_action', "New assignments, starts and member reviews also check the group task permissions shown by list_tasks. Edit, assign, start, submit, review, ship_fix, merge, release, cancel, reopen, hand off or take over a task. Edit accepts requiresApproval and mergeRequired; approval itself is user-only through HTTP. Any member may edit only the title, priority and labels of an unfinished task; other edit fields need the creator, the user or the coordinator. The creator may change the reviewer until the first review of the task, but not to self review once work has started. Assign sets or changes the executor before work starts: it requires memberId (or null to clear it). Deprecated, kept for one version: nominate is another name for assign, and claim assigns the task to yourself. The executor starts the task directly; start creates the assignment, and submit may omit assignmentId and expectedRevision while working or in review on a single assignment (after the same member is reassigned on the task, submit requires at least the current assignmentId or expectedRevision; omitted expectedRevision still checks the request arrival snapshot against concurrent submits, and when provided they are checked strictly; resubmitting an invalidated completed result still requires both). Submit requires summary, and commitSha when mergeRequired is true; evidenceMessageIds and evidenceFileIds are optional. Resubmit during review to replace the latest submission. After dependencies change or when resubmitting an invalid completed result, use get_task_context to obtain each dependency’s current approvedSubmissionId and provide expectedDependencyVersions. Review requires the latest submissionId, verdict and reason (immutable review notes, up to 50000 characters; expectedRevision is optional on review and checked if provided); when verdict is reject on a member-reviewed task, pass takeover: true to reject and take over directly into working state with self review bound to the reviewer. Merge is the way out when ship landed the merge but could not report it: commitSha is that merge commit, and it is refused unless read-only git shows it on the target branch with the reviewed commit as its second parent. When ship fails, completed state is preserved so the ticket holder can rerun the existing command, use reopen to return to pending, or (if authorised as the independent member reviewer or self-review executor) call ship_fix with a forward descendant commitSha, summary, active failureEventId and optional baseCommitSha to refresh the ship ticket without reverting to pending. Release, cancel, reopen and handoff require reason and expectedRevision; include assignmentId when an assignment exists (the current executor may omit assignmentId on release and handoff), and memberId for handoff. Cancel takes an optional closeReason (default other); duplicate and superseded also require relatedTaskId, another task of this cluster, and reopen clears it. On task.* actions, taskId, dependencyIds and relatedTaskId accept #number (e.g. #12), a full ID, or a unique prefix of at least 8 characters in this cluster (bare 8+ digit numbers remain ID prefixes); evidenceMessageIds accept a full ID or a unique prefix of at least 8 characters; memberId (assign, handoff) and reviewer.memberId also accept a unique member name. The current executor may release or hand off their own started assignment without user confirmation; a handoff target needs the execute roles and cannot be the task reviewer (use takeover for that). Takeover hands a task with a member reviewer to that reviewer, who becomes its executor with self review bound through merge: only the designated reviewer (from review or submitted working state) or the user (from pending, working or review) may invoke it, and explicit non-self reviewer options are refused. The previous assignment ends, a result waiting for review is superseded, earlier submissions and reviews stay, and review rounds keep counting. On a task that was taken over, self review is bound to one executor: switching it to self with edit, or giving a self-reviewed task to another executor (assign, claim, handoff), needs the user, and only the bound executor can submit a self review. On a self-review task submit writes the self review and completes the task immediately. Submit links the task to the one local branch whose tip is commitSha in your saved project folder, unless a branch was set by hand; the result's gitBranch says what happened. The current executor can use set_git_branch with gitBranch to set a branch by hand or clear it; the Hub uses the task's linked repository or the executor's saved project folder. Watch: use it when you want to do something after a task finishes but do not depend on it (with a real dependency, use dependencyIds instead); you are woken once when the task is merged, completed without needing a merge, or cancelled, and the watch then ends. A watch and its optional note are visible to everyone in the cluster (members and the user): get_task lists them, and the notice at the end names each watcher with its note. Watching again replaces the note; unwatch stops it. Watch and unwatch need no expectedRevision and change nothing on the task.", {
     action: z.enum(['edit', 'assign', 'start', 'submit', 'review', 'ship_fix', 'merge', 'release', 'cancel', 'reopen', 'handoff', 'takeover', 'nominate', 'claim', 'set_git_branch', 'watch', 'unwatch']),
-    ...version, expectedRevision: version.expectedRevision.optional().describe('Current task revision from get_task; required for every action except watch and unwatch.'),
+    ...version,
+    expectedRevision: version.expectedRevision.optional().describe('Current task revision from get_task. Required for edit, assign, nominate, claim, release, handoff, cancel, reopen, takeover, ship_fix, merge and set_git_branch (and resubmitting an invalidated completed result); optional for start, submit while working/in review, review, watch and unwatch, though checked strictly if provided (after same-member reassignment, submit still requires at least expectedRevision or current assignmentId, and omitted expectedRevision checks the arrival snapshot against concurrent submits).'),
+    assignmentId: version.assignmentId.describe('Active assignment ID. Optional for start, submit while working/in review (unless this member was reassigned on the task and omits expectedRevision), and your own release/handoff (the Hub uses your active assignment); checked strictly if provided, and still required when resubmitting an invalidated completed result or for non-executor release/handoff/cancel.'),
     taskId: z.string().describe(taskRef),
     ...taskDefinition, memberId: z.string().nullable().optional(),
     summary: z.string().optional(), evidenceMessageIds: z.array(z.string()).optional(), evidenceFileIds: z.array(z.string()).optional(),
@@ -201,7 +330,8 @@ export function taskTools({ page, hub, secret, hubUrl, query, command }: PluginT
     + 'cancel: batchId, reason; its tasks become ordinary tasks. merge: batchId, commitSha, only when ship landed but could not report.', {
     action: z.enum(['create', 'add', 'remove', 'cancel', 'merge', 'attribute_failure']), title: z.string().optional(),
     reviewer: z.union([z.object({ kind: z.literal('user') }), z.object({ kind: z.literal('member'), memberId: z.string() })]).optional(),
-    batchId: z.string().optional(), taskId: z.string().optional().describe(taskRef), expectedRevision: z.number().int().optional(),
+    batchId: z.string().optional(), taskId: z.string().optional().describe(taskRef),
+    expectedRevision: z.number().int().optional().describe('Current task revision from get_task; required for add and remove.'),
     failureEventId: z.number().int().positive().optional().describe('For attribute_failure: active batch shipFailure eventId.'),
     taskIds: z.array(z.string()).optional().describe('For attribute_failure: batch task refs responsible for the checks failure (' + taskRef + ').'),
     reason: z.string().optional(), commitSha: z.string().optional(), generation: generation.optional(),
