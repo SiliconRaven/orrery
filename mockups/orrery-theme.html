@@ -1,0 +1,2318 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orrery 太阳系仪</title>
+<!-- 纯静态 UI 示例：只用假数据，不连 Hub。可选参数：?view=galaxy:orrery 或 ?view=system:orrery 开发组 直接进入某一层，?paused=1 停转，?reduced=1 模拟减少动效，?open=hub,claude-code 打开当前群聊的窗口 -->
+<style>
+:root {
+  --bg0: #03050b;
+  --bg1: #0a1022;
+  --ink: #ece4cf;
+  --ink2: #b8af98;
+  --ink3: #7e7866;
+  --brass: #c9a45c;
+  --brass-hi: #f0d28c;
+  --brass-lo: #7a5f2e;
+  --line: rgba(201, 164, 92, .26);
+  --glass: rgba(12, 16, 30, .72);
+  --k-task: #e8b85a;
+  --k-warn: #ff8466;
+  --k-info: #7fd6e6;
+  --ether: #93aaff;
+  --badge: #f5f0e3;
+  --badge-ink: #0e1220;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+  --sans: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --mono: "Cascadia Code", "JetBrains Mono", Consolas, "SFMono-Regular", Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+body {
+  background: radial-gradient(120% 90% at 50% 55%, #0b1226 0%, #060915 55%, var(--bg0) 100%);
+  color: var(--ink);
+  font: 14px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; }
+canvas { display: block; }
+#sky { position: fixed; inset: 0; z-index: 0; }
+
+/* ───────── plaque / hints / legend ───────── */
+.plaque {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 1900000;   /* above every chat window */
+  display: flex; align-items: center; gap: 14px; padding: 7px 18px 7px 14px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: linear-gradient(180deg, rgba(30, 26, 18, .55), rgba(10, 10, 14, .55));
+  backdrop-filter: blur(8px);
+  font-family: var(--serif); color: var(--ink2); font-size: 13px; white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgba(255, 230, 170, .08);
+}
+.plaque .mark { width: 22px; height: 22px; color: var(--brass-hi); }
+.plaque b { font-weight: 600; letter-spacing: .28em; color: var(--brass-hi); font-size: 12px; }
+.plaque .sep { width: 1px; height: 14px; background: var(--line); }
+.plaque .stat { font-family: var(--sans); font-size: 12px; color: var(--ink3); }
+.plaque .stat i { font-style: normal; color: var(--ink2); }
+
+.hint {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 3;
+  font-size: 12px; color: var(--ink3); letter-spacing: .04em; pointer-events: none;
+  width: max-content; max-width: calc(100vw - 40px); text-align: center;
+}
+.hint span { color: var(--ink2); }
+
+.legend {
+  position: fixed; left: 18px; bottom: 16px; z-index: 3;
+  display: grid; grid-template-columns: auto auto; gap: 4px 16px; padding: 10px 14px;
+  border: 1px solid rgba(201, 164, 92, .16); border-radius: 12px;
+  background: rgba(6, 9, 18, .5); backdrop-filter: blur(6px);
+  font-size: 11.5px; color: var(--ink2);
+}
+.legend h4 { grid-column: 1 / -1; margin: 0 0 2px; font: 600 10.5px/1.4 var(--serif); letter-spacing: .2em; color: var(--brass); }
+.legend div { display: flex; align-items: center; gap: 7px; }
+.legend .dot { width: 10px; height: 10px; border-radius: 50%; }
+.legend svg { width: 11px; height: 11px; }
+.lg-on { background: #e9dcc0; box-shadow: 0 0 8px #f3d79a; }
+.lg-work { background: conic-gradient(from 0deg, transparent, #7fe7ff, transparent 70%); border: 1px solid #7fe7ff; }
+.lg-off { background: #4b4f58; }
+.lg-badge { min-width: 14px; height: 14px; border-radius: 7px; background: var(--badge); color: var(--badge-ink); font: 700 9.5px/14px var(--sans); text-align: center; padding: 0 3px; }
+
+.controls { position: fixed; right: 18px; bottom: 16px; z-index: 3; display: flex; gap: 8px; }
+.ctl {
+  border: 1px solid var(--line); background: rgba(8, 10, 18, .6); border-radius: 999px;
+  padding: 5px 12px; font-size: 12px; color: var(--ink2); cursor: pointer; backdrop-filter: blur(6px);
+}
+.ctl:hover { color: var(--brass-hi); border-color: rgba(240, 210, 140, .5); }
+.ctl[aria-pressed="true"] { color: var(--brass-hi); background: rgba(201, 164, 92, .14); }
+
+/* ───────── sun ───────── */
+#sun {
+  position: absolute; left: 0; top: 0; padding: 0; border: 0; background: none; cursor: pointer;
+  border-radius: 50%; z-index: 100;
+  width: var(--d, 110px); height: var(--d, 110px);
+}
+#sun:focus-visible { outline: 2px solid var(--brass-hi); outline-offset: 10px; }
+#sun .halo, #sun .corona, #sun .core, #sun .rim { position: absolute; border-radius: 50%; pointer-events: none; }
+#sun .halo {
+  inset: -95%;
+  background: radial-gradient(circle, rgba(255, 196, 92, .38) 0%, rgba(255, 150, 60, .14) 28%, rgba(255, 120, 40, .04) 50%, transparent 68%);
+  animation: breathe 5.5s ease-in-out infinite;
+}
+#sun .corona {
+  inset: -38%;
+  background:
+    repeating-conic-gradient(from 0deg, rgba(255, 214, 140, .30) 0deg 2.2deg, transparent 2.2deg 9deg),
+    repeating-conic-gradient(from 4deg, rgba(255, 170, 80, .20) 0deg 1.4deg, transparent 1.4deg 13deg);
+  -webkit-mask: radial-gradient(circle, transparent 46%, #000 52%, rgba(0,0,0,.4) 66%, transparent 74%);
+          mask: radial-gradient(circle, transparent 46%, #000 52%, rgba(0,0,0,.4) 66%, transparent 74%);
+  filter: blur(1.4px);
+  animation: spin 90s linear infinite;
+}
+#sun .corona.c2 { inset: -30%; animation-duration: 140s; animation-direction: reverse; opacity: .8; }
+#sun .core {
+  inset: 0; overflow: hidden;
+  background: radial-gradient(circle at 38% 34%, #fff8e4 0%, #ffe1a0 18%, #ffb956 45%, #f08a2e 75%, #b5531a 100%);
+  box-shadow: 0 0 30px 6px rgba(255, 170, 70, .55), 0 0 90px 20px rgba(255, 130, 40, .22), inset -8px -10px 22px rgba(150, 50, 0, .45);
+}
+#sun .core svg { position: absolute; inset: 0; width: 100%; height: 100%; mix-blend-mode: soft-light; opacity: .9; animation: spin 220s linear infinite; }
+#sun .rim { inset: -7px; border: 1px solid rgba(240, 210, 140, .55); box-shadow: inset 0 0 0 3px rgba(122, 95, 46, .35); }
+#sun:hover .core { box-shadow: 0 0 40px 10px rgba(255, 180, 80, .7), 0 0 120px 30px rgba(255, 140, 50, .3), inset -8px -10px 22px rgba(150, 50, 0, .45); }
+#sun.parked .rim { border-style: dashed; }
+@keyframes breathe { 0%, 100% { transform: scale(1); opacity: .9; } 50% { transform: scale(1.06); opacity: 1; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ───────── planets ───────── */
+.planet {
+  position: absolute; left: 0; top: 0; width: 50px; height: 50px; padding: 0; border: 0; background: none;
+  cursor: pointer; border-radius: 50%; transform-origin: 50% 50%;
+}
+.planet:focus-visible { outline: 2px solid var(--brass-hi); outline-offset: 6px; }
+.av {
+  position: absolute; inset: 0; border-radius: 50%; display: grid; place-items: center; overflow: hidden;
+  background: radial-gradient(circle at 34% 28%, color-mix(in srgb, var(--c) 45%, #fff) 0%, var(--c) 42%, color-mix(in srgb, var(--c) 45%, #000) 100%);
+  box-shadow: inset -4px -6px 10px rgba(0, 0, 0, .45), inset 2px 2px 4px rgba(255, 255, 255, .25);
+}
+.av svg { width: 62%; height: 62%; }
+.av.sm { position: relative; width: 26px; height: 26px; flex: none; }
+.av.xs { position: relative; width: 18px; height: 18px; flex: none; box-shadow: inset -2px -3px 5px rgba(0,0,0,.4); }
+.planet .glow {
+  position: absolute; inset: -14px; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle, color-mix(in srgb, var(--c) 55%, transparent) 0%, transparent 68%);
+  opacity: .55; transition: opacity .3s;
+}
+.planet:hover .glow, .planet.hot .glow { opacity: .95; }
+.planet .ring {
+  position: absolute; inset: -6px; border-radius: 50%; pointer-events: none; display: none;
+  background: conic-gradient(from 0deg, transparent 0deg, rgba(127, 231, 255, .0) 40deg, #8ff0ff 300deg, #fff 340deg, transparent 360deg);
+  -webkit-mask: radial-gradient(circle, transparent 62%, #000 64%, #000 70%, transparent 72%);
+          mask: radial-gradient(circle, transparent 62%, #000 64%, #000 70%, transparent 72%);
+  animation: spin 1.8s linear infinite;
+}
+.planet.working .ring { display: block; }
+.planet .ring2 {
+  position: absolute; inset: -6px; border-radius: 50%; pointer-events: none; display: none;
+  border: 1px solid rgba(143, 240, 255, .22);
+}
+.planet.working .ring2 { display: block; }
+.planet.offline .av { filter: grayscale(1) brightness(.5) contrast(.9); }
+.planet.offline .glow { display: none; }
+.planet .badge {
+  position: absolute; right: -5px; top: -5px; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px; background: var(--badge); color: var(--badge-ink);
+  font: 700 11px/18px var(--sans); text-align: center;
+  box-shadow: 0 0 0 2px #0a0e1c, 0 2px 6px rgba(0, 0, 0, .5);
+}
+.planet.offline .badge { background: #b9b4a8; }
+.planet .pname {
+  position: absolute; left: 50%; top: calc(50% + 46px); transform: translateX(-50%);
+  white-space: nowrap; pointer-events: none;
+  font: 600 11px/1.2 var(--serif); letter-spacing: .08em; color: var(--ink2);
+  text-shadow: 0 1px 3px #000, 0 0 8px #000;
+}
+.planet.offline .pname { color: var(--ink3); }
+.planet .pname em { font-style: normal; font-family: var(--sans); font-weight: 400; color: var(--ink3); margin-left: 4px; letter-spacing: 0; }
+.planet .parkmark {
+  display: none; position: absolute; left: -6px; top: -6px; width: 14px; height: 10px; border-radius: 2px;
+  border: 1.5px solid var(--brass-hi); background: rgba(10, 12, 20, .8); box-shadow: 0 0 6px rgba(240, 210, 140, .6);
+}
+.planet.parked .parkmark { display: block; }
+.planet .ping, #sun .ping {
+  position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--brass-hi); opacity: 0; pointer-events: none;
+}
+.ping.go { animation: ping .7s ease-out; }
+@keyframes ping { from { transform: scale(.8); opacity: .9; } to { transform: scale(1.9); opacity: 0; } }
+
+/* ───────── satellites (system notices) ───────── */
+.sat {
+  position: absolute; left: 0; top: 0; width: 22px; height: 22px; margin: -11px 0 0 -11px; padding: 0;
+  border: 0; background: none; cursor: pointer; display: grid; place-items: center;
+}
+.sat .sb { position: relative; display: grid; place-items: center; width: 12px; height: 12px; }
+.sat svg { width: 12px; height: 12px; filter: drop-shadow(0 0 3px currentColor); }
+.sat.k-task { color: var(--k-task); }
+.sat.k-warn { color: var(--k-warn); }
+.sat.k-info { color: var(--k-info); }
+.sat.imp .sb::after {
+  content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 1px solid currentColor;
+  animation: satpulse 1.8s ease-out infinite;
+}
+@keyframes satpulse { 0% { transform: scale(.6); opacity: .9; } 100% { transform: scale(1.7); opacity: 0; } }
+.sat:hover svg, .sat:focus-visible svg { transform: scale(1.35); }
+.sat:focus-visible { outline: 1px solid currentColor; border-radius: 50%; }
+.sat.merged .sb { width: 20px; height: 20px; }
+.sat.merged .sb .mring {
+  position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid currentColor;
+  background: radial-gradient(circle, rgba(10, 12, 22, .95) 55%, color-mix(in srgb, currentColor 30%, transparent));
+  box-shadow: 0 0 8px color-mix(in srgb, currentColor 60%, transparent);
+}
+.sat.merged .sb b { position: relative; font: 700 10.5px/1 var(--sans); color: #fff; }
+.sat.merged .sb svg { position: absolute; width: 8px; height: 8px; right: -4px; top: -4px; filter: none; }
+
+/* ───────── floating cards ───────── */
+.card {
+  position: fixed; z-index: 2000000; pointer-events: none; opacity: 0; transition: opacity .18s;
+  min-width: 210px; max-width: 280px; padding: 11px 13px;
+  background: linear-gradient(180deg, rgba(24, 22, 18, .92), rgba(10, 12, 20, .94));
+  border: 1px solid rgba(201, 164, 92, .4); border-radius: 12px;
+  box-shadow: 0 18px 40px -12px rgba(0, 0, 0, .8);
+  font-size: 12.5px; color: var(--ink2);
+}
+.card.show { opacity: 1; }
+.card .ch { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; }
+.card .ch b { display: block; font: 600 14px/1.25 var(--serif); color: var(--ink); letter-spacing: .04em; }
+.card .ch span { font-size: 11.5px; color: var(--ink3); }
+.card .row { display: flex; gap: 8px; line-height: 1.7; }
+.card .row > span:first-child { color: var(--ink3); width: 52px; flex: none; }
+.card .foot { margin-top: 7px; padding-top: 6px; border-top: 1px solid rgba(201, 164, 92, .15); font-size: 11px; color: var(--brass); }
+.st { display: inline-flex; align-items: center; gap: 5px; }
+.st::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.st-online { color: #9be7a8; }
+.st-working { color: #8ff0ff; }
+.st-working::before { box-shadow: 0 0 6px currentColor; animation: breathe 1.2s ease-in-out infinite; }
+.st-offline { color: #7d818a; }
+.st-hub { color: var(--brass-hi); }
+
+.tip {
+  position: fixed; z-index: 2000001; pointer-events: none; opacity: 0; transition: opacity .12s;
+  padding: 4px 9px; border-radius: 6px; white-space: nowrap; max-width: 340px; overflow: hidden; text-overflow: ellipsis;
+  background: rgba(8, 10, 18, .92); border: 1px solid rgba(255, 255, 255, .12);
+  font-size: 12px; color: var(--ink);
+}
+.tip.show { opacity: 1; }
+.tip svg { width: 10px; height: 10px; vertical-align: -1px; margin-right: 6px; }
+
+.ncard {
+  position: fixed; z-index: 2000002; width: 320px; max-width: calc(100vw - 24px); display: none;
+  background: linear-gradient(180deg, rgba(26, 23, 17, .96), rgba(10, 12, 20, .97));
+  border: 1px solid rgba(201, 164, 92, .45); border-radius: 14px; padding: 12px 14px 12px;
+  box-shadow: 0 24px 60px -14px rgba(0, 0, 0, .9), inset 0 1px 0 rgba(255, 230, 170, .06);
+  font-size: 13px;
+}
+.ncard.show { display: block; animation: pop .16s ease-out; }
+@keyframes pop { from { transform: translateY(4px) scale(.98); opacity: 0; } }
+.ncard .nh { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 11.5px; color: var(--ink3); }
+.ncard .nh svg { width: 13px; height: 13px; }
+.ncard .nh .kind { font: 600 11.5px/1 var(--serif); letter-spacing: .12em; }
+.ncard .nh .x { margin-left: auto; border: 0; background: none; color: var(--ink3); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px; }
+.ncard .nh .x:hover { color: var(--ink); }
+.ncard .nbody { color: var(--ink); line-height: 1.65; }
+.ncard .nbody p { margin: 0; }
+.ncard .nacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+.btn {
+  border: 1px solid rgba(201, 164, 92, .35); background: rgba(201, 164, 92, .08); color: var(--ink);
+  border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+}
+.btn:hover { border-color: var(--brass-hi); background: rgba(201, 164, 92, .16); }
+.btn.primary { background: linear-gradient(180deg, #d8b46a, #a9853f); color: #1a1408; border-color: #e9c983; font-weight: 600; }
+.btn.primary:hover { background: linear-gradient(180deg, #ecca82, #b8924a); }
+.nlist { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow: auto; }
+.nlist .ni { display: grid; grid-template-columns: 14px 1fr auto; gap: 8px; align-items: start; padding: 7px 8px; border-radius: 8px; background: rgba(255, 255, 255, .03); }
+.nlist .ni svg { width: 12px; height: 12px; margin-top: 4px; }
+.nlist .ni .t { font-size: 12.5px; line-height: 1.5; }
+.nlist .ni .t small { display: block; color: var(--ink3); font-size: 11px; }
+.nlist .ni .btn { padding: 2px 8px; font-size: 11.5px; }
+.k-task { color: var(--k-task); }
+.k-warn { color: var(--k-warn); }
+.k-info { color: var(--k-info); }
+
+/* ───────── windows ───────── */
+.win {
+  position: fixed; display: flex; flex-direction: column; min-width: 300px; min-height: 240px;
+  border-radius: 14px; overflow: hidden;
+  background: linear-gradient(180deg, rgba(22, 26, 44, .84) 0%, rgba(9, 12, 23, .88) 100%);
+  border: 1px solid rgba(201, 164, 92, .22);
+  box-shadow: 0 30px 80px -24px rgba(0, 0, 0, .85), inset 0 1px 0 rgba(255, 236, 190, .07);
+  /* strong blur: whatever is behind (stars, other windows) becomes colour, never readable text */
+  backdrop-filter: blur(18px) saturate(1.1) brightness(.85);
+  -webkit-backdrop-filter: blur(18px) saturate(1.1) brightness(.85);
+  transition: background .2s, border-color .2s, box-shadow .2s;
+}
+/* not selected: the glass is thinner (more sky shows through, blurred) and the content fades; the title bar stays clear */
+.win:not(.active) { background: linear-gradient(180deg, rgba(16, 20, 36, .62) 0%, rgba(8, 10, 20, .7) 100%); }
+.win:not(.active) > :not(.bar):not(.rz) { opacity: .5; transition: opacity .2s; }
+.win:not(.active):hover > :not(.bar):not(.rz) { opacity: .82; }
+.win:not(.active) .bar { background: linear-gradient(180deg, rgba(201, 164, 92, .08), rgba(0, 0, 0, .12)); }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .win, .win:not(.active) { background: rgba(10, 13, 24, .97); }
+}
+.win.active {
+  border-color: rgba(240, 210, 140, .5);
+  box-shadow: 0 34px 90px -22px rgba(0, 0, 0, .9), 0 0 0 1px rgba(240, 210, 140, .12), 0 0 40px -10px rgba(255, 190, 90, .25), inset 0 1px 0 rgba(255, 236, 190, .1);
+}
+.win.min { display: none; }
+.bar {
+  position: relative; display: flex; align-items: center; gap: 10px; padding: 9px 10px 9px 14px; cursor: grab;
+  border-bottom: 1px solid rgba(201, 164, 92, .18); user-select: none; touch-action: none;
+  background: linear-gradient(180deg, rgba(201, 164, 92, .10), rgba(201, 164, 92, .02));
+}
+.bar:active { cursor: grabbing; }
+.bar::before, .bar::after {
+  content: ""; position: absolute; top: 50%; width: 4px; height: 4px; margin-top: -2px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #f6deaa, #7a5f2e); left: 5px;
+}
+.bar::after { left: auto; right: 4px; }
+.bar .tt { min-width: 0; flex: 1; }
+.bar .tt b { display: block; font: 600 14px/1.25 var(--serif); letter-spacing: .05em; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar .tt span { display: block; font-size: 11.5px; color: var(--ink3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar .st { font-size: 11.5px; flex: none; }
+.wb {
+  width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: 7px;
+  border: 1px solid transparent; background: none; color: var(--ink3); cursor: pointer;
+}
+.wb:hover { color: var(--ink); border-color: rgba(201, 164, 92, .3); background: rgba(201, 164, 92, .08); }
+.wb.close:hover { color: #ffb3a3; border-color: rgba(255, 132, 102, .4); background: rgba(255, 132, 102, .1); }
+.wb svg { width: 12px; height: 12px; }
+.hubav { width: 26px; height: 26px; border-radius: 50%; flex: none; background: radial-gradient(circle at 38% 34%, #fff6dc, #ffbe5c 45%, #d06a1f); box-shadow: 0 0 10px rgba(255, 170, 70, .6); }
+.sub {
+  display: flex; align-items: center; gap: 8px; padding: 6px 14px; font-size: 11.5px; color: var(--ink3);
+  border-bottom: 1px solid rgba(255, 255, 255, .04); flex-wrap: wrap;
+}
+.sub .chip { padding: 1px 7px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, .1); }
+.sub.offline { color: #c9c2b0; background: rgba(120, 124, 134, .12); }
+.body { flex: 1; overflow: auto; padding: 14px 16px 18px; scroll-behavior: smooth; }
+.body::-webkit-scrollbar { width: 8px; }
+.body::-webkit-scrollbar-thumb { background: rgba(201, 164, 92, .22); border-radius: 4px; }
+.body::-webkit-scrollbar-track { background: transparent; }
+.rz { position: absolute; z-index: 5; touch-action: none; }
+.rz-n, .rz-s { left: 10px; right: 10px; height: 7px; cursor: ns-resize; }
+.rz-n { top: -3px; } .rz-s { bottom: -3px; }
+.rz-e, .rz-w { top: 10px; bottom: 10px; width: 7px; cursor: ew-resize; }
+.rz-e { right: -3px; } .rz-w { left: -3px; }
+.rz-ne, .rz-nw, .rz-se, .rz-sw { width: 16px; height: 16px; }
+.rz-ne { right: -3px; top: -3px; cursor: nesw-resize; } .rz-sw { left: -3px; bottom: -3px; cursor: nesw-resize; }
+.rz-nw { left: -3px; top: -3px; cursor: nwse-resize; } .rz-se { right: -3px; bottom: -3px; cursor: nwse-resize; }
+.rz-se::after {
+  content: ""; position: absolute; right: 6px; bottom: 6px; width: 8px; height: 8px;
+  border-right: 1.5px solid rgba(201, 164, 92, .5); border-bottom: 1.5px solid rgba(201, 164, 92, .5);
+}
+.foot-note { padding: 8px 14px 10px; border-top: 1px solid rgba(201, 164, 92, .14); font-size: 11.5px; color: var(--ink3); display: flex; gap: 8px; align-items: center; }
+.foot-note svg { width: 13px; height: 13px; color: var(--brass); flex: none; }
+
+/* ───────── markdown-ish text ───────── */
+.md p { margin: 0 0 .55em; }
+.md p:last-child, .md ul:last-child, .md ol:last-child, .md pre:last-child { margin-bottom: 0; }
+.md ul, .md ol { margin: .2em 0 .6em; padding-left: 1.3em; }
+.md li { margin: .12em 0; }
+.md li::marker { color: var(--brass); }
+.md code { font: 12.5px/1.4 var(--mono); padding: 1px 5px; border-radius: 5px; background: rgba(255, 255, 255, .07); color: #f3d9a4; }
+.md pre.code { margin: .5em 0; padding: 9px 11px; border-radius: 9px; background: rgba(0, 0, 0, .35); border: 1px solid rgba(255, 255, 255, .06); overflow: auto; }
+.md pre.code code { padding: 0; background: none; color: #d9d3c2; font-size: 12px; }
+.md strong { color: #fff3d6; }
+.at { color: #ffd58a; font-weight: 600; }
+.tk { color: #9fd0ff; border-bottom: 1px dotted rgba(159, 208, 255, .6); }
+
+/* ───────── hub chat ───────── */
+.msg { display: flex; gap: 10px; margin: 0 0 14px; }
+.msg .mb { min-width: 0; max-width: calc(100% - 40px); }
+.msg .meta { display: flex; align-items: baseline; gap: 7px; font-size: 11.5px; color: var(--ink3); margin-bottom: 3px; }
+.msg .meta b { font: 600 13px/1.3 var(--serif); color: var(--ink); letter-spacing: .03em; }
+.msg .bub {
+  padding: 8px 12px; border-radius: 4px 12px 12px 12px; background: rgba(255, 255, 255, .05);
+  border: 1px solid rgba(255, 255, 255, .06); word-break: break-word;
+}
+.msg.me { flex-direction: row-reverse; }
+.msg.me .meta { justify-content: flex-end; }
+.msg.me .bub { border-radius: 12px 4px 12px 12px; background: linear-gradient(180deg, rgba(201, 164, 92, .2), rgba(201, 164, 92, .1)); border-color: rgba(201, 164, 92, .28); }
+.fyi { font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid rgba(147, 170, 255, .4); color: var(--ether); }
+.acks { margin-top: 4px; font-size: 11px; color: var(--ink3); }
+.acks span { display: inline-block; padding: 0 7px; border-radius: 999px; background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .08); }
+.posted { margin-top: 4px; font-size: 11px; color: var(--ether); }
+.sysl {
+  display: flex; align-items: flex-start; gap: 9px; margin: 2px 4px 14px; padding: 6px 10px 6px 9px;
+  border-radius: 8px; font-size: 12.5px; line-height: 1.55; color: var(--ink2);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--kc) 13%, transparent), transparent 85%);
+  border-left: 2px solid var(--kc);
+}
+.sysl svg { width: 12px; height: 12px; flex: none; margin-top: 4px; color: var(--kc); }
+.sysl time { margin-left: auto; padding-left: 10px; color: var(--ink3); font-size: 11px; flex: none; }
+.sysl .ackd { display: none; margin-left: 8px; font-size: 11px; color: var(--ink3); flex: none; }
+.sysl.acked { opacity: .55; }
+.sysl.acked .ackd { display: inline; }
+.sysl.sat-live::after {
+  content: "卫星"; flex: none; margin-left: 8px; font-size: 10px; padding: 0 5px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--kc) 50%, transparent); color: var(--kc); align-self: center;
+}
+.kv-task { --kc: var(--k-task); } .kv-warn { --kc: var(--k-warn); } .kv-info { --kc: var(--k-info); }
+.receipt { margin: -8px 0 14px; text-align: right; font-size: 11px; color: var(--ink3); }
+.receipt .bad { color: var(--k-warn); }
+.flash { animation: flash 1.6s ease-out; }
+@keyframes flash { 0%, 30% { box-shadow: 0 0 0 2px var(--brass-hi), 0 0 24px rgba(240, 210, 140, .5); } 100% { box-shadow: 0 0 0 0 transparent; } }
+.composer { display: flex; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid rgba(201, 164, 92, .16); align-items: flex-end; }
+.composer textarea {
+  flex: 1; resize: none; height: 40px; max-height: 120px; padding: 9px 12px; border-radius: 10px;
+  border: 1px solid rgba(201, 164, 92, .25); background: rgba(0, 0, 0, .28); color: var(--ink); font: 13px/1.5 var(--sans);
+}
+.composer textarea:focus { outline: none; border-color: rgba(240, 210, 140, .6); box-shadow: 0 0 0 3px rgba(201, 164, 92, .12); }
+.composer .btn.primary { height: 40px; padding: 0 16px; border-radius: 10px; }
+
+/* ───────── native conversation ───────── */
+.it { margin: 0 0 12px; }
+.u { display: flex; flex-direction: column; align-items: flex-end; }
+.u .who { font-size: 11px; color: var(--ink3); margin-bottom: 3px; }
+.u .bub { max-width: 86%; padding: 8px 12px; border-radius: 12px 4px 12px 12px; background: rgba(236, 228, 207, .09); border: 1px solid rgba(236, 228, 207, .12); }
+.a { padding: 0 2px; }
+.a .posted { margin-top: 6px; }
+details.think, details.tool { border-radius: 8px; }
+details.think > summary, details.tool > summary {
+  list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; color: var(--ink3); padding: 4px 8px; border-radius: 7px; user-select: none;
+}
+details > summary::-webkit-details-marker { display: none; }
+details.think > summary:hover, details.tool > summary:hover { background: rgba(255, 255, 255, .04); color: var(--ink2); }
+details.think > summary::after, details.tool > summary::after { content: "›"; margin-left: auto; transition: transform .15s; color: var(--ink3); }
+details[open] > summary::after { transform: rotate(90deg); }
+details.think > summary .sym { color: #b9a2ff; }
+details.think .tx { margin: 4px 8px 2px 22px; padding-left: 10px; border-left: 1px solid rgba(185, 162, 255, .3); font-size: 12.5px; color: var(--ink3); font-style: italic; }
+details.tool > summary { font-family: var(--sans); }
+details.tool > summary .sym { width: 14px; text-align: center; color: var(--ink3); }
+details.tool > summary .lbl { color: var(--ink2); }
+details.tool > summary code { font: 12px var(--mono); color: #d9cfb6; background: none; padding: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+details.tool > summary .meta2 { color: var(--ink3); font-size: 11.5px; white-space: nowrap; }
+details.tool .ok { color: #9be7a8; } details.tool .bad { color: var(--k-warn); }
+details.tool .spin { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid rgba(143, 240, 255, .25); border-top-color: #8ff0ff; animation: spin .8s linear infinite; }
+pre.detail, pre.raw {
+  margin: 4px 0 2px; padding: 9px 11px; border-radius: 8px; overflow: auto; max-height: 260px;
+  background: rgba(0, 0, 0, .38); border: 1px solid rgba(255, 255, 255, .06);
+  font: 11.5px/1.55 var(--mono); color: #c9c3b2; white-space: pre-wrap; word-break: break-word;
+}
+pre.detail .add { color: #9be7a8; } pre.detail .del { color: #ff9c86; }
+details.tool.otool > summary { color: var(--brass); }
+details.tool.otool > summary svg { width: 13px; height: 13px; color: var(--brass-hi); flex: none; }
+details.tool.otool > summary .lbl { color: var(--brass-hi); }
+
+/* orrery deliveries inside a native conversation */
+.og { width: 13px; height: 13px; flex: none; }
+.ox { position: relative; }
+/* (a) system notice: rectangular amber/coral/cyan strip with the satellite glyph */
+.ox-sys {
+  border-radius: 6px; border-left: 3px solid var(--kc);
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--kc) 4%, transparent) 0 6px, transparent 6px 12px),
+              linear-gradient(90deg, color-mix(in srgb, var(--kc) 16%, transparent), color-mix(in srgb, var(--kc) 3%, transparent));
+}
+.ox-sys > .cap {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 10px 5px 8px; border: 0; background: none;
+  cursor: pointer; text-align: left; font-size: 12.5px; color: var(--ink2);
+}
+.ox-sys > .cap .gl { width: 12px; height: 12px; color: var(--kc); flex: none; }
+.ox-sys > .cap .tag { font: 600 10.5px/1 var(--serif); letter-spacing: .14em; color: var(--kc); flex: none; }
+.ox-sys > .cap .sm { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.ox-sys > .cap .og { color: var(--ink3); opacity: .7; }
+.ox-sys .full { display: none; padding: 0 10px 8px 28px; font-size: 12.5px; color: var(--ink); }
+.ox-sys.open .full { display: block; }
+.ox-sys.acked > .cap .sm::after { content: "　· 已知道"; color: var(--ink3); }
+.ox-sys.acked { opacity: .6; }
+/* (b) message from another member: rounded "ether" capsule with sender avatar */
+.ox-in > .cap {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px 12px 4px 4px; text-align: left; cursor: pointer;
+  border-radius: 999px; border: 1px solid rgba(147, 170, 255, .34);
+  background: linear-gradient(90deg, rgba(110, 132, 255, .2), rgba(70, 200, 230, .07));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .02), 0 0 18px -8px rgba(147, 170, 255, .6);
+  font-size: 12.5px;
+}
+.ox-in > .cap:hover { border-color: rgba(170, 190, 255, .6); }
+.ox-in > .cap .from { font: 600 12.5px/1 var(--serif); color: #dfe5ff; flex: none; }
+.ox-in > .cap .via { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--ether); flex: none; opacity: .85; }
+.ox-in > .cap .via svg { width: 11px; height: 11px; }
+.ox-in > .cap .sm { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink2); }
+.ox-in > .cap .chev { color: var(--ether); transition: transform .15s; }
+.ox-in.open > .cap { border-radius: 14px 14px 4px 4px; }
+.ox-in.open > .cap .chev { transform: rotate(90deg); }
+.ox-in .full {
+  display: none; margin-top: -1px; padding: 9px 12px 9px; border-radius: 4px 4px 14px 14px;
+  border: 1px solid rgba(147, 170, 255, .25); border-top: 0; background: rgba(60, 80, 160, .1);
+}
+.ox-in.open .full { display: block; }
+/* outgoing send_message: brass outline pill with an arrow into the sun */
+.sub .ox-all { margin-left: auto; cursor: pointer; font: inherit; font-size: 11px; color: var(--brass-hi); background: rgba(201, 164, 92, .08); border-color: rgba(201, 164, 92, .4); }
+.sub .ox-all:hover { background: rgba(201, 164, 92, .18); }
+.sub .ox-all[aria-pressed="true"] { background: rgba(201, 164, 92, .22); }
+/* The member's own post: the member's side (left), like its other output; the right side is the user's. */
+.ox-out { display: flex; flex-direction: column; align-items: flex-start; }
+.ox-out > .cap {
+  display: flex; align-items: center; gap: 8px; max-width: 92%; padding: 4px 6px 4px 12px; cursor: pointer; text-align: left;
+  border-radius: 999px; border: 1px solid rgba(240, 210, 140, .5); background: rgba(201, 164, 92, .07);
+  font-size: 12.5px; color: var(--ink2);
+}
+.ox-out > .cap:hover { background: rgba(201, 164, 92, .13); }
+.ox-out > .cap .lbl { font: 600 11px/1 var(--serif); letter-spacing: .12em; color: var(--brass-hi); flex: none; }
+.ox-out > .cap .to { color: #ffd58a; flex: none; font-weight: 600; }
+.ox-out > .cap .sm { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ox-out > .cap .arrow {
+  width: 24px; height: 24px; flex: none; border-radius: 50%; display: grid; place-items: center;
+  background: radial-gradient(circle at 38% 34%, #fff2cf, #ffbc5a 55%, #c4621c); color: #3a1c04;
+}
+.ox-out > .cap .arrow svg { width: 13px; height: 13px; }
+.ox-out .full { display: none; width: 92%; margin-top: 5px; padding: 9px 12px; border-radius: 12px; border: 1px dashed rgba(240, 210, 140, .35); background: rgba(201, 164, 92, .05); }
+.ox-out.open .full { display: block; }
+.ox-foot { display: flex; align-items: center; gap: 8px; margin-top: 7px; font-size: 11px; color: var(--ink3); flex-wrap: wrap; }
+.ox-foot .rawbtn { margin-left: auto; }
+.rawbtn {
+  border: 1px solid rgba(255, 255, 255, .12); background: rgba(255, 255, 255, .03); color: var(--ink3);
+  border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; flex: none;
+}
+.rawbtn:hover { color: var(--ink); border-color: rgba(240, 210, 140, .45); }
+.rawbox { display: none; margin-top: 6px; }
+.rawbox.show { display: block; }
+.rawbox .rh { font-size: 11px; color: var(--ink3); margin-bottom: 3px; display: flex; gap: 6px; align-items: center; }
+.rawbox .rh b { color: var(--brass); font-weight: 600; }
+pre.raw .hl { color: #ffd58a; }
+pre.raw .tl { color: #8b8676; }
+pre.raw .mk { color: #ffd58a; font-weight: 700; }
+/* ack chip */
+.ox-ack { display: flex; flex-direction: column; align-items: flex-start; }
+.ox-ack > .cap {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px 2px 7px; border-radius: 999px; cursor: pointer;
+  border: 1px solid rgba(201, 164, 92, .22); background: rgba(201, 164, 92, .05); font-size: 11.5px; color: var(--ink3);
+}
+.ox-ack > .cap .og { color: var(--brass); width: 11px; height: 11px; }
+/* a batch: one envelope carrying several messages */
+.ox-batch { padding: 7px 8px 8px; border-radius: 12px; border: 1px dashed rgba(201, 164, 92, .28); background: rgba(201, 164, 92, .025); }
+.ox-batch > .bh { display: flex; align-items: center; gap: 7px; margin: 0 2px 7px; font-size: 11px; color: var(--ink3); }
+.ox-batch > .bh .og { color: var(--brass); }
+.ox-batch > .bh b { font: 600 10.5px/1 var(--serif); letter-spacing: .14em; color: var(--brass); }
+.ox-batch > .ox + .ox { margin-top: 6px; }
+.ox-batch > .rawbox { margin-top: 8px; }
+.banner { margin: 0 0 14px; padding: 8px 12px; border-radius: 9px; background: rgba(120, 124, 134, .12); border: 1px solid rgba(160, 164, 172, .18); font-size: 12.5px; color: #c9c2b0; }
+.daysep { text-align: center; font-size: 11px; color: var(--ink3); margin: 2px 0 14px; letter-spacing: .1em; }
+
+/* ───────── levels: universe › galaxy › star system ───────── */
+.layer { position: fixed; inset: 0; z-index: 1; }
+.layer.off { display: none; }
+.layer > canvas { position: absolute; inset: 0; pointer-events: none; }
+.layer > .dom { position: absolute; inset: 0; pointer-events: none; }
+.layer > .dom > * { pointer-events: auto; }
+#sky { transform-origin: 50% 50%; }
+.crumbs {
+  position: fixed; top: 16px; left: 18px; z-index: 1900000; display: flex; align-items: center; gap: 2px;
+  padding: 4px 6px; border-radius: 10px; border: 1px solid rgba(201, 164, 92, .18);
+  background: rgba(6, 9, 18, .55); backdrop-filter: blur(8px); font-size: 12.5px; max-width: calc(100vw - 36px);
+}
+.crumbs button { border: 0; background: none; color: var(--ink2); padding: 3px 8px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.crumbs button:hover { color: var(--brass-hi); background: rgba(201, 164, 92, .1); }
+.crumbs .sep { color: var(--ink3); padding: 0 1px; }
+.crumbs .cur { color: var(--brass-hi); padding: 3px 8px; font-family: var(--serif); letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumbs svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 5px; color: var(--brass); }
+.zoom-btn {
+  position: absolute; left: 0; top: 0; padding: 0; border: 0; background: none; border-radius: 50%; cursor: zoom-in;
+  transform: translate(-50%, -50%);
+}
+.zoom-btn::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%; border: 1px dashed rgba(240, 210, 140, 0);
+  transition: border-color .25s, inset .25s;
+}
+.zoom-btn:hover::after, .zoom-btn:focus-visible::after { border-color: rgba(240, 210, 140, .35); inset: -6px; }
+.zoom-btn:focus-visible { outline: none; }
+.zlabel {
+  position: absolute; left: 0; top: 0; transform: translate(-50%, 0); text-align: center; white-space: nowrap; pointer-events: none;
+  text-shadow: 0 1px 4px #000, 0 0 12px #000;
+}
+.zlabel b { display: block; font: 600 15px/1.3 var(--serif); letter-spacing: .16em; color: var(--brass-hi); }
+.zlabel.sm b { font-size: 12.5px; letter-spacing: .08em; color: var(--ink); }
+.zlabel small { display: block; font-size: 11px; color: var(--ink3); letter-spacing: .04em; }
+.zlabel small i { font-style: normal; color: #8ff0ff; }
+.zlabel small em { font-style: normal; color: var(--k-warn); }
+.cl-chip {
+  flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 1px 8px; border-radius: 999px; font-size: 10.5px; color: var(--brass-hi);
+  border: 1px solid rgba(240, 210, 140, .35); background: rgba(201, 164, 92, .08);
+}
+.card .mrow { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+.card .mrow .mi { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink2); }
+.card .mrow .mi.off { opacity: .5; }
+.card .mrow .mi.off .av { filter: grayscale(1) brightness(.6); }
+.card .mrow .mi.work .av { box-shadow: 0 0 0 1.5px #8ff0ff; }
+
+/* the cluster's name in the orrery view: below the plate, above planets and satellites */
+.sys-title {
+  position: absolute; left: 0; top: 0; transform: translateX(-50%); z-index: 300;
+  text-align: center; white-space: nowrap; pointer-events: none; text-shadow: 0 1px 4px #000, 0 0 12px #000;
+}
+.sys-title b { display: block; font: 600 15px/1.3 var(--serif); letter-spacing: .14em; color: var(--brass-hi); }
+.sys-title small { display: block; margin-top: 2px; font-size: 11px; letter-spacing: .12em; color: var(--ink3); }
+
+@media (max-width: 1100px) {
+  .plaque { left: auto; right: 18px; transform: none; gap: 10px; }
+  .plaque .stat, .plaque .sep2 { display: none; }
+  .crumbs { max-width: calc(100vw - 340px); }
+}
+@media (max-width: 720px) {
+  .legend, .hint { display: none; }
+  .crumbs { top: 58px; max-width: calc(100vw - 36px); }
+  .plaque { left: 50%; right: auto; transform: translateX(-50%); font-size: 12px; gap: 9px; padding: 6px 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+html.reduced *, html.reduced *::before, html.reduced *::after { animation: none !important; transition: none !important; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <!-- orrery mark: sun, tilted orbit, planet -->
+    <symbol id="og" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.5" fill="currentColor"/><ellipse cx="8" cy="8" rx="6.7" ry="3" fill="none" stroke="currentColor" stroke-width="1.1" transform="rotate(-22 8 8)"/><circle cx="13.7" cy="5.7" r="1.5" fill="currentColor"/></symbol>
+    <!-- satellite / notice glyphs: the same shape in the sky and in the chat -->
+    <symbol id="i-task" viewBox="0 0 16 16"><path d="M8 1.2 14.8 8 8 14.8 1.2 8z" fill="currentColor"/><path d="M8 5.2 10.8 8 8 10.8 5.2 8z" fill="#0b0f1c" opacity=".6"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 1.4 15.2 14.2H.8z" fill="currentColor" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/><path d="M8 6v3.8" stroke="#170906" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="12" r="1" fill="#170906"/></symbol>
+    <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="8" cy="8" r="3" fill="currentColor"/></symbol>
+    <symbol id="i-min" viewBox="0 0 12 12"><path d="M2 9h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-close" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-send" viewBox="0 0 16 16"><path d="M2 8h9M8 4.5 11.5 8 8 11.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <filter id="gran" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="3" seed="7"/><feColorMatrix values="0 0 0 0 1  0 0 0 0 .75  0 0 0 0 .35  0 0 0 1.1 -.25"/></filter>
+  </defs>
+</svg>
+
+<canvas id="sky"></canvas>
+<div class="layer" id="Lu"><canvas id="uni"></canvas><div class="dom" id="udom"></div></div>
+<div class="layer off" id="Lg"><canvas id="gal"></canvas><div class="dom" id="gdom"></div></div>
+<div class="layer off" id="Ls"><canvas id="orrery"></canvas><div class="dom" id="stage"></div></div>
+<nav class="crumbs" id="crumbs" aria-label="层级"></nav>
+
+<div class="plaque" aria-hidden="true">
+  <svg class="mark"><use href="#og"/></svg><b>ORRERY</b><span class="sep"></span><span id="pltitle">太阳系仪 · 协作视图</span><span class="sep sep2"></span>
+  <span class="stat" id="plstat"></span>
+</div>
+<div class="hint" id="hint"></div>
+<div class="legend" id="legend" aria-label="图例">
+  <h4>群员</h4>
+  <div><span class="dot lg-on"></span>在线</div>
+  <div><span class="dot lg-work"></span>正在工作</div>
+  <div><span class="dot lg-off"></span>离线（停转）</div>
+  <div><span class="lg-badge">2</span>未读消息</div>
+  <h4>卫星 · 系统通知</h4>
+  <div class="k-task"><svg><use href="#i-task"/></svg><span style="color:var(--ink2)">任务</span></div>
+  <div class="k-warn"><svg><use href="#i-warn"/></svg><span style="color:var(--ink2)">警告 / 投递异常</span></div>
+  <div class="k-info"><svg><use href="#i-info"/></svg><span style="color:var(--ink2)">信息</span></div>
+  <div style="color:var(--ink3)">脉冲 = 重要</div>
+</div>
+<div class="controls">
+  <button class="ctl" id="pauseBtn" aria-pressed="false">暂停公转</button>
+</div>
+<div class="card" id="card" role="tooltip"></div>
+<div class="tip" id="tip" role="tooltip"></div>
+<div class="ncard" id="ncard" role="dialog" aria-label="系统通知"></div>
+
+<script>
+'use strict';
+// ════════════════════════════════════════════════════════════════════════
+// 假数据。orrery 消息的格式照真实实现编写：
+//   信封        src/core/hub.ts  Hub.envelope()  —— "[orrery] cluster=… clusterId=… from=… messageId=… hop=… to=…"
+//               + 正文，多条之间空一行，最后 "----------" 加一段说明（tail）
+//   首行标记    src/adapters/shared/marker.ts  marker() —— Kimi Code / Cursor 会把投递显示成用户自己发的，首行加 [orrery · 来自 …]
+//   任务通知    src/plugins/tasks/notices.ts  actionBody()
+//   投递诊断    src/core/hub.ts  formatFailureGroup() / undeliveredNotice()
+//   工具更新提示 docs/native-mode.md「工具清单更新提示」
+//   工具名      src/bridge/claude-bridge.ts 的 TOOLS（与 src/mcp/server.ts 同源）
+//   分组        src/core/cluster-groups.ts —— 集群的 category 就是分组，空 = 未分组
+// ════════════════════════════════════════════════════════════════════════
+const HARNESS = {
+  claude: { label: 'Claude Code', color: '#e3895c' },
+  codex: { label: 'Codex', color: '#6fd8b9' },
+  kimi: { label: 'Kimi Code', color: '#b9a2ff' },
+  deepseek: { label: 'DeepSeek Harness', color: '#6b93ff' },
+  cursor: { label: 'Cursor', color: '#e7e1d3' },
+  qoder: { label: 'Qoder', color: '#8d97a3' },
+  antigravity: { label: 'Antigravity', color: '#f2c45a' },
+};
+const NATIVE_SHOWN = {
+  claude: 'Claude Code 里显示为一张「来自另一个会话」的消息卡片（经会话收件箱投递）',
+  codex: 'Codex 里作为排队的消息投进这个 thread（对话队列）',
+  kimi: 'Kimi Code 会把它显示成你自己发的消息，所以首行多了 [orrery · 来自 …]',
+  cursor: 'Cursor 会把它显示成你自己发的消息，首行带 [orrery · 来自 … · #交接号]',
+  deepseek: 'DeepSeek Harness 里经 orrery 插件投进对话',
+  qoder: 'Qoder 里经 orrery 插件投进对话',
+  antigravity: 'Antigravity 里经 sidecar 投进对话',
+};
+function fakeId(s) {
+  let h = 2166136261 >>> 0, out = '';
+  for (let k = 0; k < 4; k++) { for (const ch of s + '#' + k) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } out += h.toString(16).padStart(8, '0'); }
+  return `${out.slice(0, 8)}-${out.slice(8, 12)}-4${out.slice(13, 16)}-a${out.slice(17, 20)}-${out.slice(20, 32)}`;
+}
+
+// ───────── the one fully detailed cluster ─────────
+const C1_ID = '5c1f9e2a-7b34-4d0e-a8c2-91e6f0b3d47a';
+const C1_MEMBERS = [
+  { id: 'claude-code', mid: 'b7e4c1a0-3f2d-4e8b-9a61-2c5d8f0e7b34', harness: 'claude', model: 'Opus', status: 'working', unread: 1,
+    work: '#41 投递诊断面板加重发按钮 · 执行中（第 2 轮）', session: '会话 3f2a9c1e' },
+  { id: 'codex', mid: '1f6a3d8e-92b0-4c75-b1e3-7d4a0c9f5e62', harness: 'codex', model: 'GPT', status: 'online', unread: 1,
+    work: '验收 #41 · 待开工 #45', session: 'thread 019a7c42' },
+  { id: 'kimi', mid: '4c9e7b12-d05a-4f38-8e61-b2a7f3c0d941', harness: 'kimi', model: 'K2', status: 'working', unread: 1,
+    work: '#42 Kimi 2.5.1 新协议适配 · 执行中', session: '会话 kc-77e01b' },
+  { id: 'deepseek', mid: 'e2a8f064-7c3b-4d91-a5f2-0b6e9d3c7a18', harness: 'deepseek', model: 'V3', status: 'online', unread: 1,
+    work: '只读复查 #41 的重发确认逻辑', session: '会话 ds-5a0c' },
+  { id: 'cursor', mid: '7d3b0e95-1a6f-4c28-b4d7-e9f2a8c15b03', harness: 'cursor', model: 'Auto', status: 'online', unread: 0,
+    work: '#43 分屏拖拽 · 已完成，等用户试', session: 'composer 8be4' },
+  { id: 'qoder', mid: '9a05c7e3-64d1-4b8f-a2e0-3f7c1b9d6e48', harness: 'qoder', model: '—', status: 'offline', unread: 2,
+    work: '—', session: '会话 qd-21f9' },
+];
+
+const HM1 = {
+  h0: { id: 'e5a0c3f1-9b72-4d18-a6e4-0f3b8c21d97a', t: '13:50', from: 'user', to: ['cursor'], hop: 0, acks: ['cursor'],
+    body: '@cursor #43 分屏：四宫格切回单栏时焦点会丢，顺便看下拖拽分隔条的手感。' },
+  h1: { id: '8d2e41c7-0a9f-4b63-b1e5-6c7f2d9a3e10', t: '13:58', from: 'user', to: ['claude-code', 'codex'], hop: 0, acks: ['claude-code', 'codex'],
+    body: '@claude-code 把 #41 的投递诊断面板做完：离线和结果未知的投递旁边加「重发」按钮，结果未知的要先确认。@codex 来验收。' },
+  h2: { id: 'a31f06bd-52c8-4e9a-9d17-e4b0c8f25a63', t: '13:58', from: 'system', sys: 'task', to: ['claude-code'], hop: 0,
+    body: '任务 #41【投递诊断面板加重发按钮】已分配给 claude-code，事件 1287。' },
+  h3: { id: '1c7d9e52-f04a-4b8e-93a1-6e2f5b0d8c47', t: '14:01', from: 'user', to: ['kimi'], hop: 0, acks: ['kimi'],
+    body: '@kimi 看下 #42，Kimi 自动更新到 2.5.1 以后投递全被拒了。' },
+  h3b: { id: '0b6e2d94-7a15-4c3f-8e29-d1f4a07c5b86', t: '14:01', from: 'system', sys: 'task', to: ['kimi'], hop: 0,
+    body: '任务 #42【Kimi 2.5.1 新协议适配】已分配给 kimi，事件 1291。' },
+  h4: { id: 'ev-qoder-off', t: '14:02', from: 'system', sys: 'info', to: [], hop: 0,
+    body: 'qoder 离线：Qoder 没在运行。发给它的消息不投递，只留在群聊记录里，上线后也不补发。' },
+  h5: { id: '9f3a7c06-2d8e-4b51-a0c4-7e1b6d9f2a38', t: '14:06', from: 'kimi', to: ['user'], hop: 1, posted: true,
+    body: '@user 2.5.1 的 prompt 接口现在要求 `prompt_id`，旧代码没传，所以全被拒。我改成用 deliveryId 当 prompt_id，鉴权失败时重试一次。预计 20 分钟。' },
+  h6: { id: 'c2e8b4a1-6f07-4d93-b5a2-8d0c3e7f1b65', t: '14:09', from: 'codex', to: ['qoder'], hop: 0,
+    body: '@qoder Qoder 插件那边能帮忙跑一遍 test/qoder-native.test.ts 吗？' },
+  h7: { id: '4d91f7b3-0e6c-4a28-9b35-c7e2a1d8f064', t: '14:09', from: 'system', sys: 'warn', to: ['codex'], hop: 0,
+    body: '你之前发的消息「@qoder Qoder 插件那边能帮忙…」（messageId c2e8b4a1-6f07-4d93-b5a2-8d0c3e7f1b65）的投递结果：qoder（离线，未投递）。\n投递详情：{"messageId":"c2e8b4a1-6f07-4d93-b5a2-8d0c3e7f1b65","to":"qoder","status":"offline","outcome":null,"queuedAt":"2026-11-18T06:09:12.408Z"}\n这些投递不会自动重发。' },
+  h8: { id: '7b05e9c2-3a8d-4f16-a2e7-5c9d0b4f8e31', t: '14:15', from: 'deepseek', to: ['claude-code'], hop: 0,
+    body: '@claude-code 问一下 resend 的 needsConfirmation：attempts 为 0、但时间线上有一条 running 事件的投递，算不算“确实没开始”？' },
+  h9: { id: 'f8c3a6d0-5b29-4e74-8d1a-2e6b9c0f7a53', t: '14:17', from: 'claude-code', to: ['deepseek'], hop: 1, acks: ['deepseek'], replyTo: '7b05e9c2-3a8d-4f16-a2e7-5c9d0b4f8e31',
+    body: '@deepseek 不算。有开始的迹象但没有接受结果时，接受阶段记 `unknown`，必须带 `confirmDuplicate: true`。规则见 docs/native-mode.md「用户手动重发」。' },
+  h10: { id: '2a6f8d1e-c437-4b0a-9e58-b3d7f0c26e19', t: '14:31', from: 'system', sys: 'task', to: ['codex'], hop: 0,
+    body: 'claude-code 提交了任务 #41【投递诊断面板加重发按钮】的结果，等待 codex 验收，事件 1302。' },
+  h11: { id: 'd6b1e0a7-48f3-4c9d-b2e6-0a5f8c3d7e92', t: '14:40', from: 'codex', to: ['claude-code'], hop: 1,
+    body: '@claude-code #41 退回一轮：\n- `node --test test/resend.test.ts` 12 项全过\n- **P2**：按钮禁用时没有说明原因（offline / hop_limit），用户不知道为什么点不了\n\n其余没问题，补上提示后重新提交。' },
+  h12: { id: '5e2c9b70-a1d4-4f8e-86b3-9d0e7a4c1f25', t: '14:40', from: 'system', sys: 'warn', to: ['claude-code'], hop: 0,
+    body: 'codex 退回了任务 #41【投递诊断面板加重发按钮】的结果（原因：禁用的重发按钮缺少原因提示），事件 1306。' },
+  h13: { id: 'b3f7a2c9-0d64-4e1b-a8f5-6c2e9d0b7a14', t: '14:44', from: 'cursor', to: [], hop: 0, fyi: true,
+    body: '@all #43 分屏改好了：四宫格切回单栏不再丢焦点，分隔条拖动加了吸附。只是知会，不用回。' },
+  h14: { id: 'ev-ds-on', t: '14:46', from: 'system', sys: 'info', to: [], hop: 0,
+    body: 'deepseek 重新上线：DeepSeek Harness 重启后，orrery 插件的共用连接已重连。' },
+  h15: { id: 'ev-hop', t: '14:50', from: 'system', sys: 'warn', to: [], hop: 0,
+    body: '跳数上限拦下 1 条投递：deepseek 与 claude-code 之间这条回复链已到第 6 跳（上限 6），这一条没有投递。需要时可在设置里调高上限。' },
+  h17: { id: '3e8a5b21-f9c0-4d67-b1e4-7a2d6c0f9b58', t: '14:51', from: 'system', sys: 'task', to: ['codex'], hop: 0,
+    body: '任务 #41【投递诊断面板加重发按钮】已更新：改了 验收条件，事件 1309。' },
+  h16: { id: '6c0d3f8a-b25e-4791-a4c8-1e9f7b2d05c3', t: '14:52', from: 'system', sys: 'task', to: ['codex'], hop: 0,
+    body: '任务 #45【Kimi 投递重试的回归测试】已创建（建单人 kimi，执行者 codex），事件 1311。' },
+  // older history, not on today's chat page
+  hq: { id: '0e4b7d21-c9a3-4f58-b6e0-5d1a8c2f7e93', t: '昨天 22:10', from: 'user', to: ['qoder'], hop: 0,
+    body: '@qoder 插件的后台等待验收通过了，辛苦。今天先到这。' },
+};
+const HUB_ORDER1 = ['h0', 'h1', 'h2', 'h3', 'h3b', 'h4', 'h5', 'h6', 'h7', 'h8', 'h9', 'h10', 'h11', 'h12', 'h13', 'h14', 'h15', 'h17', 'h16'];
+
+const TOOL_HINT = 'orrery 工具在 Hub 重启后有更新：send_message 新增参数 fyi，新增工具 get_batch、manage_batch。如果你的工具说明里没有这些，说明你的会话还在用旧的工具清单：新参数可以试着直接传，或请用户重连 orrery、重新打开对话。';
+
+// Unhandled system notices = satellites. target: a member id (orbits its planet) or 'hub' (orbits the sun).
+const NOTICES1 = [
+  { id: 'n1', target: 'claude-code', kind: 'warn', imp: true, hub: 'h12', convo: 'claude-code', t: '14:40', sum: '#41 被 codex 退回：禁用的重发按钮缺少原因提示' },
+  { id: 'n2', target: 'codex', kind: 'warn', hub: 'h7', convo: 'codex', t: '14:09', sum: '发给 qoder 的消息没送到：成员离线，不会自动重发' },
+  { id: 'n3', target: 'codex', kind: 'task', hub: 'h17', convo: 'codex', t: '14:51', sum: '#41 的验收条件改了' },
+  { id: 'n4', target: 'codex', kind: 'task', imp: true, hub: 'h16', convo: 'codex', t: '14:52', sum: '新任务 #45 指派给你：Kimi 投递重试的回归测试' },
+  { id: 'n5', target: 'codex', kind: 'info', hub: null, convo: 'codex', t: '14:52', sum: 'Hub 重启后 orrery 工具有更新', full: TOOL_HINT },
+  { id: 'n6', target: 'kimi', kind: 'task', hub: 'h3b', convo: 'kimi', t: '14:01', sum: '#42 已分配给你：Kimi 2.5.1 新协议适配' },
+  { id: 'n7', target: 'deepseek', kind: 'info', hub: null, convo: 'deepseek', t: '14:17', sum: 'Hub 重启后 orrery 工具有更新', full: TOOL_HINT },
+  { id: 'n8', target: 'hub', kind: 'info', hub: 'h4', t: '14:02', sum: 'qoder 离线，发给它的消息只留在记录里' },
+  { id: 'n9', target: 'hub', kind: 'info', hub: 'h14', t: '14:46', sum: 'deepseek 重新上线' },
+  { id: 'n10', target: 'hub', kind: 'warn', imp: true, hub: 'h15', t: '14:50', sum: '跳数上限拦下 1 条投递（第 6 跳）' },
+];
+
+const toolRaw = (name, args, res) => `调用 orrery · ${name}\n${JSON.stringify(args, null, 2)}\n\n结果\n${JSON.stringify(res, null, 2)}`;
+
+// Each member's own conversation in its harness.
+// u: typed by the user in the app · a: answer · th: thinking · tool: native tool call
+// dlv: one orrery delivery (one envelope) → parts: in (a member's or the user's message), sys (system notice), note (tail notice)
+// out: send_message · ack: ack_messages · otool: other orrery tools
+const CONVOS1 = {
+  'claude-code': [
+    { k: 'u', text: '这个对话已经加进 orrery 开发组了。派活之前，先熟悉一下 src/web/public/app.js 里投递时间线那一块。' },
+    { k: 'th', s: 4, text: '用户要我先熟悉时间线。时间线接口返回每条投递的 resend 字段，网页根据它决定按钮能不能点。先读这一段，再搜 resend 的所有用法。' },
+    { k: 'tool', ic: '▤', lbl: '读取', arg: 'src/web/public/app.js', meta: '第 2880–3010 行', ok: true,
+      detail: '2880  function renderTimeline(rows) {\n2881    return rows.map((d) => `<li class="dlv ${d.status}">…\n…\n3004    // resend: { allowed, reason, needsConfirmation } —— 还没接到界面上\n3010  }' },
+    { k: 'tool', ic: '⌕', lbl: '搜索', arg: '"resend"', meta: '14 处 · 5 个文件', ok: true,
+      detail: 'src/core/hub.ts            6\nsrc/web/public/app.js      3\ndocs/native-mode.md        3\ntest/resend.test.ts        1\nsrc/http/routes.ts         1' },
+    { k: 'a', md: '看完了，时间线这块是这样的：\n\n- 每条投递一行，`status` 决定颜色（queued / running / done / failed / offline / blocked）。\n- 接口已经返回 `resend: { allowed, reason, needsConfirmation }`，但网页**还没用上**。\n- 重发走 `POST /api/clusters/:id/deliveries/:deliveryId/resend`，结果未知的要带 `confirmDuplicate: true`。\n\n派活以后可以直接从这里接。' },
+    { k: 'dlv', msgs: ['h1', 'h2'], parts: [{ p: 'in', h: 'h1' }, { p: 'sys', h: 'h2', kind: 'task', sum: '#41 已分配给你：投递诊断面板加重发按钮' }] },
+    { k: 'ack', ids: ['h1', 'h2'] },
+    { k: 'otool', name: 'task_action', what: 'start', arg: '#41', raw: toolRaw('task_action', { operationId: 'cc-41-start', action: 'start', taskId: '#41', expectedRevision: 3 }, { ok: true, assignmentId: 'a-41-01', status: 'working' }) },
+    { k: 'tool', ic: '✎', lbl: '编辑', arg: 'src/web/public/app.js', meta: '+38 −6', ok: true,
+      detail: '@@ renderTimeline @@\n<del>-    const actions = \'\';</del>\n<add>+    const r = d.resend;</add>\n<add>+    const actions = r ? `<button class="resend" ${r.allowed ? \'\' : \'disabled\'}</add>\n<add>+      data-confirm="${r.needsConfirmation}">重发</button>` : \'\';</add>\n…' },
+    { k: 'dlv', msgs: ['h8'], parts: [{ p: 'in', h: 'h8' }] },
+    { k: 'th', s: 3, text: 'deepseek 问的是 attempts=0 但有 running 事件的情况。docs 写的是：有开始的迹象但没有接受结果时，接受阶段算 unknown，必须确认。这不算“确实没开始”。' },
+    { k: 'out', h: 'h9' },
+    { k: 'tool', ic: '▶', lbl: '运行', arg: 'node --test test/resend.test.ts', meta: '12 通过', ok: true,
+      detail: '▶ resend\n  ✔ offline delivery can be resent (41ms)\n  ✔ unknown outcome needs confirmDuplicate (12ms)\n  ✔ hop_limit refuses with a guard event (9ms)\n  …\nℹ tests 12  ℹ pass 12  ℹ fail 0' },
+    { k: 'otool', name: 'task_action', what: 'submit', arg: '#41 · 3f9c2ab', raw: toolRaw('task_action', { operationId: 'cc-41-submit-1', action: 'submit', taskId: '#41', expectedRevision: 5, assignmentId: 'a-41-01', commitSha: '3f9c2ab', summary: '时间线的离线 / 失败 / 结果未知投递旁加了重发按钮；结果未知时先弹确认。检查：node --test test/resend.test.ts 12 项通过。' }, { ok: true, status: 'review', submissionId: 's-41-01' }) },
+    { k: 'dlv', msgs: ['h11', 'h12'], parts: [{ p: 'in', h: 'h11' }, { p: 'sys', h: 'h12', kind: 'warn', nid: 'n1', sum: '#41 被 codex 退回：禁用按钮缺少原因提示' }] },
+    { k: 'u', text: 'codex 说的提示顺手补上，我在这边看着。' },
+    { k: 'a', md: '好。禁用时把原因同时写进按钮的 `title` 和旁边的小字：\n\n1. `offline` → 「成员离线，上线后才能重发」\n2. `hop_limit` / `chain_limit` → 「已到防循环上限」\n3. `removed` → 「成员已移出群聊」' },
+    { k: 'tool', ic: '▶', lbl: '运行', arg: 'node --test test/resend.test.ts', meta: '运行中…', ok: 'run', detail: '▶ resend\n  ✔ offline delivery can be resent (40ms)\n  …' },
+  ],
+  codex: [
+    { k: 'u', text: '你在这个群里主要负责验收，先别自己改代码。' },
+    { k: 'a', md: '明白：只做只读复查，结论写进 `task_action review`，发现按 P1 / P2 / P3 分级。' },
+    { k: 'dlv', msgs: ['h1'], parts: [{ p: 'in', h: 'h1' }] },
+    { k: 'ack', ids: ['h1'] },
+    { k: 'out', h: 'h6' },
+    { k: 'dlv', msgs: ['h7'], parts: [{ p: 'sys', h: 'h7', kind: 'warn', nid: 'n2', sum: '发给 qoder 的消息没送到：成员离线' }] },
+    { k: 'dlv', msgs: ['h10'], parts: [{ p: 'sys', h: 'h10', kind: 'task', sum: '#41 已提交，等你验收' }] },
+    { k: 'otool', name: 'get_task', what: '', arg: '#41', raw: toolRaw('get_task', { taskId: '#41' }, { id: 'd41c…', number: 41, status: 'review', submissions: [{ id: 's-41-01', commitSha: '3f9c2ab' }], reviewer: { kind: 'member', memberId: 'codex' } }) },
+    { k: 'tool', ic: '▶', lbl: '运行', arg: 'git diff develop...3f9c2ab --stat', meta: '3 个文件', ok: true,
+      detail: ' src/web/public/app.js     | 44 +++++++++++++++++++++++++++------\n src/web/public/style.css  | 12 ++++++++\n test/resend.test.ts       | 31 ++++++++++++++++++++\n 3 files changed, 81 insertions(+), 6 deletions(-)' },
+    { k: 'tool', ic: '▶', lbl: '运行', arg: 'node --test test/resend.test.ts', meta: '12 通过', ok: true, detail: 'ℹ tests 12  ℹ pass 12  ℹ fail 0' },
+    { k: 'th', s: 7, text: '测试过了。看界面逻辑：allowed=false 时按钮只是 disabled，没有任何说明。用户看到一个灰按钮不知道原因，这是 P2，退回一轮让他补上。' },
+    { k: 'otool', name: 'task_action', what: 'review · reject', arg: '#41', raw: toolRaw('task_action', { operationId: 'cx-41-review-1', action: 'review', taskId: '#41', expectedRevision: 6, submissionId: 's-41-01', verdict: 'reject', reason: '结论：退回。\n发现：P2 禁用的重发按钮缺少原因提示（offline / hop_limit）。\n检查：node --test test/resend.test.ts 12/12。' }, { ok: true, status: 'working', round: 1 }) },
+    { k: 'out', h: 'h11' },
+    { k: 'dlv', msgs: ['h17', 'h16'], notice: TOOL_HINT, unread: '未读 1：广播 1（仅知会 1）',
+      parts: [{ p: 'sys', h: 'h17', kind: 'task', nid: 'n3', sum: '#41 的验收条件改了' }, { p: 'sys', h: 'h16', kind: 'task', nid: 'n4', sum: '新任务 #45 指派给你' }, { p: 'note', kind: 'info', nid: 'n5', sum: 'Hub 重启后 orrery 工具有更新', full: TOOL_HINT }] },
+  ],
+  kimi: [
+    { k: 'dlv', msgs: ['h3', 'h3b'], marker: '[orrery · 来自 user、system]', replies: true,
+      parts: [{ p: 'in', h: 'h3' }, { p: 'sys', h: 'h3b', kind: 'task', nid: 'n6', sum: '#42 已分配给你' }] },
+    { k: 'th', s: 9, text: '2.5.1 自动更新后全部被拒。先看 native.ts 发 prompt 的那段，再跑一遍现有测试确认是协议变化而不是鉴权。' },
+    { k: 'tool', ic: '▤', lbl: '读取', arg: 'src/adapters/kimi/native.ts', meta: '第 480–560 行', ok: true, detail: '511  // Only content and prompt_id: anything else (model, thinking, permission_mode, …) would\n512  // change the user\'s session settings.\n513  const body = { content: [{ type: \'text\', text: … }] };' },
+    { k: 'tool', ic: '▶', lbl: '运行', arg: 'node --test test/kimi-native.test.ts', meta: '2 失败', ok: false, detail: '✖ delivers a batch (2.5.1 protocol)\n  HTTP 422: prompt_id is required\n✖ retries once after 401\nℹ tests 9  ℹ pass 7  ℹ fail 2' },
+    { k: 'a', posted: true, md: HM1.h5.body },
+    { k: 'u', text: '先别动 permission_mode，那是用户自己的设置。' },
+    { k: 'a', md: '好，请求体只带 `content` 和 `prompt_id`，别的字段一律不传，不会改到你的会话设置。' },
+    { k: 'tool', ic: '✎', lbl: '编辑', arg: 'src/adapters/kimi/native.ts', meta: '+14 −3', ok: true, detail: '<del>-  const body = { content: [{ type: \'text\', text }] };</del>\n<add>+  const body = { content: [{ type: \'text\', text }], prompt_id: deliveryId };</add>' },
+    { k: 'tool', ic: '▶', lbl: '运行', arg: 'node --test test/kimi-native.test.ts', meta: '运行中…', ok: 'run', detail: '▶ kimi native\n  ✔ delivers a batch (2.5.1 protocol)\n  …' },
+  ],
+  deepseek: [
+    { k: 'u', text: '帮 claude-code 复查一下 resend 的重复确认逻辑，只看不改。' },
+    { k: 'tool', ic: '▤', lbl: '读取', arg: 'docs/native-mode.md', meta: '「用户手动重发」一节', ok: true, detail: '- 重复执行：结果未知（outcome: unknown），或失败原因不明……必须带 confirmDuplicate: true；\n- 免确认要有“确实没开始”的证据：attempts 为 0、没有批次号、也没有开始（running）事件……' },
+    { k: 'th', s: 6, text: '文档列了三个条件要同时满足。attempts 为 0 但有 running 事件，这种组合属于“证据互相矛盾”，按文档应一律要确认。还是问一下实现者确认实现是否一致。' },
+    { k: 'out', h: 'h8' },
+    { k: 'dlv', msgs: ['h9'], notice: TOOL_HINT, parts: [{ p: 'in', h: 'h9' }, { p: 'note', kind: 'info', nid: 'n7', sum: 'Hub 重启后 orrery 工具有更新', full: TOOL_HINT }] },
+    { k: 'ack', ids: ['h9'] },
+    { k: 'a', md: '复查结论：**实现和文档一致**。\n\n- `attempts = 0` 且有 `running` 事件 → 证据矛盾 → 需要确认 ✓\n- 被链轮次上限拦下（从没开始）→ 免确认 ✓\n\n没有发现问题，不用改代码。' },
+    { k: 'u', text: '刚才群里说跳数上限拦下了一条，是你们这条链吗？' },
+    { k: 'otool', name: 'read_messages', what: 'category=warning', arg: '', raw: toolRaw('read_messages', { history: true, category: 'warning', limit: 5 }, { messages: [{ id: 'ev-hop', from: 'system', category: 'receipt_warning', body: '跳数上限拦下 1 条投递：…第 6 跳（上限 6）…' }] }) },
+    { k: 'a', md: '是的，我和 claude-code 这条来回已经到第 6 跳，最后一条被拦下没投出去。问题已经说清楚了，**不需要**调高上限。' },
+  ],
+  cursor: [
+    { k: 'dlv', msgs: ['h0'], marker: '[orrery · 来自 user · #4be1a9c0]', parts: [{ p: 'in', h: 'h0' }] },
+    { k: 'tool', ic: '⌕', lbl: '搜索', arg: '"splitLayout"', meta: '6 处', ok: true, detail: 'desktop/shell.mjs          4\ndesktop/main.mjs           2' },
+    { k: 'th', s: 5, text: '从四宫格切回单栏时，被隐藏的格子先失焦再销毁，焦点落到了 body。应该在切换前记住活动标签，切换后还给它。' },
+    { k: 'tool', ic: '✎', lbl: '编辑', arg: 'desktop/shell.mjs', meta: '+22 −4', ok: true, detail: '<add>+  const keep = activeTab();</add>\n<add>+  applyLayout(next);</add>\n<add>+  focusTab(keep);</add>' },
+    { k: 'tool', ic: '▶', lbl: '运行', arg: 'npm test -- test/desktop-split.test.ts', meta: '8 通过', ok: true, detail: 'ℹ tests 8  ℹ pass 8  ℹ fail 0' },
+    { k: 'a', md: '改好了：\n\n- 切换布局前记住活动标签，切换后把焦点还给它；\n- 分隔条拖到 50% 附近 8px 内会吸附。' },
+    { k: 'out', h: 'h13' },
+    { k: 'u', text: '不错，等下我自己在桌面版里试。' },
+    { k: 'a', md: '好的。试的时候注意混合 DPI 的屏幕，那个我这边没法验证。' },
+  ],
+  qoder: [
+    { k: 'u', text: '跑一下插件的后台等待，确认停靠能续上。' },
+    { k: 'tool', ic: '▶', lbl: '运行', arg: 'node --test test/qoder-native.test.ts', meta: '11 通过', ok: true, detail: 'ℹ tests 11  ℹ pass 11  ℹ fail 0' },
+    { k: 'a', md: '后台等待和续接都正常，11 项全过。' },
+    { k: 'dlv', msgs: ['hq'], parts: [{ p: 'in', h: 'hq' }] },
+    { k: 'ack', ids: ['hq'] },
+    { k: 'u', text: '我先关 Qoder 了。' },
+  ],
+};
+
+// ───────── the other clusters: names, members and state only ─────────
+const GROUPS = ['orrery', '研究', '个人项目'];
+const PARTIAL = [
+  { name: '文档与发布', category: 'orrery', members: [['claude-docs', 'claude', 'online', 2], ['codex', 'codex', 'working', 0], ['kimi', 'kimi', 'online', 0], ['deepseek', 'deepseek', 'offline', 1]],
+    notices: [{ target: 'claude-docs', kind: 'task', sum: 'codex 提交了任务 #18【发布说明草稿】的结果，等待 claude-docs 验收，事件 412。' }] },
+  { name: '插件生态', category: 'orrery', members: [['cursor', 'cursor', 'working', 0], ['qoder', 'qoder', 'online', 1], ['antigravity', 'antigravity', 'online', 0]],
+    notices: [{ target: 'hub', kind: 'warn', imp: true, sum: '插件「usage-meter」达到发送上限（每分钟 6 条），暂未发送新消息。' }] },
+  { name: '论文精读', category: '研究', members: [['claude', 'claude', 'working', 0], ['deepseek', 'deepseek', 'working', 0], ['kimi', 'kimi', 'online', 3]], notices: [] },
+  { name: '竞品调研', category: '研究', members: [['codex', 'codex', 'online', 0], ['claude', 'claude', 'offline', 0], ['kimi', 'kimi', 'online', 1], ['cursor', 'cursor', 'offline', 0]],
+    notices: [{ target: 'kimi', kind: 'info', sum: 'orrery 工具在 Hub 重启后有更新：send_message 新增参数 fyi。' }] },
+  { name: '周末游戏原型', category: '个人项目', members: [['claude-code', 'claude', 'working', 0], ['codex', 'codex', 'working', 0], ['cursor', 'cursor', 'online', 1], ['deepseek', 'deepseek', 'online', 0], ['antigravity', 'antigravity', 'working', 0]],
+    notices: [{ target: 'hub', kind: 'task', sum: '批次 B2【关卡编辑器】的 3 个任务都已验收通过，请 codex 用 get_batch 取批次 ship 命令并运行（一次合并整批，检查只跑一遍），事件 233。' },
+      { target: 'cursor', kind: 'warn', imp: true, sum: '任务 #7【存档格式迁移】合并失败：文件有合并冲突，已退回执行者，事件 241。' }] },
+  { name: '博客改版', category: '个人项目', members: [['claude', 'claude', 'online', 0], ['kimi', 'kimi', 'offline', 2]], notices: [] },
+  { name: '临时排障', category: '', members: [['codex', 'codex', 'working', 0], ['claude-code', 'claude', 'online', 1]],
+    notices: [{ target: 'codex', kind: 'task', imp: true, sum: '任务 #3【Hub 启动时 hub.json 写入失败】已分配给 codex，事件 18。' }] },
+  { name: '随手问答', category: '', members: [['deepseek', 'deepseek', 'online', 0]], notices: [] },
+];
+
+function finishMember(m, clusterName) {
+  return { model: '—', work: m.status === 'working' ? '（示例）正在处理任务' : '—', session: '（示例）', mid: fakeId(clusterName + m.id), ...m,
+    label: HARNESS[m.harness].label, color: HARNESS[m.harness].color };
+}
+const CLUSTERS = [];
+CLUSTERS.push({ id: C1_ID, name: 'orrery 开发组', category: 'orrery', full: true,
+  members: C1_MEMBERS.map((m) => finishMember(m, 'orrery 开发组')), HM: HM1, ORDER: HUB_ORDER1, CONVOS: CONVOS1, notices: NOTICES1 });
+for (const def of PARTIAL) {
+  const id = fakeId('cluster ' + def.name);
+  const members = def.members.map(([mid, harness, status, unread]) => finishMember({ id: mid, harness, status, unread }, def.name));
+  const HM = {}, ORDER = [];
+  const add = (k, m) => { HM[k] = m; ORDER.push(k); };
+  const first = members.find((m) => m.status !== 'offline') || members[0];
+  add('p0', { id: fakeId(def.name + 'p0'), t: '10:12', from: 'system', sys: 'info', to: [], hop: 0, body: `（示例数据）「${def.name}」只有占位消息；完整的群聊和原生对话见分组 orrery 里的「orrery 开发组」。` });
+  add('p1', { id: fakeId(def.name + 'p1'), t: '10:20', from: 'user', to: [first.id], hop: 0, acks: [first.id], body: `@${first.id} 先把这周的进度整理一下，发在群里。` });
+  add('p2', { id: fakeId(def.name + 'p2'), t: '10:31', from: first.id, to: ['user'], hop: 1, body: '@user 整理好了：\n- 完成 2 项\n- 进行中 1 项\n- 卡住 0 项' });
+  const notices = def.notices.map((n, i) => {
+    const k = 'pn' + i;
+    add(k, { id: fakeId(def.name + k), t: `10:${String(40 + i * 3)}`, from: 'system', sys: n.kind, to: n.target === 'hub' ? [] : [n.target], hop: 0, body: n.sum });
+    return { ...n, id: `${id.slice(0, 6)}-n${i}`, hub: k, convo: n.target === 'hub' ? null : n.target, t: HM[k].t, sum: n.sum.length > 40 ? n.sum.slice(0, 38) + '…' : n.sum, full: n.sum };
+  });
+  const CONVOS = {};
+  for (const m of members) {
+    const items = [{ k: 'u', text: '（示例对话）这个群只有占位数据。' }];
+    if (m === first) items.push({ k: 'dlv', msgs: ['p1'], parts: [{ p: 'in', h: 'p1' }] }, { k: 'out', h: 'p2' });
+    else items.push({ k: 'a', md: '这里是占位的回答。完整的原生对话渲染（工具调用、思考、orrery 投递）见「orrery 开发组」的群员。' });
+    for (const n of notices.filter((x) => x.target === m.id)) items.push({ k: 'dlv', msgs: [n.hub], parts: [{ p: 'sys', h: n.hub, kind: n.kind, nid: n.id, sum: n.sum }] });
+    CONVOS[m.id] = items;
+  }
+  CLUSTERS.push({ id, name: def.name, category: def.category, full: false, members, HM, ORDER, CONVOS, notices });
+}
+for (const c of CLUSTERS) c.byId = Object.fromEntries(c.members.map((m) => [m.id, m]));
+const CL = Object.fromEntries(CLUSTERS.map((c) => [c.id, c]));
+const ALL_NOTICES = {};
+for (const c of CLUSTERS) for (const n of c.notices) ALL_NOTICES[n.id] = { n, cid: c.id };
+const KIND_LABEL = { task: '任务通知', warn: '警告 · 投递异常', info: '信息' };
+const KIND_SHORT = { task: '任务', warn: '警告', info: '信息' };
+const SEV = { warn: 3, task: 2, info: 1 };
+const fullOf = (c, n) => n.full || (n.hub ? c.HM[n.hub].body : n.sum);
+const clusterStats = (c) => ({ n: c.members.length, working: c.members.filter((m) => m.status === 'working').length,
+  online: c.members.filter((m) => m.status !== 'offline').length, notices: c.notices.length,
+  sev: c.notices.reduce((k, n) => (SEV[n.kind] > SEV[k] ? n.kind : k), 'info') });
+
+// ───────── envelope, as Hub.envelope() writes it ─────────
+const OUTBOX = (c, self) => `C:\\Users\\example\\.orrery\\outbox\\${c.byId[self].mid}`;
+function envelope(c, self, msgs, o = {}) {
+  const head = (m) => `[orrery] cluster=${c.name} clusterId=${c.id} from=${m.from} messageId=${m.id} hop=${m.hop} to=${m.to.length ? m.to.map((n) => '@' + n).join(' ') : 'all'}`;
+  const blocks = msgs.map((m) => `${head(m)}\n${m.body}`).join('\n\n');
+  const nonMember = (f) => f === 'user' || f === 'system';
+  let how;
+  if (msgs.length === 1) {
+    const m = msgs[0];
+    how = nonMember(m.from) ? `要让某人收到，正文里写 @名字，回复这条请带 replyTo=${m.id}。`
+      : `要让某人收到，正文里写 @名字，回复这条请写 @${m.from} 并带 replyTo=${m.id}。`;
+  } else {
+    how = `要让某人收到，正文里写 @名字。上面共 ${msgs.length} 条消息，回复哪一条就带 replyTo=那条的 messageId；回复仍在群的成员还要写 @发送者名字（已移出成员无法接收消息，请另选当前收件人）。`;
+  }
+  const idNote = `这个群的 clusterId 是 ${c.id}；调用 orrery 工具时可带 clusterId 指定群。`;
+  let tail;
+  if (o.replies) {
+    const others = c.members.filter((x) => x.id !== self).map((x) => `@${x.id}（${x.harness}）`);
+    tail = `（你是群员 ${self}。群里现在的其他成员：${[...others, '@user 是你的用户'].join('、')}。`
+      + '有 ack_messages 工具时，看到消息用 ack_messages 确认（👍 即收到），不要为确认单独发言；有 MCP 工具时可调用 send_message 发言、read_messages 读消息；这一轮已用 send_message 发言时，不再代发回答。'
+      + '没有这些工具时，你这一轮的回答会原样作为你的发言发到群里；要让某人收到，回答里写 @名字（回复仍在群的成员写 @发送者名字；已移出成员无法接收消息，请另选当前收件人）。'
+      + `不 @ 人的回答只留在记录里。没有这些工具时，无法主动确认，只能回答投给你的消息，不能主动发言，也读不到群里别的消息。${idNote}${o.notice || ''}）`;
+  } else {
+    const box = `要发文件：先用你自己的工具把文件复制进你的 orrery 发件箱 ${OUTBOX(c, self)}，再在 send_message 的 attachments 里写文件名（Hub 只复制，不会删掉发件箱里的文件）。`;
+    const unseen = o.unread ? `群里还有${o.unread}，可用 read_messages 查看。` : '';
+    tail = `（你是群员 ${self}。有 ack_messages 工具时，看到消息用 ack_messages 确认（👍 即收到），不要为确认单独发言；只有提问、交结果、报阻塞或请别人做事时才用 send_message；任务结果和证据写进 task_action submit 的 summary，Hub 会通知验收人，不用另外 @；需要改派或流程卡住时才 @ 协调员；回答别人问你的问题不要带 fyi；只是知会、不需要对方行动的发言带 fyi=true（对方只留未读，不被唤醒）；${how}`
+      + `不 @ 人的发言只留在群聊记录里。${unseen}${box}${idNote}${o.notice || ''}）`;
+  }
+  const text = `${blocks}\n\n----------\n${tail}`;
+  return o.marker ? `${o.marker}\n${text}` : text;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// helpers
+// ════════════════════════════════════════════════════════════════════════
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const params = new URLSearchParams(location.search);
+const mqReduce = matchMedia('(prefers-reduced-motion: reduce)');
+let reduced = mqReduce.matches || params.get('reduced') === '1';
+if (params.get('reduced') === '1') document.documentElement.classList.add('reduced');
+mqReduce.addEventListener?.('change', (e) => { reduced = e.matches || params.get('reduced') === '1'; });
+
+const GLYPH = {
+  claude: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff6ec" stroke-width="2.6" stroke-linecap="round"><path d="M12 3.5v5M12 15.5v5M3.5 12h5M15.5 12h5M6 6l3.5 3.5M14.5 14.5 18 18M18 6l-3.5 3.5M9.5 14.5 6 18"/></svg>',
+  codex: '<svg viewBox="0 0 24 24" fill="none" stroke="#0b2a22" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7.5 10.5 12 6 16.5M13 17h5.5"/></svg>',
+  kimi: '<svg viewBox="0 0 24 24"><path d="M15 3.8a8.6 8.6 0 1 0 5.4 14.6A7 7 0 1 1 15 3.8z" fill="#fbf8ff"/></svg>',
+  deepseek: '<svg viewBox="0 0 24 24"><path d="M3.5 13c2.6-4.6 7.6-5.6 10.6-2.6 1.6 1.6 3.7 1.5 6.2-.6-.7 5-4.6 8.2-9.4 8.2-3.6 0-6-1.8-7.4-5z" fill="#f2f5ff"/><circle cx="9" cy="13.2" r="1.1" fill="#2a4bb8"/></svg>',
+  cursor: '<svg viewBox="0 0 24 24" fill="none" stroke="#252a36" stroke-width="1.9" stroke-linejoin="round"><path d="M12 3.5 19.5 7.8v8.4L12 20.5 4.5 16.2V7.8z"/><path d="M4.5 7.8 12 12l7.5-4.2M12 12v8.5"/></svg>',
+  qoder: '<svg viewBox="0 0 24 24" fill="none" stroke="#f3f5f7" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="5.6"/><path d="M15.2 15.2 19 19"/></svg>',
+  antigravity: '<svg viewBox="0 0 24 24" fill="none" stroke="#3a2a06" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 18.5 12 5.5l7 13"/><path d="M8.6 13.5h6.8"/></svg>',
+  user: '<svg viewBox="0 0 24 24" fill="#2b2010"><circle cx="12" cy="8.6" r="3.9"/><path d="M4.6 20c.8-4 3.8-6.1 7.4-6.1s6.6 2.1 7.4 6.1z"/></svg>',
+};
+function avatar(c, id, size = '') {
+  if (id === 'system') return `<span class="hubav" style="width:${size === 'xs' ? 18 : 26}px;height:${size === 'xs' ? 18 : 26}px"></span>`;
+  const m = c && c.byId[id];
+  const col = id === 'user' ? '#d8b46a' : m ? m.color : '#999';
+  return `<span class="av ${size}" style="--c:${col}">${GLYPH[id === 'user' ? 'user' : m ? m.harness : ''] || ''}</span>`;
+}
+const nameOf = (id) => (id === 'user' ? '你（用户）' : id === 'system' ? 'Hub' : id);
+const STATUS = { online: '在线', working: '正在工作', offline: '离线' };
+
+function inline(s) {
+  return s.split(/(`[^`\n]+`)/).map((part, i) => {
+    if (i % 2) return `<code>${esc(part.slice(1, -1))}</code>`;
+    let h = esc(part);
+    h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    h = h.replace(/(^|[\s（(，、：:])@([A-Za-z][\w-]*)/g, '$1<span class="at">@$2</span>');
+    h = h.replace(/(^|[^\w&])#(\d+)/g, '$1<span class="tk">#$2</span>');
+    return h;
+  }).join('');
+}
+function blocks(t) {
+  const out = []; let para = []; let list = null;
+  const flushP = () => { if (para.length) out.push(`<p>${para.map(inline).join('<br>')}</p>`); para = []; };
+  const flushL = () => { if (list) out.push(`<${list.tag}>${list.items.map((x) => `<li>${inline(x)}</li>`).join('')}</${list.tag}>`); list = null; };
+  for (const line of t.split('\n')) {
+    const ul = /^\s*[-*]\s+(.*)$/.exec(line), ol = /^\s*\d+\.\s+(.*)$/.exec(line);
+    if (ul || ol) {
+      flushP();
+      const tag = ul ? 'ul' : 'ol';
+      if (!list || list.tag !== tag) { flushL(); list = { tag, items: [] }; }
+      list.items.push((ul || ol)[1]);
+    } else if (!line.trim()) { flushP(); flushL(); }
+    else { flushL(); para.push(line); }
+  }
+  flushP(); flushL();
+  return out.join('');
+}
+function md(src) {
+  const parts = src.split(/```\w*\n?([\s\S]*?)```/);
+  return parts.map((p, i) => (i % 2 ? `<pre class="code"><code>${esc(p.replace(/\n$/, ''))}</code></pre>` : blocks(p))).join('');
+}
+const oneLine = (s, n = 46) => { const f = s.replace(/\s+/g, ' ').trim(); return f.length > n ? f.slice(0, n) + '…' : f; };
+function rawHTML(text) {
+  return esc(text).split('\n').map((l) => {
+    if (/^\[orrery\] cluster=/.test(l)) return `<span class="hl">${l}</span>`;
+    if (/^\[orrery · /.test(l)) return `<span class="mk">${l}</span>`;
+    if (/^（你是群员/.test(l) || l === '----------') return `<span class="tl">${l}</span>`;
+    return l;
+  }).join('\n');
+}
+const rawBox = (title, text) => `<div class="rawbox"><div class="rh"><b>原文</b>${esc(title)}</div><pre class="raw">${rawHTML(text)}</pre></div>`;
+const rawBtn = '<button class="rawbtn" data-raw>查看原文</button>';
+const glyph = (kind, cls = 'gl') => `<svg class="${cls}"><use href="#i-${kind}"/></svg>`;
+const og = '<svg class="og"><use href="#og"/></svg>';
+function rng(seed) { return () => ((seed = (seed * 16807) % 2147483647) / 2147483647); }
+const hiDPI = (cv) => { cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR); cv.style.width = W + 'px'; cv.style.height = H + 'px'; };
+
+// ════════════════════════════════════════════════════════════════════════
+// sky (shared by every level): stars, faint nebula, rare meteors
+// ════════════════════════════════════════════════════════════════════════
+const sky = $('#sky'), sctx = sky.getContext('2d');
+let W = 0, H = 0, DPR = 1, stars = [], nebula = null, meteor = null, nextMeteor = 6, skyDrawn = false;
+function bakeSky() {
+  const r = rng(20261118);
+  const n = Math.round((W * H) / 1900);
+  stars = [];
+  for (let i = 0; i < n; i++) {
+    const big = r() < 0.06;
+    stars.push({ x: r() * W, y: r() * H, rad: big ? 0.9 + r() * 0.9 : 0.25 + r() * 0.65, a: big ? 0.6 + r() * 0.4 : 0.18 + r() * 0.5,
+      sp: 0.4 + r() * 1.6, ph: r() * 6.28, hue: r() < 0.25 ? 'warm' : r() < 0.45 ? 'cool' : 'white' });
+  }
+  nebula = document.createElement('canvas');
+  nebula.width = Math.round(W * DPR); nebula.height = Math.round(H * DPR);
+  const n2 = nebula.getContext('2d');
+  n2.scale(DPR, DPR);
+  const blob = (x, y, rr, col, a) => {
+    const g = n2.createRadialGradient(x, y, 0, x, y, rr);
+    g.addColorStop(0, `rgba(${col},${a})`); g.addColorStop(0.5, `rgba(${col},${a * 0.35})`); g.addColorStop(1, `rgba(${col},0)`);
+    n2.fillStyle = g; n2.fillRect(0, 0, W, H);
+  };
+  n2.globalCompositeOperation = 'lighter';
+  blob(W * 0.16, H * 0.22, W * 0.32, '70,60,150', 0.10);
+  blob(W * 0.86, H * 0.78, W * 0.34, '30,110,130', 0.08);
+  blob(W * 0.74, H * 0.14, W * 0.22, '140,70,60', 0.05);
+  blob(W * 0.30, H * 0.86, W * 0.25, '60,80,160', 0.06);
+  for (let i = 0; i < 900; i++) {
+    const t = r(), off = (r() - 0.5) * (r() * H * 0.22);
+    n2.fillStyle = `rgba(210,215,255,${0.02 + r() * 0.05})`;
+    n2.fillRect(t * W * 1.2 - W * 0.1, H * 0.95 - t * H * 0.9 + off, 1, 1);
+  }
+  skyDrawn = false;
+}
+const STAR_COL = { warm: '255,226,186', cool: '190,214,255', white: '246,246,255' };
+function drawSky(t, dt) {
+  if (reduced && skyDrawn) return;
+  skyDrawn = true;
+  sctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  sctx.clearRect(0, 0, W, H);
+  sctx.drawImage(nebula, 0, 0, W, H);
+  for (const s of stars) {
+    const a = reduced ? s.a : s.a * (0.72 + 0.28 * Math.sin(t * s.sp + s.ph));
+    sctx.fillStyle = `rgba(${STAR_COL[s.hue]},${a})`;
+    sctx.beginPath(); sctx.arc(s.x, s.y, s.rad, 0, 6.283); sctx.fill();
+    if (s.rad > 1.3) {
+      sctx.strokeStyle = `rgba(${STAR_COL[s.hue]},${a * 0.25})`; sctx.lineWidth = 0.6;
+      sctx.beginPath(); sctx.moveTo(s.x - 4, s.y); sctx.lineTo(s.x + 4, s.y); sctx.moveTo(s.x, s.y - 4); sctx.lineTo(s.x, s.y + 4); sctx.stroke();
+    }
+  }
+  if (reduced) return;
+  if (!meteor && t > nextMeteor) {
+    const r = Math.random;
+    meteor = { x: W * (0.15 + r() * 0.7), y: H * (0.05 + r() * 0.3), vx: -(380 + r() * 260), vy: 160 + r() * 140, life: 0, dur: 0.9 + r() * 0.4 };
+    nextMeteor = t + 9 + Math.random() * 14;
+  }
+  if (meteor) {
+    meteor.life += dt;
+    const k = meteor.life / meteor.dur;
+    const x = meteor.x + meteor.vx * meteor.life, y = meteor.y + meteor.vy * meteor.life;
+    const g = sctx.createLinearGradient(x, y, x - meteor.vx * 0.22, y - meteor.vy * 0.22);
+    const a = Math.sin(Math.PI * Math.min(1, k)) * 0.7;
+    g.addColorStop(0, `rgba(255,244,220,${a})`); g.addColorStop(1, 'rgba(255,244,220,0)');
+    sctx.strokeStyle = g; sctx.lineWidth = 1.2; sctx.lineCap = 'round';
+    sctx.beginPath(); sctx.moveTo(x, y); sctx.lineTo(x - meteor.vx * 0.22, y - meteor.vy * 0.22); sctx.stroke();
+    if (k >= 1) meteor = null;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// shared state
+// ════════════════════════════════════════════════════════════════════════
+let paused = params.get('paused') === '1';
+let clock = 0;
+let view = { level: 'universe', group: null, cid: null };
+const LEVEL_DEPTH = { universe: 0, galaxy: 1, system: 2 };
+const LAYER = { universe: $('#Lu'), galaxy: $('#Lg'), system: $('#Ls') };
+const card = $('#card'), tip = $('#tip'), ncard = $('#ncard');
+let cardFor = null;   // { html, pos: () => [x, y, r] }
+function showCard(html, pos) { cardFor = { pos }; card.innerHTML = html; card.classList.add('show'); placeCard(); }
+function hideCard() { cardFor = null; card.classList.remove('show'); }
+function placeCard() {
+  if (!cardFor) return;
+  const [x, y, r] = cardFor.pos();
+  const w = card.offsetWidth, h = card.offsetHeight;
+  let left = x + r + 18;
+  if (left + w > W - 10) left = x - r - 18 - w;
+  card.style.left = clamp(left, 10, W - w - 10) + 'px';
+  card.style.top = clamp(y - h / 2, 10, H - h - 10) + 'px';
+}
+const memberRow = (c) => `<div class="mrow">${c.members.map((m) => `<span class="mi ${m.status === 'offline' ? 'off' : m.status === 'working' ? 'work' : ''}">${avatar(c, m.id, 'xs')}${m.id}</span>`).join('')}</div>`;
+function clusterCardHTML(c) {
+  const s = clusterStats(c);
+  return `<div class="ch"><span class="hubav"></span><div><b>${esc(c.name)}</b><span>${c.category ? '分组 ' + esc(c.category) : '未分组'} · ${c.full ? '完整示例数据' : '占位数据'}</span></div></div>
+    ${memberRow(c)}
+    <div class="row"><span>群员</span><span>${s.n} 名 · ${s.working} 工作中 · ${s.online} 在线</span></div>
+    <div class="row"><span>通知</span><span>${s.notices ? `<span class="k-${s.sev}">${s.notices} 条待处理</span>` : '无'}</span></div>
+    <div class="foot">点击（或滚轮向前）进入这个恒星系统</div>`;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// level 0: universe — every group is a galaxy, loose clusters are lone stars
+// ════════════════════════════════════════════════════════════════════════
+const uni = $('#uni'), uctx = uni.getContext('2d'), udom = $('#udom');
+const GAL_SPEC = {
+  orrery: { pos: [0.31, 0.44], type: 'spiral', col: [255, 214, 150], tilt: 0.52, rot: -0.38, seed: 11 },
+  研究: { pos: [0.74, 0.30], type: 'elliptical', col: [165, 195, 255], tilt: 0.62, rot: 0.32, seed: 23 },
+  个人项目: { pos: [0.67, 0.73], type: 'spiral', col: [232, 172, 255], tilt: 0.45, rot: 1.05, seed: 37 },
+};
+const LOOSE_POS = [[0.12, 0.78], [0.90, 0.60], [0.48, 0.14]];
+let galaxies = [], loose = [];
+function bakeGalaxy(spec, R) {
+  const cv = document.createElement('canvas');
+  const S = Math.ceil(R * 2 * DPR);
+  cv.width = cv.height = S;
+  const g = cv.getContext('2d');
+  g.scale(DPR, DPR);
+  const r = rng(spec.seed * 997);
+  const [cr, cg, cb] = spec.col;
+  const core = g.createRadialGradient(R, R, 0, R, R, R);
+  core.addColorStop(0, `rgba(255,246,226,0.85)`);
+  core.addColorStop(0.07, `rgba(${cr},${cg},${cb},0.5)`);
+  core.addColorStop(spec.type === 'elliptical' ? 0.5 : 0.3, `rgba(${cr},${cg},${cb},0.10)`);
+  core.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+  g.fillStyle = core; g.fillRect(0, 0, R * 2, R * 2);
+  g.globalCompositeOperation = 'lighter';
+  const gauss = () => (r() + r() + r() - 1.5) / 1.5;
+  const N = spec.type === 'elliptical' ? 1600 : 2200;
+  for (let i = 0; i < N; i++) {
+    let x, y, t;
+    if (spec.type === 'elliptical') {
+      t = Math.abs(gauss());
+      const a = r() * 6.283;
+      x = Math.cos(a) * t * R * 0.9; y = Math.sin(a) * t * R * 0.9;
+    } else {
+      t = Math.pow(r(), 0.75);
+      const arm = i % 2;
+      const a = t * 3.4 * Math.PI + arm * Math.PI + gauss() * 0.35;
+      const rr = t * R * 0.92 + gauss() * R * 0.04;
+      x = Math.cos(a) * rr; y = Math.sin(a) * rr;
+    }
+    const pink = spec.type === 'spiral' && r() < 0.05 && t > 0.3;
+    const size = r() < 0.04 ? 1.4 : 0.35 + r() * 0.7;
+    const alpha = (1 - t * 0.7) * (0.25 + r() * 0.55);
+    const mix = Math.min(1, t * 1.4);
+    const col = pink ? '255,150,190' : `${Math.round(255 - (255 - cr) * mix)},${Math.round(246 - (246 - cg) * mix)},${Math.round(230 - (230 - cb) * mix)}`;
+    g.fillStyle = `rgba(${col},${alpha})`;
+    g.beginPath(); g.arc(R + x, R + y, size, 0, 6.283); g.fill();
+  }
+  return cv;
+}
+/** A label centred under (x, y), pushed back inside the viewport when it would run off an edge. */
+function placeLabel(lab, x, y) {
+  lab.style.top = clamp(y, topSafe(), H - 60) + 'px';
+  const half = (lab.offsetWidth || 0) / 2;
+  lab.style.left = clamp(x, half + 10, W - half - 10) + 'px';
+}
+function layoutUniverse() {
+  hiDPI(uni);
+  udom.innerHTML = '';
+  const TOP = topSafe() + 16, BOTTOM = H - 56;
+  galaxies = GROUPS.map((name) => {
+    const spec = GAL_SPEC[name];
+    const cls = CLUSTERS.filter((c) => c.category === name);
+    const working = cls.reduce((s, c) => s + clusterStats(c).working, 0);
+    const R = Math.min(W, H) * 0.15 * (0.85 + 0.1 * cls.length);
+    // keep the whole galaxy and its label (≈ 0.62 R + 34 px below the centre) inside the viewport
+    const x = clamp(spec.pos[0] * W, R * 0.95 + 12, W - R * 0.95 - 12);
+    const y = clamp(spec.pos[1] * H, TOP + R * spec.tilt, BOTTOM - R * 0.62 - 34);
+    const gx = { name, spec, cls, working, R, x, y, sprite: bakeGalaxy(spec, R),
+      glow: clamp(0.62 + working * 0.08, 0.6, 1.15),
+      stars: cls.map((c, j) => ({ c, r: R * (0.28 + 0.5 * (j + 1) / (cls.length + 1)), a: j * 2.35 + 0.7, sx: 0, sy: 0 })) };
+    const b = document.createElement('button');
+    b.className = 'zoom-btn';
+    b.dataset.zoom = 'g:' + name;
+    b.setAttribute('aria-label', `星系「${name}」：${cls.length} 个群聊，${working} 名群员正在工作。进入`);
+    Object.assign(b.style, { left: gx.x + 'px', top: gx.y + 'px', width: R * 1.7 + 'px', height: R * 1.7 * Math.max(0.6, spec.tilt + 0.15) + 'px', borderRadius: '50%' });
+    b.style.transform = `translate(-50%,-50%) rotate(${spec.rot}rad)`;
+    b.addEventListener('click', () => go({ level: 'galaxy', group: name }));
+    b.addEventListener('pointerenter', () => showCard(galaxyCardHTML(gx), () => [gx.x, gx.y, R * 0.8]));
+    b.addEventListener('pointerleave', hideCard);
+    udom.appendChild(b);
+    const lab = document.createElement('div');
+    lab.className = 'zlabel';
+    const notices = cls.reduce((s, c) => s + c.notices.length, 0);
+    lab.innerHTML = `<b>${esc(name)}</b><small>${cls.length} 个群聊 · <i>${working} 工作中</i>${notices ? ` · <em>${notices} 条通知</em>` : ''}</small>`;
+    udom.appendChild(lab);
+    placeLabel(lab, gx.x, gx.y + R * 0.62);
+    return gx;
+  });
+  loose = CLUSTERS.filter((c) => !c.category).map((c, j) => {
+    const [px, py] = LOOSE_POS[j % LOOSE_POS.length];
+    const st = { c, x: clamp(px * W, 34, W - 34), y: clamp(py * H, TOP, BOTTOM - 60) };
+    const b = document.createElement('button');
+    b.className = 'zoom-btn';
+    b.dataset.zoom = 'c:' + c.id;
+    b.setAttribute('aria-label', `未分组的群聊「${c.name}」：进入`);
+    Object.assign(b.style, { left: st.x + 'px', top: st.y + 'px', width: '44px', height: '44px' });
+    b.addEventListener('click', () => go({ level: 'system', cid: c.id, group: null }));
+    b.addEventListener('pointerenter', () => showCard(clusterCardHTML(c), () => [st.x, st.y, 14]));
+    b.addEventListener('pointerleave', hideCard);
+    udom.appendChild(b);
+    const s = clusterStats(c);
+    const lab = document.createElement('div');
+    lab.className = 'zlabel sm';
+    lab.innerHTML = `<b>${esc(c.name)}</b><small>未分组 · ${s.n} 名群员${s.working ? ` · <i>${s.working} 工作中</i>` : ''}</small>`;
+    udom.appendChild(lab);
+    placeLabel(lab, st.x, st.y + 24);
+    return st;
+  });
+}
+function galaxyCardHTML(gx) {
+  return `<div class="ch"><svg width="26" height="26" style="color:var(--brass-hi)"><use href="#og"/></svg><div><b>${esc(gx.name)}</b><span>分组 · ${gx.cls.length} 个群聊</span></div></div>
+    ${gx.cls.map((c) => { const s = clusterStats(c); return `<div class="row"><span style="width:auto;flex:1;color:var(--ink)">${esc(c.name)}</span><span>${s.n} 人 · <span style="color:#8ff0ff">${s.working}</span> 工作${s.notices ? ` · <span class="k-${s.sev}">${s.notices} 通知</span>` : ''}</span></div>`; }).join('')}
+    <div class="foot">点击（或滚轮向前）拉近到星系</div>`;
+}
+const SEV_RGB = { warn: '255,132,102', task: '232,184,90', info: '127,214,230' };
+function sparkle(ctx, x, y, size, rgb, t) {
+  const a = 0.55 + 0.45 * Math.sin(t * 4);
+  const s = size * (0.8 + 0.3 * Math.sin(t * 4));
+  ctx.save();
+  ctx.translate(x, y);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, s * 2.2);
+  g.addColorStop(0, `rgba(${rgb},${0.5 * a})`); g.addColorStop(1, `rgba(${rgb},0)`);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, s * 2.2, 0, 6.283); ctx.fill();
+  ctx.fillStyle = `rgba(${rgb},${a})`;
+  ctx.beginPath(); ctx.moveTo(0, -s); ctx.lineTo(s * 0.22, -s * 0.22); ctx.lineTo(s, 0); ctx.lineTo(s * 0.22, s * 0.22);
+  ctx.lineTo(0, s); ctx.lineTo(-s * 0.22, s * 0.22); ctx.lineTo(-s, 0); ctx.lineTo(-s * 0.22, -s * 0.22); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function brightStar(ctx, x, y, r, rgb, a = 1) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r * 4);
+  g.addColorStop(0, `rgba(255,255,255,${a})`); g.addColorStop(0.18, `rgba(${rgb},${0.8 * a})`); g.addColorStop(1, `rgba(${rgb},0)`);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 4, 0, 6.283); ctx.fill();
+  ctx.strokeStyle = `rgba(${rgb},${0.45 * a})`; ctx.lineWidth = 0.8;
+  ctx.beginPath(); ctx.moveTo(x - r * 5, y); ctx.lineTo(x + r * 5, y); ctx.moveTo(x, y - r * 5); ctx.lineTo(x, y + r * 5); ctx.stroke();
+}
+const starRGB = (c) => (clusterStats(c).working ? '190,240,255' : clusterStats(c).online ? '255,232,190' : '150,150,160');
+function drawUniverse(t) {
+  const c = uctx;
+  c.setTransform(DPR, 0, 0, DPR, 0, 0);
+  c.clearRect(0, 0, W, H);
+  for (const gx of galaxies) {
+    const spin = clock * 0.012 * (gx.spec.type === 'elliptical' ? 0.3 : 1);
+    c.save();
+    c.translate(gx.x, gx.y); c.rotate(gx.spec.rot); c.scale(1, gx.spec.tilt); c.rotate(spin);
+    c.globalAlpha = gx.glow > 1 ? 1 : gx.glow;
+    c.globalCompositeOperation = 'lighter';
+    c.drawImage(gx.sprite, -gx.R, -gx.R, gx.R * 2, gx.R * 2);
+    if (gx.glow > 1) { c.globalAlpha = gx.glow - 1; c.drawImage(gx.sprite, -gx.R, -gx.R, gx.R * 2, gx.R * 2); }
+    c.restore();
+    // its clusters: bright stars riding the galaxy's rotation
+    for (const st of gx.stars) {
+      const a = st.a + spin;
+      const px = st.r * Math.cos(a), py = st.r * Math.sin(a) * gx.spec.tilt;
+      st.sx = gx.x + px * Math.cos(gx.spec.rot) - py * Math.sin(gx.spec.rot);
+      st.sy = gx.y + px * Math.sin(gx.spec.rot) + py * Math.cos(gx.spec.rot);
+      const s = clusterStats(st.c);
+      brightStar(c, st.sx, st.sy, 1.6 + s.n * 0.18, starRGB(st.c));
+      if (s.notices) sparkle(c, st.sx + 7, st.sy - 7, 4, SEV_RGB[s.sev], t + st.a);
+    }
+  }
+  for (const st of loose) {
+    const s = clusterStats(st.c);
+    brightStar(c, st.x, st.y, 2.2 + s.n * 0.2, starRGB(st.c));
+    if (s.notices) sparkle(c, st.x + 9, st.y - 9, 4.5, SEV_RGB[s.sev], t);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// level 1: galaxy — its clusters as small star systems
+// ════════════════════════════════════════════════════════════════════════
+const gal = $('#gal'), gctx = gal.getContext('2d'), gdom = $('#gdom');
+let gsys = [], gxNow = null, galSprite = null;
+function layoutGalaxy() {
+  hiDPI(gal);
+  gdom.innerHTML = '';
+  gsys = [];
+  if (!view.group) return;
+  gxNow = galaxies.find((g) => g.name === view.group);
+  const spec = GAL_SPEC[view.group];
+  const big = Math.max(W, H) * 0.5;
+  galSprite = { cv: bakeGalaxy(spec, big), R: big };
+  const cls = CLUSTERS.filter((c) => c.category === view.group);
+  const rx = Math.min(W * 0.3, 430), ry = Math.min(H * 0.26, rx * 0.6);
+  const sc = clamp(Math.min(W, H) / 820, 0.7, 1.15);
+  cls.forEach((c, j) => {
+    const a = -Math.PI / 2 + (j / cls.length) * Math.PI * 2 + (cls.length === 2 ? Math.PI / 2 : 0.25);
+    const x = W / 2 + rx * Math.cos(a), y = H * 0.53 + ry * Math.sin(a);
+    const orbitMax = (28 + c.members.length * 9) * sc;
+    const sy = { c, x, y, sc, orbitMax, ph: c.members.map((m, i) => i * 1.9 + j) };
+    gsys.push(sy);
+    const b = document.createElement('button');
+    b.className = 'zoom-btn';
+    b.dataset.zoom = 'c:' + c.id;
+    b.setAttribute('aria-label', `恒星系统「${c.name}」：${c.members.length} 名群员。进入`);
+    Object.assign(b.style, { left: x + 'px', top: y + 'px', width: orbitMax * 2.1 + 'px', height: orbitMax * 1.3 + 'px' });
+    b.addEventListener('click', () => go({ level: 'system', cid: c.id, group: view.group }));
+    b.addEventListener('pointerenter', () => { sy.hover = true; showCard(clusterCardHTML(c), () => [x, y, orbitMax]); });
+    b.addEventListener('pointerleave', () => { sy.hover = false; hideCard(); });
+    gdom.appendChild(b);
+    const s = clusterStats(c);
+    const lab = document.createElement('div');
+    lab.className = 'zlabel';
+    lab.innerHTML = `<b>${esc(c.name)}</b><small>${s.n} 名群员 · <i>${s.working} 工作中</i> · ${s.online} 在线${s.notices ? ` · <em>${s.notices} 条通知</em>` : ''}</small>`;
+    gdom.appendChild(lab);
+    placeLabel(lab, x, y + orbitMax * 0.62 + 10);
+  });
+}
+function drawGalaxy(t) {
+  const c = gctx;
+  c.setTransform(DPR, 0, 0, DPR, 0, 0);
+  c.clearRect(0, 0, W, H);
+  if (!galSprite) return;
+  const spec = GAL_SPEC[view.group] || GAL_SPEC.orrery;
+  c.save();
+  c.translate(W / 2, H * 0.53); c.rotate(spec.rot * 0.4); c.scale(1, 0.62); c.rotate(clock * 0.006);
+  c.globalAlpha = 0.42; c.globalCompositeOperation = 'lighter';
+  c.drawImage(galSprite.cv, -galSprite.R, -galSprite.R, galSprite.R * 2, galSprite.R * 2);
+  c.restore();
+  for (const sy of gsys) {
+    const { x, y, sc } = sy;
+    const sunR = 13 * sc;
+    // orbits + member dots
+    sy.c.members.forEach((m, i) => {
+      const r = (28 + i * 9) * sc;
+      c.strokeStyle = `rgba(201,164,92,${sy.hover ? 0.38 : 0.18})`; c.lineWidth = 0.8;
+      c.setLineDash(m.status === 'offline' ? [2, 4] : []);
+      c.beginPath(); c.ellipse(x, y, r, r * 0.42, -0.08, 0, 6.283); c.stroke();
+      c.setLineDash([]);
+      if (m.status !== 'offline') sy.ph[i] += (paused || reduced ? 0 : 1) * 0.016 * (sy.hover ? 0.15 : 1) * (60 / (28 + i * 9)) * 0.5;
+      const a = sy.ph[i];
+      const px = x + r * Math.cos(a) * Math.cos(-0.08) - r * 0.42 * Math.sin(a) * Math.sin(-0.08);
+      const py = y + r * Math.cos(a) * Math.sin(-0.08) + r * 0.42 * Math.sin(a) * Math.cos(-0.08);
+      const off = m.status === 'offline';
+      if (m.status === 'working') {
+        for (let k = 1; k < 10; k++) {
+          const aa = a - k * 0.06;
+          const tx = x + r * Math.cos(aa) * Math.cos(-0.08) - r * 0.42 * Math.sin(aa) * Math.sin(-0.08);
+          const ty = y + r * Math.cos(aa) * Math.sin(-0.08) + r * 0.42 * Math.sin(aa) * Math.cos(-0.08);
+          c.fillStyle = `rgba(143,240,255,${0.35 * (1 - k / 10)})`; c.beginPath(); c.arc(tx, ty, 2.4 * sc * (1 - k / 12), 0, 6.283); c.fill();
+        }
+      }
+      c.fillStyle = off ? '#4b4f58' : m.color;
+      c.beginPath(); c.arc(px, py, 3.6 * sc, 0, 6.283); c.fill();
+      if (!off) { c.fillStyle = 'rgba(255,255,255,0.5)'; c.beginPath(); c.arc(px - 1 * sc, py - 1 * sc, 1.2 * sc, 0, 6.283); c.fill(); }
+    });
+    // the small sun
+    const g = c.createRadialGradient(x, y, 0, x, y, sunR * 3.2);
+    g.addColorStop(0, 'rgba(255,248,226,1)'); g.addColorStop(0.25, 'rgba(255,196,96,0.95)'); g.addColorStop(0.33, 'rgba(255,150,60,0.45)'); g.addColorStop(1, 'rgba(255,130,40,0)');
+    c.fillStyle = g; c.beginPath(); c.arc(x, y, sunR * 3.2, 0, 6.283); c.fill();
+    c.strokeStyle = 'rgba(240,210,140,0.45)'; c.lineWidth = 1;
+    c.beginPath(); c.arc(x, y, sunR * 1.25, 0, 6.283); c.stroke();
+    const s = clusterStats(sy.c);
+    if (s.notices) sparkle(c, x + sunR * 1.5, y - sunR * 1.5, 5, SEV_RGB[s.sev], t);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// level 2: the orrery of one cluster
+// ════════════════════════════════════════════════════════════════════════
+const orr = $('#orrery'), octx = orr.getContext('2d'), stage = $('#stage');
+const PHASE0 = [0.5, 2.4, 4.2, 5.5, 1.3, 3.3];
+const INCL = [0.03, -0.035, 0.045, -0.025, 0.035, -0.045];
+const GPHI = -0.09;
+let cx = 0, cy = 0, maxR = 0, sunR = 50, tilt = 0.35, pscale = 1, plateR = 0;
+let cur = null;          // the cluster shown
+let planets = [], P = {}, FR = [];
+let sunEl = null;
+const sunState = { x: 0, y: 0, frozen: 0, hover: false };
+let sats = [];
+
+function proj(X, Y, i) {
+  const phi = GPHI + (i == null ? 0 : INCL[i % INCL.length]);
+  const tl = tilt + (i == null ? 0 : INCL[i % INCL.length] * 0.6);
+  const y2 = Y * tl;
+  return [cx + X * Math.cos(phi) - y2 * Math.sin(phi), cy + X * Math.sin(phi) + y2 * Math.cos(phi)];
+}
+function layoutSystem() {
+  hiDPI(orr);
+  cx = W / 2; cy = H * 0.53;
+  tilt = clamp(0.34 + (H / W - 0.6) * 0.25, 0.32, 0.62);
+  maxR = Math.min(W * 0.445, (H * 0.39) / tilt);
+  sunR = clamp(maxR * 0.105, 28, 60);
+  plateR = maxR * 1.1;
+  pscale = clamp(maxR / 560, 0.66, 1.08);
+  if (sunEl) { sunEl.style.setProperty('--d', sunR * 2 + 'px'); sunEl.style.transform = `translate(${cx - sunR}px, ${cy - sunR}px)`; }
+  sunState.x = cx; sunState.y = cy;
+  // The cluster's name goes below the plate (its 时辰 labels included), outside every orbit, so nothing passes over it.
+  const title = $('#sysTitle', stage);
+  if (title) {
+    let bottom = 0;
+    for (let k = 0; k < 72; k++) { const a = (k / 72) * Math.PI * 2; bottom = Math.max(bottom, proj(plateR * 1.09 * Math.cos(a), plateR * 1.09 * Math.sin(a))[1]); }
+    title.style.left = cx + 'px';
+    title.style.top = Math.min(bottom + 12, H - 78) + 'px';
+  }
+}
+function buildSystem(cid) {
+  cur = CL[cid];
+  stage.innerHTML = '';
+  sats = [];
+  const n = cur.members.length;
+  FR = cur.members.map((_, i) => (n === 1 ? 0.6 : 0.36 + (0.6 * i) / Math.max(1, n - 1)));
+  stage.insertAdjacentHTML('beforeend', `
+    <button id="sun" aria-label="打开 Hub 群聊：${esc(cur.name)}">
+      <span class="halo"></span><span class="corona"></span><span class="corona c2"></span>
+      <span class="core"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><rect width="100" height="100" filter="url(#gran)"/></svg></span>
+      <span class="rim"></span><span class="ping"></span>
+    </button>
+    <div class="sys-title" id="sysTitle"><b>${esc(cur.name)}</b><small>HUB · ${n} 名群员${cur.category ? ' · 分组 ' + esc(cur.category) : ''}</small></div>`);
+  sunEl = $('#sun', stage);
+  sunEl.addEventListener('click', () => openWin(winKey(cur.id, 'hub')));
+  sunEl.addEventListener('pointerenter', () => { sunState.hover = true; showCard(sunCardHTML(), () => [sunState.x, sunState.y, sunR]); });
+  sunEl.addEventListener('pointerleave', () => { sunState.hover = false; hideCard(); });
+  sunState.frozen = 0;
+  planets = cur.members.map((m, i) => ({ m, i, ang: PHASE0[i % PHASE0.length] + (cur.full ? 0 : i * 0.4), speed: 1, hover: false, frozen: 0, x: 0, y: 0, s: 1, z: 0, ox: 0, oy: 0, depth: 0, el: null }));
+  P = Object.fromEntries(planets.map((p) => [p.m.id, p]));
+  for (const p of planets) {
+    const m = p.m;
+    const b = document.createElement('button');
+    b.className = `planet ${m.status}`;
+    b.style.setProperty('--c', m.color);
+    b.setAttribute('aria-label', `${m.id}（${m.label}，${STATUS[m.status]}${m.unread ? `，${m.unread} 条未读` : ''}）：打开对话`);
+    b.innerHTML = `<span class="glow"></span><span class="ring"></span><span class="ring2"></span>${avatar(cur, m.id)}
+      ${m.unread ? `<span class="badge" title="${m.unread} 条未读消息">${m.unread}</span>` : ''}
+      <span class="parkmark" title="窗口已最小化"></span><span class="ping"></span>
+      <span class="pname">${m.id}<em>${m.label}</em></span>`;
+    stage.appendChild(b);
+    p.el = b;
+    const enter = () => { p.hover = true; showCard(planetCardHTML(p), () => [p.x, p.y, 25 * p.s]); };
+    const leave = () => { p.hover = false; hideCard(); };
+    b.addEventListener('pointerenter', enter); b.addEventListener('pointerleave', leave);
+    b.addEventListener('focus', enter); b.addEventListener('blur', leave);
+    b.addEventListener('click', () => openWin(winKey(cur.id, m.id)));
+  }
+  layoutSystem();
+  rebuildSats();
+  for (const w of wins.values()) if (w.min && w.cid === cid) setParked(w, true);
+  advanceSystem(0);
+}
+function sunCardHTML() {
+  const s = clusterStats(cur);
+  return `<div class="ch"><span class="hubav"></span><div><b>${esc(cur.name)}</b><span>Hub · 本机 127.0.0.1（假数据）</span></div></div>
+    <div class="row"><span>状态</span><span class="st st-hub">运行中 · 投递未暂停</span></div>
+    <div class="row"><span>防循环</span><span>跳数上限 6 · 每链 20 轮</span></div>
+    <div class="row"><span>群员</span><span>${s.n} 名，${s.online} 名在线</span></div>
+    <div class="row"><span>集群通知</span><span>${cur.notices.filter((n) => n.target === 'hub').length} 条（绕太阳的卫星）</span></div>
+    <div class="foot">点击打开群聊：所有经过 Hub 的消息</div>`;
+}
+function planetCardHTML(p) {
+  const m = p.m, k = cur.notices.filter((n) => n.target === m.id).length;
+  return `<div class="ch">${avatar(cur, m.id, 'sm')}<div><b>${m.id}</b><span>${m.label} · ${m.model} · ${m.session}</span></div></div>
+    <div class="row"><span>状态</span><span class="st st-${m.status}">${STATUS[m.status]}</span></div>
+    <div class="row"><span>手上</span><span>${esc(m.work)}</span></div>
+    <div class="row"><span>未读</span><span>${m.unread ? `${m.unread} 条其他人的消息（角标）` : '无'}</span></div>
+    <div class="row"><span>通知</span><span>${k ? `${k} 条待处理（卫星）` : '无'}</span></div>
+    <div class="foot">${m.status === 'offline' ? '应用没在运行：消息只留在群聊记录里 · 点击查看最近的对话' : '点击打开它在 ' + m.label + ' 里的原生对话'}</div>`;
+}
+
+function gearPath(ctx, x, y, r0, r1, teeth, rot) {
+  ctx.beginPath();
+  for (let i = 0; i < teeth; i++) {
+    const a = rot + (i / teeth) * Math.PI * 2, w = Math.PI / teeth;
+    const pts = [[r0, a - w * 0.95], [r1, a - w * 0.5], [r1, a + w * 0.3], [r0, a + w * 0.75]];
+    pts.forEach(([rr, aa], j) => { const px = x + rr * Math.cos(aa), py = y + rr * Math.sin(aa); (i === 0 && j === 0) ? ctx.moveTo(px, py) : ctx.lineTo(px, py); });
+  }
+  ctx.closePath();
+}
+const SHICHEN = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥'];
+const SERIF = getComputedStyle(document.documentElement).getPropertyValue('--serif') || 'serif';
+function drawOrrery() {
+  const c = octx;
+  c.setTransform(DPR, 0, 0, DPR, 0, 0);
+  c.clearRect(0, 0, W, H);
+  // ecliptic plate: faint disc + graduated brass rim + 时辰 labels
+  c.beginPath();
+  for (let k = 0; k <= 120; k++) { const a = (k / 120) * Math.PI * 2; const [x, y] = proj(plateR * Math.cos(a), plateR * Math.sin(a)); k ? c.lineTo(x, y) : c.moveTo(x, y); }
+  const g = c.createRadialGradient(cx, cy, sunR, cx, cy, plateR);
+  g.addColorStop(0, 'rgba(201,164,92,0.05)'); g.addColorStop(0.7, 'rgba(201,164,92,0.025)'); g.addColorStop(1, 'rgba(201,164,92,0.06)');
+  c.fillStyle = g; c.fill();
+  c.strokeStyle = 'rgba(201,164,92,0.34)'; c.lineWidth = 1; c.stroke();
+  c.beginPath();
+  for (let k = 0; k <= 120; k++) { const a = (k / 120) * Math.PI * 2; const [x, y] = proj(plateR * 1.035 * Math.cos(a), plateR * 1.035 * Math.sin(a)); k ? c.lineTo(x, y) : c.moveTo(x, y); }
+  c.strokeStyle = 'rgba(201,164,92,0.18)'; c.stroke();
+  c.font = `${Math.round(clamp(maxR / 46, 10, 13))}px ${SERIF}`;
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  for (let d = 0; d < 360; d += 3) {
+    const a = (d / 180) * Math.PI, big = d % 30 === 0, mid = d % 15 === 0;
+    const r2 = plateR * (big ? 1.035 : mid ? 1.024 : 1.014);
+    const [x1, y1] = proj(plateR * Math.cos(a), plateR * Math.sin(a)), [x2, y2] = proj(r2 * Math.cos(a), r2 * Math.sin(a));
+    const front = Math.sin(a) > 0;
+    c.strokeStyle = `rgba(201,164,92,${(big ? 0.55 : 0.3) * (front ? 1 : 0.55)})`;
+    c.lineWidth = big ? 1.2 : 0.7;
+    c.beginPath(); c.moveTo(x1, y1); c.lineTo(x2, y2); c.stroke();
+    if (big) {
+      const [lx, ly] = proj(plateR * 1.075 * Math.cos(a), plateR * 1.075 * Math.sin(a));
+      c.fillStyle = `rgba(214,182,116,${front ? 0.6 : 0.32})`;
+      c.fillText(SHICHEN[d / 30], lx, ly);
+    }
+  }
+  // gear + armillary rings behind the sun
+  c.save();
+  c.globalAlpha = 0.16;
+  gearPath(c, cx, cy, sunR * 2.05, sunR * 2.25, 36, clock * 0.02);
+  c.strokeStyle = '#c9a45c'; c.lineWidth = 1; c.stroke();
+  c.beginPath(); c.arc(cx, cy, sunR * 1.75, 0, 6.283); c.stroke();
+  for (let k = 0; k < 6; k++) { const a = clock * 0.02 + (k / 6) * 6.283; c.beginPath(); c.moveTo(cx + sunR * 1.75 * Math.cos(a), cy + sunR * 1.75 * Math.sin(a)); c.lineTo(cx + sunR * 2.05 * Math.cos(a), cy + sunR * 2.05 * Math.sin(a)); c.stroke(); }
+  c.globalAlpha = 0.5;
+  c.beginPath(); c.arc(cx, cy, sunR * 1.5, 0, 6.283); c.strokeStyle = 'rgba(201,164,92,0.6)'; c.lineWidth = 1; c.stroke();
+  for (let k = 0; k < 72; k++) {
+    const a = -clock * 0.035 + (k / 72) * 6.283, L = k % 6 === 0 ? 7 : 3.5;
+    c.beginPath(); c.moveTo(cx + sunR * 1.5 * Math.cos(a), cy + sunR * 1.5 * Math.sin(a)); c.lineTo(cx + (sunR * 1.5 + L) * Math.cos(a), cy + (sunR * 1.5 + L) * Math.sin(a)); c.stroke();
+  }
+  c.globalAlpha = 0.42;
+  c.beginPath(); c.ellipse(cx, cy, sunR * 1.62 * 0.3, sunR * 1.62, 0.32, 0, 6.283); c.stroke();
+  c.restore();
+  // orbits (back half dimmer), comet trails for working members
+  for (const p of planets) {
+    const r = maxR * FR[p.i], off = p.m.status === 'offline';
+    const hot = p.hover || p.frozen;
+    for (const half of [0, 1]) {
+      c.beginPath();
+      for (let k = 0; k <= 80; k++) {
+        const a = half ? (k / 80) * Math.PI : Math.PI + (k / 80) * Math.PI;
+        const [x, y] = proj(r * Math.cos(a), r * Math.sin(a), p.i); k ? c.lineTo(x, y) : c.moveTo(x, y);
+      }
+      const base = off ? 0.14 : 0.26;
+      c.strokeStyle = hot ? `rgba(240,210,140,${half ? 0.7 : 0.4})` : `rgba(201,164,92,${base * (half ? 1 : 0.55)})`;
+      c.lineWidth = hot ? 1.3 : 1;
+      c.setLineDash(off ? [2, 6] : []);
+      c.stroke();
+    }
+    c.setLineDash([]);
+    if (p.m.status === 'working') {
+      const N = 26, span = 0.7;
+      for (let k = 0; k < N; k++) {
+        const a0 = p.ang - span * (k / N), a1 = p.ang - span * ((k + 1) / N);
+        const [x0, y0] = proj(r * Math.cos(a0), r * Math.sin(a0), p.i), [x1, y1] = proj(r * Math.cos(a1), r * Math.sin(a1), p.i);
+        c.strokeStyle = `rgba(143,240,255,${0.55 * (1 - k / N)})`;
+        c.lineWidth = 2.6 * (1 - k / N) + 0.4;
+        c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
+      }
+    }
+  }
+  // arms from the centre and posts up to each planet: the mechanical part of an orrery
+  for (const p of planets) {
+    const off = p.m.status === 'offline';
+    c.strokeStyle = `rgba(201,164,92,${off ? 0.1 : p.hover ? 0.4 : 0.17})`; c.lineWidth = 1;
+    c.beginPath(); c.moveTo(cx, cy); c.lineTo(p.ox, p.oy); c.stroke();
+    c.strokeStyle = `rgba(232,200,130,${off ? 0.3 : 0.65})`; c.lineWidth = 1.6 * p.s;
+    c.beginPath(); c.moveTo(p.ox, p.oy); c.lineTo(p.x, p.y + 25 * p.s); c.stroke();
+    c.fillStyle = `rgba(240,210,140,${off ? 0.35 : 0.8})`;
+    c.beginPath(); c.ellipse(p.ox, p.oy, 3.2 * p.s, 1.4 * p.s, 0, 0, 6.283); c.fill();
+  }
+}
+function advanceSystem(dt) {
+  const still = paused || reduced;
+  for (const p of planets) {
+    const target = p.m.status === 'offline' || p.frozen ? 0 : p.hover ? 0.1 : 1;
+    p.speed += (target - p.speed) * Math.min(1, dt * 5);
+    if (!still) p.ang += dt * 0.15 * Math.pow(FR[0] / FR[p.i], 1.5) * p.speed;
+    const r = maxR * FR[p.i];
+    const [ox, oy] = proj(r * Math.cos(p.ang), r * Math.sin(p.ang), p.i);
+    p.depth = Math.sin(p.ang);
+    p.s = pscale * (0.84 + 0.16 * (p.depth + 1) / 2);
+    p.ox = ox; p.oy = oy; p.x = ox; p.y = oy - 42 * p.s;
+    p.z = 100 + Math.round(p.depth * 40);
+    const el = p.el;
+    el.style.transform = `translate(${p.x - 25}px, ${p.y - 25}px) scale(${p.s.toFixed(3)})`;
+    el.style.zIndex = p.z;
+    el.style.filter = `brightness(${(0.78 + 0.22 * (p.depth + 1) / 2).toFixed(3)})`;
+  }
+  for (const s of sats) {
+    if (s.dying) continue;
+    const holder = holderOf(s.target);
+    if (!holder) continue;
+    const hub = s.target === 'hub';
+    if (!still && !holder.frozen) s.ang += dt * s.speed * (holder.hover ? 0.15 : 1);
+    const scale = hub ? 1 : holder.s;
+    const rs = s.rs * scale;
+    const lx = rs * Math.cos(s.ang), ly = rs * Math.sin(s.ang) * s.tl;
+    s.x = holder.x + lx * Math.cos(s.rot) - ly * Math.sin(s.rot);
+    s.y = holder.y + lx * Math.sin(s.rot) + ly * Math.cos(s.rot);
+    const front = Math.sin(s.ang) > 0;
+    const baseZ = hub ? 100 : holder.z;
+    s.el.style.transform = `translate(${s.x}px, ${s.y}px) scale(${(hub ? 1 : 0.85 + 0.15 * scale).toFixed(3)})`;
+    s.el.style.zIndex = front ? baseZ + 1 : baseZ - 1;
+    s.el.style.opacity = front ? 1 : 0.7;
+  }
+}
+
+// ───────── satellites: system notices. More than 3 on one body merge into one with a count. ─────────
+const holderOf = (target) => (target === 'hub' ? sunState : P[target]);
+const PLANET_R = 25;   // avatar radius in the planet's own (unscaled) pixels; satellites scale with the planet
+const SAT_TL = 0.78;   // how round a satellite orbit is (1 = circle seen face-on)
+function rebuildSats() {
+  if (!cur) return;
+  const keep = new Map(sats.filter((s) => !s.dying).map((s) => [s.key, s]));
+  for (const s of sats) if (!s.dying) s.el.remove();
+  sats = sats.filter((s) => s.dying);
+  const groups = {};
+  for (const n of cur.notices) (groups[n.target] ||= []).push(n);
+  for (const [target, list] of Object.entries(groups)) {
+    if (target !== 'hub' && !P[target]) continue;
+    const items = list.length > 3 ? [list] : list.map((n) => [n]);
+    items.forEach((ns, idx) => {
+      const merged = ns.length > 1;
+      const kind = ns.reduce((k, n) => (SEV[n.kind] > SEV[k] ? n.kind : k), 'info');
+      const key = merged ? `${target}:all` : ns[0].id;
+      const old = keep.get(key);
+      const el = document.createElement('button');
+      el.className = `sat k-${kind}${ns.some((n) => n.imp) ? ' imp' : ''}${merged ? ' merged' : ''}`;
+      el.setAttribute('aria-label', merged ? `${ns.length} 条系统通知` : `${KIND_SHORT[kind]}通知：${ns[0].sum}`);
+      el.innerHTML = merged ? `<span class="sb"><span class="mring"></span><b>${ns.length}</b><svg><use href="#i-${kind}"/></svg></span>`
+        : `<span class="sb"><svg><use href="#i-${kind}"/></svg></span>`;
+      stage.appendChild(el);
+      const hub = target === 'hub';
+      const s = { key, target, notices: ns, el, merged, kind,
+        ang: old ? old.ang : idx * 2.1 + (target.length % 5),
+        // The orbit's nearest point (rs × tl) clears the body: sun radius or the planet's avatar radius, plus the
+        // satellite's own radius (a merged one is bigger) and a gap. Each further satellite gets a wider orbit.
+        rs: hub ? (sunR + (merged ? 14 : 10) + idx * 14) / SAT_TL : (PLANET_R + (merged ? 10 : 6) + 5 + idx * 11) / SAT_TL,
+        tl: SAT_TL,
+        rot: hub ? [-0.35, 0.25, 0.6][idx % 3] : [-0.35, 0.2, -0.1][idx % 3],
+        speed: hub ? 0.42 - idx * 0.07 : 1.15 - idx * 0.22,
+        dying: false, x: 0, y: 0 };
+      el.addEventListener('pointerenter', () => showTip(s));
+      el.addEventListener('pointerleave', hideTip);
+      el.addEventListener('focus', () => showTip(s));
+      el.addEventListener('blur', hideTip);
+      el.addEventListener('click', (e) => { e.stopPropagation(); hideTip(); openNcard(s); });
+      sats.push(s);
+    });
+  }
+}
+let tipFor = null;
+function showTip(s) {
+  tipFor = s;
+  const holder = holderOf(s.target); holder.frozen++; s.held = true;
+  tip.innerHTML = s.merged ? `<svg class="k-${s.kind}"><use href="#i-${s.kind}"/></svg>${s.notices.length} 条通知：${s.notices.map((n) => KIND_SHORT[n.kind]).join('、')}`
+    : `<svg class="k-${s.kind}"><use href="#i-${s.kind}"/></svg>${esc(s.notices[0].sum)}`;
+  tip.classList.add('show');
+  placeTip();
+}
+function hideTip() {
+  if (tipFor && tipFor.held) { const h = holderOf(tipFor.target); if (h) h.frozen = Math.max(0, h.frozen - 1); tipFor.held = false; }
+  tipFor = null; tip.classList.remove('show');
+}
+function placeTip() {
+  if (!tipFor) return;
+  const w = tip.offsetWidth;
+  tip.style.left = clamp(tipFor.x - w / 2, 8, W - w - 8) + 'px';
+  tip.style.top = clamp(tipFor.y - 34, 8, H - 30) + 'px';
+}
+
+// notice card (click on a satellite)
+let ncardFor = null;
+function openNcard(s) {
+  closeNcard();
+  ncardFor = s; holderOf(s.target).frozen++;
+  renderNcard();
+  ncard.classList.add('show');
+  const w = ncard.offsetWidth, h = ncard.offsetHeight;
+  let left = s.x + 18;
+  if (left + w > W - 10) left = s.x - 18 - w;
+  ncard.style.left = clamp(left, 10, W - w - 10) + 'px';
+  ncard.style.top = clamp(s.y - 20, 10, H - h - 10) + 'px';
+  ncard.querySelector('.btn.primary')?.focus();
+}
+function closeNcard() {
+  if (!ncardFor) return;
+  const h = holderOf(ncardFor.target); if (h) h.frozen = Math.max(0, h.frozen - 1);
+  ncardFor = null; ncard.classList.remove('show');
+}
+const whoLabel = (target) => (target === 'hub' ? '集群 · 绕太阳' : `${target} · 绕它的行星`);
+function jumpBtns(n) {
+  let h = '';
+  if (n.hub) h += `<button class="btn" data-jump="hub" data-ref="${n.hub}">在群聊中定位</button>`;
+  if (n.convo) h += `<button class="btn" data-jump="${n.convo}" data-ref="${n.id}">在 ${n.convo} 的对话中定位</button>`;
+  return h;
+}
+function renderNcard() {
+  const s = ncardFor;
+  if (!s.merged) {
+    const n = s.notices[0];
+    ncard.innerHTML = `<div class="nh"><svg class="k-${n.kind}"><use href="#i-${n.kind}"/></svg><span class="kind k-${n.kind}">${KIND_LABEL[n.kind]}</span><span>${whoLabel(s.target)} · ${n.t}</span><button class="x" aria-label="关闭">×</button></div>
+      <div class="nbody md">${md(fullOf(cur, n))}</div>
+      <div class="nacts"><button class="btn primary" data-ack="${n.id}">知道了</button>${jumpBtns(n)}</div>`;
+  } else {
+    ncard.innerHTML = `<div class="nh"><svg class="k-${s.kind}"><use href="#i-${s.kind}"/></svg><span class="kind k-${s.kind}">${s.notices.length} 条系统通知</span><span>${whoLabel(s.target)}</span><button class="x" aria-label="关闭">×</button></div>
+      <div class="nlist">${s.notices.map((n) => `<div class="ni"><svg class="k-${n.kind}"><use href="#i-${n.kind}"/></svg>
+        <div class="t">${inline(oneLine(fullOf(cur, n), 120))}<small>${KIND_SHORT[n.kind]} · ${n.t} ${n.hub ? `· <a href="#" data-jump="hub" data-ref="${n.hub}" style="color:var(--brass)">群聊中定位</a>` : ''} ${n.convo ? `· <a href="#" data-jump="${n.convo}" data-ref="${n.id}" style="color:var(--brass)">对话中定位</a>` : ''}</small></div>
+        <button class="btn" data-ack="${n.id}">知道了</button></div>`).join('')}</div>
+      <div class="nacts"><button class="btn primary" data-ackall>全部知道了</button></div>`;
+  }
+}
+ncard.addEventListener('click', (e) => {
+  const t = e.target.closest('button, a');
+  if (!t) return;
+  e.preventDefault();
+  if (t.classList.contains('x')) return closeNcard();
+  if (t.dataset.ack) return ack([t.dataset.ack]);
+  if (t.hasAttribute('data-ackall')) return ack(ncardFor.notices.map((n) => n.id));
+  if (t.dataset.jump) { const { jump, ref } = t.dataset; const cid = cur.id; closeNcard(); jumpTo(cid, jump, ref); }
+});
+document.addEventListener('pointerdown', (e) => {
+  if (ncardFor && !ncard.contains(e.target) && !e.target.closest('.sat')) closeNcard();
+});
+
+// "知道了": the satellite falls into its planet (or drifts away from the sun), then disappears
+function ack(ids) {
+  const s = ncardFor;
+  const set = new Set(ids);
+  cur.notices = cur.notices.filter((n) => !set.has(n.id));
+  const remaining = s ? s.notices.filter((n) => !set.has(n.id)) : [];
+  if (s && s.merged && remaining.length) {
+    if (remaining.length <= 3) { closeNcard(); s.dying = true; flyOut(s, false); rebuildSats(); }
+    else {
+      closeNcard(); rebuildSats();
+      const ns = sats.find((x) => x.key === s.key && !x.dying);
+      if (ns) openNcard(ns);
+    }
+  } else if (s) {
+    closeNcard();
+    s.dying = true;
+    flyOut(s, true);
+    rebuildSats();
+  }
+  markAcked(ids);
+}
+function flyOut(s, animate) {
+  const el = s.el;
+  if (!animate || reduced) { el.remove(); sats = sats.filter((x) => x !== s); return; }
+  const holder = holderOf(s.target);
+  holder.frozen++;
+  const body = el.querySelector('.sb');
+  const done = () => { el.remove(); sats = sats.filter((x) => x !== s); holder.frozen = Math.max(0, holder.frozen - 1); };
+  if (s.target === 'hub') {
+    const dx = s.x - cx, dy = s.y - cy, L = Math.hypot(dx, dy) || 1;
+    body.animate([{ transform: 'none', opacity: 1, filter: 'blur(0)' }, { transform: `translate(${dx / L * 34}px, ${dy / L * 34 - 10}px) scale(2.2)`, opacity: 0, filter: 'blur(3px)' }],
+      { duration: 700, easing: 'cubic-bezier(.2,.7,.3,1)' }).onfinish = done;
+  } else {
+    const p = holder;
+    body.animate([{ transform: 'none', opacity: 1 }, { transform: `translate(${(p.x - s.x) * 0.6}px, ${(p.y - s.y) * 0.6}px) scale(1.2)`, opacity: 1, offset: 0.55 },
+      { transform: `translate(${p.x - s.x}px, ${p.y - s.y}px) scale(.1)`, opacity: 0 }], { duration: 620, easing: 'cubic-bezier(.55,0,.8,.4)' }).onfinish = () => { done(); ping(p.el); };
+  }
+}
+function ping(el) { const r = el && el.querySelector('.ping'); if (!r) return; r.classList.remove('go'); void r.offsetWidth; r.classList.add('go'); }
+function markAcked(ids) {
+  for (const id of ids) {
+    const rec = ALL_NOTICES[id];
+    document.querySelectorAll(`[data-nid="${id}"]`).forEach((el) => el.classList.add('acked'));
+    if (rec && rec.n.hub) document.querySelectorAll(`.win[data-cid="${rec.cid}"] .sysl[data-mid="${CL[rec.cid].HM[rec.n.hub].id}"]`).forEach((el) => el.classList.add('acked'));
+  }
+  refreshSysMarks();
+}
+/** In chat windows: system lines whose satellite is still in the sky get a small 卫星 tag; handled ones are dimmed. */
+function refreshSysMarks(root = document) {
+  for (const c of CLUSTERS) {
+    const live = new Set(c.notices.map((n) => n.hub && c.HM[n.hub].id).filter(Boolean));
+    const liveN = new Set(c.notices.map((n) => n.id));
+    root.querySelectorAll(`.win[data-cid="${c.id}"] .sysl[data-mid]`).forEach((el) => el.classList.toggle('sat-live', live.has(el.dataset.mid)));
+    root.querySelectorAll(`.win[data-cid="${c.id}"] [data-nid]`).forEach((el) => el.classList.toggle('acked', !liveN.has(el.dataset.nid)));
+    for (const id of Object.keys(ALL_NOTICES)) {
+      const rec = ALL_NOTICES[id];
+      if (rec.cid !== c.id || !rec.n.hub || liveN.has(id)) continue;
+      root.querySelectorAll(`.win[data-cid="${c.id}"] .sysl[data-mid="${c.HM[rec.n.hub].id}"]`).forEach((el) => el.classList.add('acked'));
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// levels: transitions, breadcrumb, wheel
+// ════════════════════════════════════════════════════════════════════════
+let transitioning = false, wheelLock = 0;
+/** Where `target` (a group or a cluster) sits on the screen in the level `lvl`. */
+function spotIn(lvl, target) {
+  if (lvl === 'universe') {
+    if (target.group) { const g = galaxies.find((x) => x.name === target.group); if (g) return [g.x, g.y]; }
+    if (target.cid) {
+      const c = CL[target.cid];
+      if (c.category) { const g = galaxies.find((x) => x.name === c.category); const st = g && g.stars.find((s) => s.c === c); if (st) return [st.sx || g.x, st.sy || g.y]; }
+      const l = loose.find((x) => x.c.id === target.cid); if (l) return [l.x, l.y];
+    }
+  }
+  if (lvl === 'galaxy' && target.cid) { const s = gsys.find((x) => x.c.id === target.cid); if (s) return [s.x, s.y]; }
+  return [W / 2, H / 2];
+}
+function prepare(v) {
+  if (v.level === 'galaxy') { view = v; layoutGalaxy(); }
+  if (v.level === 'system') { view = v; buildSystem(v.cid); }
+  view = v;
+}
+function go(next) {
+  if (transitioning) return;
+  const prev = view;
+  if (prev.level === next.level && prev.group === next.group && prev.cid === next.cid) return;
+  hideCard(); hideTip(); closeNcard();
+  const deeper = LEVEL_DEPTH[next.level] > LEVEL_DEPTH[prev.level];
+  // the focus point: where the thing we enter sits in the outer level
+  const outerLevel = deeper ? prev.level : next.level;
+  const inner = deeper ? next : prev;
+  if (!deeper) prepare(next);
+  const [fx, fy] = spotIn(outerLevel, { group: inner.level === 'galaxy' ? inner.group : null, cid: inner.level === 'system' ? inner.cid : null });
+  if (deeper) prepare(next);
+  const from = LAYER[prev.level], to = LAYER[next.level];
+  to.classList.remove('off');
+  updateChrome();
+  if (reduced) { from.classList.add('off'); return; }
+  transitioning = true;
+  const shrunk = `translate(${fx - W / 2}px, ${fy - H / 2}px) scale(.1)`;
+  const opts = { duration: 820, easing: 'cubic-bezier(.65,0,.3,1)' };
+  const outer = deeper ? from : to, innerEl = deeper ? to : from;
+  outer.style.transformOrigin = `${fx}px ${fy}px`;
+  innerEl.style.transformOrigin = '50% 50%';
+  const big = [{ transform: 'none', opacity: 1 }, { transform: 'scale(6)', opacity: 0 }];
+  const small = [{ transform: shrunk, opacity: 0 }, { transform: 'none', opacity: 1 }];
+  outer.animate(deeper ? big : [...big].reverse(), opts);
+  const a = innerEl.animate(deeper ? small : [...small].reverse(), opts);
+  sky.animate([{ transform: 'scale(1)' }, { transform: `scale(${deeper ? 1.08 : 0.94})`, offset: 0.5 }, { transform: 'scale(1)' }], opts);
+  a.onfinish = () => { from.classList.add('off'); transitioning = false; };
+}
+function up() {
+  if (view.level === 'system') go(view.group ? { level: 'galaxy', group: view.group, cid: null } : { level: 'universe', group: null, cid: null });
+  else if (view.level === 'galaxy') go({ level: 'universe', group: null, cid: null });
+}
+const crumbs = $('#crumbs');
+function updateChrome() {
+  const parts = [];
+  const icon = '<svg><use href="#og"/></svg>';
+  if (view.level === 'universe') parts.push(`<span class="cur">${icon}宇宙</span>`);
+  else parts.push(`<button data-go="universe">${icon}宇宙</button>`);
+  if (view.level === 'galaxy') parts.push('<span class="sep">›</span>', `<span class="cur">${esc(view.group)}</span>`);
+  if (view.level === 'system') {
+    const c = CL[view.cid];
+    if (c.category) parts.push('<span class="sep">›</span>', `<button data-go="galaxy" data-group="${esc(c.category)}">${esc(c.category)}</button>`);
+    else parts.push('<span class="sep">›</span>', '<span style="color:var(--ink3);padding:3px 4px">未分组</span>');
+    parts.push('<span class="sep">›</span>', `<span class="cur">${esc(c.name)}</span>`);
+  }
+  crumbs.innerHTML = parts.join('');
+  const pt = $('#pltitle'), ps = $('#plstat'), hint = $('#hint');
+  const legend = $('#legend');
+  legend.style.display = view.level === 'system' ? '' : 'none';
+  if (view.level === 'universe') {
+    pt.textContent = '宇宙 · 全部群聊';
+    const working = CLUSTERS.reduce((s, c) => s + clusterStats(c).working, 0);
+    ps.innerHTML = `<i>${GROUPS.length}</i> 个分组 · <i>${CLUSTERS.length}</i> 个群聊 · <i>${working}</i> 名群员工作中`;
+    hint.innerHTML = '点<span>星系</span>（分组）拉近 · 点游离的<span>恒星</span>直接进入未分组的群聊 · 闪点 = 有系统通知 · 滚轮缩放';
+  } else if (view.level === 'galaxy') {
+    const cls = CLUSTERS.filter((c) => c.category === view.group);
+    pt.textContent = `星系 · ${view.group}`;
+    ps.innerHTML = `<i>${cls.length}</i> 个群聊 · <i>${cls.reduce((s, c) => s + c.members.length, 0)}</i> 名群员`;
+    hint.innerHTML = '点<span>恒星系统</span>进入群聊 · 小点是群员（青色尾迹 = 正在工作）· 滚轮向后返回宇宙';
+  } else {
+    const c = CL[view.cid], s = clusterStats(c);
+    pt.textContent = `太阳系仪 · ${c.name}`;
+    ps.innerHTML = `<i>${s.online}</i> 在线 · <i>${s.working}</i> 工作中 · <i>${s.n - s.online}</i> 离线`;
+    hint.innerHTML = '点<span>太阳</span>打开 Hub 群聊 · 点<span>行星</span>打开该群员的原生对话 · <span>卫星</span>是待处理的系统通知';
+  }
+}
+crumbs.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-go]');
+  if (!b) return;
+  if (b.dataset.go === 'universe') go({ level: 'universe', group: null, cid: null });
+  else go({ level: 'galaxy', group: b.dataset.group, cid: null });
+});
+addEventListener('wheel', (e) => {
+  if (e.target.closest('.win, .ncard, .card')) return;
+  e.preventDefault();
+  const now = performance.now();
+  if (transitioning || now < wheelLock || Math.abs(e.deltaY) < 4) return;
+  wheelLock = now + 900;
+  if (e.deltaY > 0) return up();
+  // zoom in: what is under the pointer, else the nearest target
+  const hit = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-zoom]');
+  let z = hit && hit.dataset.zoom;
+  if (!z && view.level !== 'system') {
+    let best = null, bd = Infinity;
+    LAYER[view.level].querySelectorAll('[data-zoom]').forEach((b) => {
+      const r = b.getBoundingClientRect(), d = Math.hypot(r.left + r.width / 2 - e.clientX, r.top + r.height / 2 - e.clientY);
+      if (d < bd) { bd = d; best = b; }
+    });
+    if (best && bd < Math.min(W, H) * 0.3) z = best.dataset.zoom;
+  }
+  if (!z) return;
+  if (z.startsWith('g:')) go({ level: 'galaxy', group: z.slice(2), cid: null });
+  else go({ level: 'system', cid: z.slice(2), group: CL[z.slice(2)].category || null });
+}, { passive: false });
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (ncardFor) return closeNcard();
+  if (e.target.closest && e.target.closest('textarea, input')) return;
+  up();
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// chat windows (they stay open across levels; the title bar names the cluster)
+// ════════════════════════════════════════════════════════════════════════
+const wins = new Map();
+let zTop = 1000, activeKey = null;
+const winKey = (cid, who) => `${cid}|${who}`;
+const isNarrow = () => W < 720;
+/** Windows stay below the top strip (breadcrumb + plaque); on narrow screens the breadcrumb sits on a second row. */
+const topSafe = () => (W < 720 ? 100 : 60);
+/** Where a window flies from / back to: its planet or sun when that cluster is on screen, else its star or galaxy. */
+function originOf(w) {
+  if (view.level === 'system' && view.cid === w.cid) {
+    if (w.who === 'hub') return [sunState.x, sunState.y];
+    const p = P[w.who]; if (p) return [p.x, p.y];
+  }
+  if (view.level === 'galaxy') { const s = gsys.find((x) => x.c.id === w.cid); if (s) return [s.x, s.y]; }
+  if (view.level === 'universe') return spotIn('universe', { cid: w.cid });
+  return [W / 2, H - 30];
+}
+/**
+ * First position and size, from the viewport. Wide: tall columns on both sides, the middle stays free. Medium
+ * (< 1180 px): shorter windows in the upper corners, so the sun and the lower half of the orbits stay visible.
+ * Narrow (< 720 px): a sheet over the lower part of the screen.
+ */
+function placeNew(w) {
+  const T = topSafe();
+  const hub = w.who === 'hub';
+  const k = [...wins.values()].filter((x) => (x.who === 'hub') === hub && x !== w).length;
+  if (isNarrow()) {
+    const height = Math.round((H - T) * 0.58);
+    return { left: 8, top: H - height - 8 - (k % 3) * 14, width: W - 16, height };
+  }
+  if (W < 1180) {
+    const width = clamp(Math.round(W * 0.4), 300, 420), height = clamp(Math.round(H * 0.36), 240, 380);
+    const dx = (k % 3) * 28, dy = (k % 3) * 18;
+    return { left: hub ? W - width - 12 - dx : 12 + dx, top: T + dy, width, height };
+  }
+  const width = clamp(Math.round(W * 0.3), 360, 460), height = clamp(H - T - 70, 300, 640);
+  const n = hub ? 4 : 5, dx = (k % n) * 30, dy = (k % n) * 30;
+  return { left: hub ? W - width - 22 - dx : 22 + dx, top: T + 4 + dy, width, height: Math.min(height, H - T - 28 - dy) };
+}
+function openWin(key) {
+  const ex = wins.get(key);
+  if (ex) { if (ex.min) restore(key); else focusWin(key); flashWin(ex.el); return; }
+  const [cid, who] = key.split('|');
+  const c = CL[cid];
+  const isHub = who === 'hub';
+  const m = isHub ? null : c.byId[who];
+  const el = document.createElement('section');
+  el.className = 'win';
+  el.dataset.cid = cid;
+  el.dataset.key = key;
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', isHub ? `Hub 群聊：${c.name}` : `${who} 的对话（${c.name}）`);
+  const st = isHub ? '<span class="st st-hub">运行中</span>' : `<span class="st st-${m.status}">${STATUS[m.status]}</span>`;
+  el.innerHTML = `
+    <header class="bar">
+      ${isHub ? '<span class="hubav"></span>' : avatar(c, who, 'sm')}
+      <div class="tt"><b>${isHub ? esc(c.name) : who}</b><span>${isHub ? 'Hub 群聊 · 所有经过 Hub 的消息' : `${m.label} · 原生对话 · ${m.session}`}</span></div>
+      ${isHub ? '' : `<span class="cl-chip" title="所属群聊">${esc(c.name)}</span>`}
+      ${st}
+      <button class="wb mn" title="最小化（飞回${isHub ? '太阳' : '行星'}）" aria-label="最小化"><svg><use href="#i-min"/></svg></button>
+      <button class="wb close" title="关闭" aria-label="关闭"><svg><use href="#i-close"/></svg></button>
+    </header>
+    ${isHub ? `<div class="sub"><span class="chip">${c.category ? '分组 ' + esc(c.category) : '未分组'}</span><span class="chip">${c.members.length} 名群员</span><span class="chip">跳数上限 6</span><span style="margin-left:auto">clusterId ${c.id.slice(0, 8)}…</span></div>`
+      : m.status === 'offline' ? `<div class="sub offline">离线：${m.label} 没在运行。orrery 不会启动它，发给它的消息只留在群聊记录里。</div>`
+        : `<div class="sub"><span>由 orrery 按 ${m.label} 的对话记录重新渲染</span><button type="button" class="chip ox-all" data-ox-all aria-pressed="false" title="一键展开或收起这个窗口里所有 orrery 消息">全部展开</button><span class="chip" style="color:var(--ether);border-color:rgba(147,170,255,.35)">● 群员来信</span><span class="chip" style="color:var(--k-task);border-color:rgba(232,184,90,.35)">◆ 系统</span></div>`}
+    <div class="body" tabindex="0"></div>
+    ${isHub ? `<form class="composer"><textarea rows="1" placeholder="发到「${esc(c.name)}」…  @名字 投递给某人，不 @ 只留记录（Enter 发送）" aria-label="消息"></textarea><button class="btn primary" type="submit">发送</button></form>`
+      : `<div class="foot-note"><svg><use href="#og"/></svg><span>这里只读。在 ${m.label} 里可以随时接手这段对话；orrery 只往这里投消息，不替你运行轮次。</span></div>`}
+    ${['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].map((d) => `<i class="rz rz-${d}" data-d="${d}"></i>`).join('')}`;
+  document.body.appendChild(el);
+  const w = { key, cid, who, el, min: false };
+  wins.set(key, w);
+  const pos = placeNew(w);
+  Object.assign(el.style, { left: pos.left + 'px', top: pos.top + 'px', width: pos.width + 'px', height: pos.height + 'px' });
+  const body = $('.body', el);
+  body.innerHTML = isHub ? renderHub(c) : renderConvo(c, who);
+  refreshSysMarks();
+  body.scrollTop = body.scrollHeight;
+  wire(w);
+  focusWin(key);
+  if (!reduced) {
+    const r = el.getBoundingClientRect(), [ox, oy] = originOf(w);
+    el.animate([{ transform: `translate(${ox - (r.left + r.width / 2)}px, ${oy - (r.top + r.height / 2)}px) scale(.06)`, opacity: 0 }, { transform: 'none', opacity: 1 }],
+      { duration: 460, easing: 'cubic-bezier(.2,.8,.2,1)' });
+  }
+}
+function flashWin(el) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+function focusWin(key) {
+  const w = wins.get(key); if (!w) return;
+  activeKey = key;
+  w.el.style.zIndex = ++zTop;
+  for (const x of wins.values()) x.el.classList.toggle('active', x.key === key);
+}
+function setParked(w, on) {
+  if (!(view.level === 'system' && view.cid === w.cid)) return;
+  if (w.who === 'hub') sunEl && sunEl.classList.toggle('parked', on);
+  else P[w.who] && P[w.who].el.classList.toggle('parked', on);
+}
+function bodyOf(w) {
+  if (view.level === 'system' && view.cid === w.cid) return w.who === 'hub' ? sunState : P[w.who];
+  return null;
+}
+function minimize(key) {
+  const w = wins.get(key); if (!w || w.min) return;
+  const el = w.el;
+  const holder = bodyOf(w);
+  const finish = () => {
+    el.classList.add('min'); w.min = true; setParked(w, true);
+    if (holder) ping(w.who === 'hub' ? sunEl : holder.el);
+    pickActive();
+  };
+  if (reduced) return finish();
+  const r = el.getBoundingClientRect(), [ox, oy] = originOf(w);
+  if (holder) holder.frozen++;
+  el.style.opacity = 1;
+  el.animate([{ transform: 'none', opacity: 1 }, { transform: `translate(${ox - (r.left + r.width / 2)}px, ${oy - (r.top + r.height / 2)}px) scale(.05)`, opacity: 0.2 }],
+    { duration: 520, easing: 'cubic-bezier(.55,0,.75,.45)' }).onfinish = () => { el.style.opacity = ''; if (holder) holder.frozen = Math.max(0, holder.frozen - 1); finish(); };
+}
+function restore(key) {
+  const w = wins.get(key); if (!w) return;
+  w.el.classList.remove('min'); w.min = false; setParked(w, false);
+  focusWin(key);
+  if (!reduced) {
+    const r = w.el.getBoundingClientRect(), [ox, oy] = originOf(w);
+    w.el.animate([{ transform: `translate(${ox - (r.left + r.width / 2)}px, ${oy - (r.top + r.height / 2)}px) scale(.05)`, opacity: 0.2 }, { transform: 'none', opacity: 1 }],
+      { duration: 460, easing: 'cubic-bezier(.2,.8,.2,1)' });
+  }
+}
+function closeWin(key) {
+  const w = wins.get(key); if (!w) return;
+  wins.delete(key);
+  setParked(w, false);
+  const done = () => { w.el.remove(); pickActive(); };
+  if (reduced) return done();
+  w.el.style.opacity = 1;
+  w.el.animate([{ transform: 'none', opacity: 1 }, { transform: 'scale(.96)', opacity: 0 }], { duration: 160, easing: 'ease-in' }).onfinish = done;
+}
+function pickActive() {
+  const open = [...wins.values()].filter((w) => !w.min).sort((a, b) => b.el.style.zIndex - a.el.style.zIndex);
+  if (open[0]) focusWin(open[0].key); else activeKey = null;
+}
+function wire(w) {
+  const el = w.el, key = w.key;
+  el.addEventListener('pointerdown', () => { if (activeKey !== key) focusWin(key); });
+  $('.mn', el).addEventListener('click', () => minimize(key));
+  $('.close', el).addEventListener('click', () => closeWin(key));
+  const bar = $('.bar', el);
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    const sx = e.clientX, sy = e.clientY, l0 = el.offsetLeft, t0 = el.offsetTop;
+    const move = (ev) => {
+      el.style.left = clamp(l0 + ev.clientX - sx, 60 - el.offsetWidth, W - 60) + 'px';
+      el.style.top = clamp(t0 + ev.clientY - sy, topSafe(), H - 40) + 'px';
+    };
+    const stop = () => { bar.removeEventListener('pointermove', move); bar.removeEventListener('pointerup', stop); bar.removeEventListener('pointercancel', stop); };
+    bar.addEventListener('pointermove', move); bar.addEventListener('pointerup', stop); bar.addEventListener('pointercancel', stop);
+  });
+  el.querySelectorAll('.rz').forEach((h) => h.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); e.stopPropagation(); focusWin(key);
+    h.setPointerCapture(e.pointerId);
+    const d = h.dataset.d, sx = e.clientX, sy = e.clientY;
+    const r0 = { l: el.offsetLeft, t: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+    const MINW = 300, MINH = 240;
+    const move = (ev) => {
+      const dx = ev.clientX - sx, dy = ev.clientY - sy;
+      let l = r0.l, t = r0.t, ww = r0.w, hh = r0.h;
+      if (d.includes('e')) ww = Math.max(MINW, r0.w + dx);
+      if (d.includes('s')) hh = Math.max(MINH, r0.h + dy);
+      if (d.includes('w')) { ww = Math.max(MINW, r0.w - dx); l = r0.l + r0.w - ww; }
+      if (d.includes('n')) { hh = Math.max(MINH, r0.h - dy); t = Math.max(topSafe(), r0.t + r0.h - hh); hh = r0.t + r0.h - t; }
+      Object.assign(el.style, { left: l + 'px', top: t + 'px', width: ww + 'px', height: hh + 'px' });
+    };
+    const stop = () => { h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', stop); h.removeEventListener('pointercancel', stop); };
+    h.addEventListener('pointermove', move); h.addEventListener('pointerup', stop); h.addEventListener('pointercancel', stop);
+  }));
+  $('.body', el).addEventListener('click', (e) => {
+    const rb = e.target.closest('[data-raw]');
+    if (rb) {
+      const host = rb.closest('.ox-batch') && rb.closest('.bh') ? rb.closest('.ox-batch') : rb.closest('.ox');
+      const box = host && (host.querySelector(':scope > .rawbox') || host.querySelector(':scope > .full > .rawbox'));
+      if (box) { const on = box.classList.toggle('show'); rb.textContent = on ? '收起原文' : '查看原文'; }
+      return;
+    }
+    const cap = e.target.closest('.ox > .cap');
+    if (cap) {
+      const ox = cap.parentElement;
+      if (ox.classList.contains('ox-ack')) { ox.querySelector(':scope > .rawbox').classList.toggle('show'); return; }
+      ox.classList.toggle('open'); cap.setAttribute('aria-expanded', ox.classList.contains('open'));
+      syncOxAll();
+    }
+  });
+  // One click opens every orrery item in this conversation (envelope parts, peer mail, posts); the next closes them all.
+  const oxAll = $('[data-ox-all]', el);
+  const foldable = () => [...el.querySelectorAll('.body .ox:not(.ox-ack)')].filter((ox) => ox.querySelector(':scope > .cap'));
+  function syncOxAll() {
+    if (!oxAll) return;
+    const items = foldable(), allOpen = items.length > 0 && items.every((ox) => ox.classList.contains('open'));
+    oxAll.textContent = allOpen ? '全部收起' : '全部展开';
+    oxAll.setAttribute('aria-pressed', String(allOpen));
+  }
+  if (oxAll) oxAll.addEventListener('click', () => {
+    const items = foldable(), open = !items.every((ox) => ox.classList.contains('open'));
+    for (const ox of items) { ox.classList.toggle('open', open); ox.querySelector(':scope > .cap').setAttribute('aria-expanded', String(open)); }
+    syncOxAll();
+  });
+  const form = $('.composer', el);
+  if (form) {
+    const ta = $('textarea', form);
+    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } });
+    ta.addEventListener('input', () => { ta.style.height = '40px'; ta.style.height = Math.min(120, ta.scrollHeight) + 'px'; });
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = ta.value.trim(); if (!text) return;
+      const now = new Date(), t = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      const body = $('.body', el);
+      body.insertAdjacentHTML('beforeend', renderHubMsg(CL[w.cid], { from: 'user', t, body: text, to: [] }) + receipt(CL[w.cid], text));
+      ta.value = ''; ta.style.height = '40px';
+      body.scrollTop = body.scrollHeight;
+    });
+  }
+}
+function receipt(c, text) {
+  const names = [...text.matchAll(/(^|[\s（(，、：:])@([A-Za-z][\w-]*)/g)].map((x) => x[2]);
+  const all = names.includes('all');
+  const targets = [...new Set(names.filter((n) => c.byId[n]))];
+  if (!targets.length && !all) return '<div class="receipt">没有 @ 任何人：只留在群聊记录里（假发送）</div>';
+  const parts = targets.map((n) => (c.byId[n].status === 'offline' ? `<span class="bad">${n} 离线，未投递</span>` : `已排队投递给 ${n}`));
+  if (all) parts.push('@all：所有人记为未读，只投递给明确点名的人');
+  return `<div class="receipt">${parts.join(' · ')}（假发送）</div>`;
+}
+
+// ───────── hub chat rendering ─────────
+function renderHubMsg(c, m) {
+  if (m.from === 'system') {
+    return `<div class="sysl kv-${m.sys}" data-mid="${m.id}"><svg><use href="#i-${m.sys}"/></svg><span>${inline(m.body.split('\n')[0])}</span><span class="ackd">✓ 已知道</span><time>${m.t}</time></div>`;
+  }
+  const me = m.from === 'user';
+  const mem = c.byId[m.from];
+  return `<div class="msg${me ? ' me' : ''}" data-mid="${m.id || ''}">${avatar(c, m.from, 'sm')}
+    <div class="mb"><div class="meta"><b>${nameOf(m.from)}</b>${me || !mem ? '' : `<span>${mem.label}</span>`}${m.fyi ? '<span class="fyi">仅知会</span>' : ''}<time>${m.t}</time></div>
+      <div class="bub md">${md(m.body)}</div>
+      ${m.posted ? '<div class="posted">↗ 回答即发言：这一轮的回答由 Hub 代发到群里</div>' : ''}
+      ${m.acks?.length ? `<div class="acks"><span>👍 ${m.acks.join(' · ')}</span></div>` : ''}</div></div>`;
+}
+function renderHub(c) {
+  return '<div class="daysep">今天 · 2026-11-18</div>' + c.ORDER.map((k) => renderHubMsg(c, c.HM[k])).join('');
+}
+
+// ───────── native conversation rendering ─────────
+function renderConvo(c, who) {
+  const m = c.byId[who];
+  let h = m.status === 'offline' ? `<div class="banner">离线：发给 ${who} 的 ${m.unread} 条消息没有投递，只留在群聊记录里；上线后由它自己用 read_messages 读取，不补发。下面是它离线前的对话。</div>` : '';
+  h += (c.CONVOS[who] || []).map((it) => `<div class="it">${renderItem(c, it, m)}</div>`).join('');
+  return h;
+}
+function sysPart(c, part, inBatch, raw, title) {
+  const full = part.full || c.HM[part.h].body;
+  return `<div class="ox ox-sys kv-${part.kind}"${part.nid ? ` data-nid="${part.nid}"` : ''}${part.h ? ` data-mid="${c.HM[part.h].id}"` : ''}>
+    <button class="cap" aria-expanded="false">${glyph(part.kind)}<span class="tag">${part.p === 'note' ? '附注' : KIND_SHORT[part.kind]}</span><span class="sm">${esc(part.sum)}</span>${og}</button>
+    <div class="full"><div class="md">${md(full)}</div>
+      <div class="ox-foot">${part.p === 'note' ? '写在信封末尾的说明段里' : `来自 Hub · ${c.HM[part.h].t}`}${part.nid ? ' · 太阳系视图里有对应的卫星' : ''}${inBatch ? '' : rawBtn}</div>
+      ${inBatch ? '' : rawBox(title, raw)}</div></div>`;
+}
+function inPart(c, part, inBatch, raw, title) {
+  const msg = c.HM[part.h];
+  return `<div class="ox ox-in" data-mid="${msg.id}">
+    <button class="cap" aria-expanded="false">${avatar(c, msg.from, 'xs')}<span class="from">${nameOf(msg.from)}</span><span class="via"><svg><use href="#og"/></svg>经 Hub</span><span class="sm">${esc(oneLine(msg.body.replace(/^@[\w-]+\s*/, '')))}</span><span class="chev">›</span></button>
+    <div class="full"><div class="md">${md(msg.body)}</div>
+      <div class="ox-foot"><span>${msg.t} · hop ${msg.hop} · to ${msg.to.length ? msg.to.map((x) => '@' + x).join(' ') : 'all'} · messageId ${msg.id.slice(0, 8)}</span>${inBatch ? '' : rawBtn}</div>
+      ${inBatch ? '' : rawBox(title, raw)}</div></div>`;
+}
+function renderItem(c, it, m) {
+  switch (it.k) {
+    case 'u': return `<div class="u"><span class="who">你 · 在 ${m.label} 里输入</span><div class="bub md">${md(it.text)}</div></div>`;
+    case 'a': return `<div class="a md">${md(it.md)}${it.posted ? `<div class="posted">↗ 回答即发言：这一轮的回答已由 Hub 作为 ${m.id} 的发言发到群里</div>` : ''}</div>`;
+    case 'th': return `<details class="think"><summary><span class="sym">✧</span>思考了 ${it.s} 秒</summary><div class="tx">${esc(it.text)}</div></details>`;
+    case 'tool': {
+      const st = it.ok === 'run' ? '<span class="spin"></span>' : it.ok ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>';
+      const detail = esc(it.detail).replace(/&lt;add&gt;(.*?)&lt;\/add&gt;/g, '<span class="add">$1</span>').replace(/&lt;del&gt;(.*?)&lt;\/del&gt;/g, '<span class="del">$1</span>');
+      return `<details class="tool"${it.ok === 'run' ? ' open' : ''}><summary><span class="sym">${it.ic}</span><span class="lbl">${it.lbl}</span><code>${esc(it.arg)}</code><span class="meta2">${esc(it.meta)}</span>${st}</summary><pre class="detail">${detail}</pre></details>`;
+    }
+    case 'otool':
+      return `<details class="tool otool"><summary><svg><use href="#og"/></svg><span class="lbl">orrery · ${it.name}</span><code>${esc([it.what, it.arg].filter(Boolean).join(' · '))}</code><span class="ok">✓</span></summary><pre class="detail">${esc(it.raw)}</pre></details>`;
+    case 'ack': {
+      const raw = toolRaw('ack_messages', { messageIds: it.ids.map((h) => c.HM[h].id) }, { acknowledged: it.ids.length });
+      return `<div class="ox ox-ack"><button class="cap" aria-expanded="false">${og}👍 已确认 ${it.ids.length} 条（ack_messages）</button>${rawBox('工具调用 ack_messages', raw)}</div>`;
+    }
+    case 'out': {
+      const msg = c.HM[it.h];
+      const args = { body: msg.body, ...(msg.replyTo ? { replyTo: msg.replyTo } : {}), ...(msg.fyi ? { fyi: true } : {}) };
+      const delivered = msg.to.filter((x) => c.byId[x] && c.byId[x].status !== 'offline');
+      const offline = msg.to.filter((x) => c.byId[x] && c.byId[x].status === 'offline');
+      const raw = toolRaw('send_message', args, { messageId: msg.id, deliveredTo: delivered });
+      const to = msg.to.length ? msg.to.map((x) => '@' + x).join(' ') : '@all';
+      const what = delivered.length ? '已排队投递给 ' + delivered.join('、') : offline.length ? '收件人离线，未投递' : msg.to.includes('user') ? '回复用户：显示在群聊里' : '广播：所有人记为未读，不唤醒';
+      return `<div class="ox ox-out" data-mid="${msg.id}"><button class="cap" aria-expanded="false"><span class="lbl">发到群里</span><span class="to">${to}</span>${msg.fyi ? '<span class="fyi">仅知会</span>' : ''}<span class="sm">${esc(oneLine(msg.body.replace(/^@[\w-]+\s*/, ''), 30))}</span><span class="arrow"><svg><use href="#i-send"/></svg></span></button>
+        <div class="full"><div class="md">${md(msg.body)}</div><div class="ox-foot"><span>send_message · ${msg.t} · ${what}</span>${rawBtn}</div>${rawBox('工具调用 send_message（群聊里显示的就是 body）', raw)}</div></div>`;
+    }
+    case 'dlv': {
+      const msgs = it.msgs.map((k) => c.HM[k]);
+      const raw = envelope(c, m.id, msgs, { marker: it.marker, replies: it.replies, notice: it.notice, unread: it.unread });
+      const title = NATIVE_SHOWN[m.harness];
+      const render = (part, inBatch) => (part.p === 'in' ? inPart(c, part, inBatch, raw, title) : sysPart(c, part, inBatch, raw, title));
+      if (it.parts.length === 1) return render(it.parts[0], false);
+      return `<div class="ox-batch"><div class="bh">${og}<b>ORRERY 投递</b><span>一个信封 · ${it.parts.length} 项${it.parts.some((p) => p.p === 'note') ? '（含说明段附注）' : ''}</span><button class="rawbtn" data-raw style="margin-left:auto">查看原文</button></div>
+        ${it.parts.map((p) => render(p, true)).join('')}${rawBox(title, raw)}</div>`;
+    }
+  }
+  return '';
+}
+
+// jump from a notice card to the matching chat item
+function jumpTo(cid, who, ref) {
+  const c = CL[cid];
+  const key = winKey(cid, who);
+  openWin(key);
+  const w = wins.get(key);
+  const target = who === 'hub' ? w.el.querySelector(`.body [data-mid="${c.HM[ref].id}"]`) : w.el.querySelector(`.body [data-nid="${ref}"]`);
+  if (!target) return;
+  const body = $('.body', w.el);
+  const host = target.closest('.ox-batch') || target;
+  setTimeout(() => {
+    body.scrollTop = Math.max(0, host.offsetTop - body.offsetTop - 40);
+    target.classList.remove('flash'); void target.offsetWidth; target.classList.add('flash');
+    if (target.classList.contains('ox-sys')) target.classList.add('open');
+  }, reduced ? 0 : 480);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// main loop
+// ════════════════════════════════════════════════════════════════════════
+let last = performance.now(), skyT = 0;
+const visible = (lvl) => !LAYER[lvl].classList.contains('off');
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!(paused || reduced)) clock += dt;
+  skyT += dt;
+  drawSky(skyT, dt);
+  if (visible('universe')) drawUniverse(skyT);
+  if (visible('galaxy')) drawGalaxy(skyT);
+  if (visible('system') && cur) { advanceSystem(dt); drawOrrery(); }
+  placeCard(); placeTip();
+  requestAnimationFrame(frame);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// boot
+// ════════════════════════════════════════════════════════════════════════
+const pauseBtn = $('#pauseBtn');
+const syncPause = () => { pauseBtn.setAttribute('aria-pressed', String(paused)); pauseBtn.textContent = paused ? '继续公转' : '暂停公转'; };
+pauseBtn.addEventListener('click', () => { paused = !paused; syncPause(); });
+syncPause();
+function layoutAll() {
+  W = innerWidth; H = innerHeight; DPR = Math.min(2, devicePixelRatio || 1);
+  hiDPI(sky);
+  bakeSky();
+  layoutUniverse();
+  if (view.level === 'galaxy') layoutGalaxy(); else hiDPI(gal);
+  layoutSystem();
+  if (cur) rebuildSats();
+}
+layoutAll();
+addEventListener('resize', layoutAll);
+// start level: ?view=universe (default) | galaxy:<分组> | system:<群聊名>
+(() => {
+  const v = params.get('view') || '';
+  let next = null;
+  if (v.startsWith('galaxy:') && GROUPS.includes(v.slice(7))) next = { level: 'galaxy', group: v.slice(7), cid: null };
+  if (v.startsWith('system:')) { const c = CLUSTERS.find((x) => x.name === v.slice(7)); if (c) next = { level: 'system', cid: c.id, group: c.category || null }; }
+  if (next) { LAYER.universe.classList.add('off'); LAYER[next.level].classList.remove('off'); prepare(next); }
+  updateChrome();
+  for (const k of (params.get('open') || '').split(',').filter(Boolean)) {
+    const c = cur || CLUSTERS[0];
+    if (k === 'hub' || c.byId[k]) openWin(winKey(c.id, k));
+  }
+})();
+requestAnimationFrame((t) => { last = t; frame(t); });
+window.__debug = { go, up, openWin, minimize, restore, closeWin, clusters: () => CLUSTERS.map((c) => c.name), pause: (v = true) => { paused = v; syncPause(); } };
+</script>
+</body>
+</html>
