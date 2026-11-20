@@ -31,7 +31,7 @@ Knip automatically picks up `package.json` `main`/`exports`/`scripts` and CI com
 - **Tests**: `test/*.test.ts` files executed by `scripts/test.mjs`, documented live scripts, fake CLIs spawned by path, and fixtures loaded through plugin manifests, such as `config-demo`.
 - **Desktop**: `main`/`shortcut`, three preloads, three UI modules loaded directly by HTML, four standalone Electron checks, and test-spawned `win32-host` / `temp-reaper`.
 
-Trailing `!` marks production entrypoints for `--production` export audits without replacing the full-repo report. Only OS binaries (`tasklist`, `netstat`, and optional `mkfifo` in tests) sit in `ignoreBinaries`; no blanket ignores exist. Store ad-hoc JSON reports under `.tmp`.
+Trailing `!` marks production entrypoints for `--production` export audits. The `ignoreBinaries` list covers operating system commands (`tasklist`, `netstat`, `icacls.exe` for Windows permission tests, and optional `mkfifo` in tests). Store ad-hoc JSON reports under `.tmp`.
 
 ## Reviewing Candidates
 

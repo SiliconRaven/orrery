@@ -42,6 +42,14 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
+      - name: Check Windows registry permissions
+        timeout-minutes: 2
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
+        run: node --test test/hub-registry-acl.test.ts
+
       - name: Run the checks in .premerge/checks.json
         # The runner's default temp folder is on its slower system drive, where a durable SQLite commit was measured
         # about 30 times slower than in the runner's own temp folder; every test Hub keeps its database in TEMP.

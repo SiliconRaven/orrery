@@ -64,7 +64,7 @@ Windows 安装版由 `desktop/lib/runtime.mjs` 选择内置 Node、外置 Hub �
 
 星图的网页读取路由属于默认关闭的官方插件。`src/plugins/starmap/index.ts` 核对成员归属和分页参数，复用 Hub 的只读绑定会话接口。
 
-`src/hub-registry.ts` 管理账户登记处，`src/bridge-protocol.ts` 定义签名格式，`src/mcp/bridge-auth.ts` 在进入处理器前校验。第二实例默认不投递。[原生模式](native-mode.md)
+`src/hub-registry.ts` 管理账户登记处。Windows 上用独立的 PowerShell 进程，直接调用 .NET 文件 API 检查目录和密钥的访问控制列表。`src/bridge-protocol.ts` 定义签名格式，`src/mcp/bridge-auth.ts` 在进入处理器前校验。第二实例默认不投递。[原生模式](native-mode.md)
 
 
 1. **单一原生模式**：适配器通过 `nativeAdapters` 注册。新建对话的成员规格须明确传 `mode: "native"` 和非空的 `projectPath`，接入已有对话时用 `sessionId`。界面不需要切换模式，成员输出不带 `mode`。

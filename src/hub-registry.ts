@@ -1,10 +1,10 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { promisify } from 'node:util';
 import { BRIDGE_SECRET_RE, CLAIM_RE, HUB_ID_RE, SIGNATURE_HEADER, signBridgeRequest, type BridgeTarget } from './bridge-protocol.ts';
 
 export interface RegistryRecord extends BridgeTarget {
@@ -37,34 +37,41 @@ if ($env:ORRERY_REGISTRY_ACL_CREATE -eq '1' -and -not [IO.Directory]::Exists($pa
   }
   [void][IO.Directory]::CreateDirectory($path, $acl)
 }
-$item = Get-Item -LiteralPath $path -Force
-if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { exit 1 }
-$acl = Get-Acl -LiteralPath $path
-if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) { exit 1 }
+$attributes = [IO.File]::GetAttributes($path)
+if ($attributes -band [IO.FileAttributes]::ReparsePoint) { exit 2 }
+$acl = if ($attributes -band [IO.FileAttributes]::Directory) {
+  [IO.Directory]::GetAccessControl($path)
+} else {
+  [IO.File]::GetAccessControl($path)
+}
+if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) { exit 2 }
 foreach ($access in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-  if ($access.AccessControlType -eq 'Allow' -and $access.IdentityReference.Value -notin $trusted) { exit 1 }
+  if ($access.AccessControlType -eq 'Allow' -and $access.IdentityReference.Value -notin $trusted) { exit 2 }
 }
 `;
-
-const execFileAsync = promisify(execFile);
 
 /**
  * On Windows chmod does not set a DACL. New registry directories explicitly give access to this user and system admins.
  * Asynchronous: the Hub registers after it listens, and a blocked event loop could not even answer 503 "hub is starting"
- * (a launcher would then take the silent port for another program). Each check is one PowerShell, up to a second.
+ * (a launcher would then take the silent port for another program). Read ACLs through .NET without loading PowerShell modules.
  */
 async function windowsPrivate(path: string, create: boolean): Promise<void> {
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  const child = spawn(join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(windowsPrivateScript, 'utf16le').toString('base64')],
+    { env: { SystemRoot: systemRoot, WINDIR: systemRoot, ORRERY_REGISTRY_ACL_PATH: path, ORRERY_REGISTRY_ACL_CREATE: create ? '1' : '0' },
+      timeout: 8_000, windowsHide: true, stdio: 'ignore' });
+  const failure = `Orrery registry ACL could not be verified as private: ${path}`;
+  let status: [number | null, NodeJS.Signals | null];
   try {
-    const run = execFileAsync(join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(windowsPrivateScript, 'utf16le').toString('base64')],
-      { env: { SystemRoot: systemRoot, WINDIR: systemRoot, ORRERY_REGISTRY_ACL_PATH: path, ORRERY_REGISTRY_ACL_CREATE: create ? '1' : '0' },
-        timeout: 8_000, windowsHide: true });
-    run.child.stdin?.end();   // nothing to read: PowerShell must not wait on an open stdin
-    await run;
-  } catch {
-    throw new Error(`Orrery registry ACL could not be verified as private: ${path}`);
+    status = await once(child, 'exit') as typeof status;
+  } catch (error) {
+    throw new Error(`${failure} (could not start PowerShell)`, { cause: error });
   }
+  const [code, signal] = status;
+  if (code === 0) return;
+  if (code === 2) throw new Error(`${failure} (ACL rejected)`);
+  throw new Error(`${failure} (PowerShell ${signal ? `terminated with ${signal}` : `exited with code ${code}`})`);
 }
 
 async function checkPrivate(path: string, directory: boolean, verifyWindows = true): Promise<void> {

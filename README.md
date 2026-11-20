@@ -170,6 +170,8 @@ npm run backup                           # 备份本地私有 Hub 数据库
 npm run plugin:inspect -- <清单路径>     # 登记前预检第三方插件清单（不运行插件）
 ```
 
+GitHub Actions 在 Windows 上先验证临时 Hub 登记目录的访问权限，再运行完整检查。
+
 </details>
 
 ---

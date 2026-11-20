@@ -33,7 +33,7 @@ Knip 自动读取 package.json 的 main / exports / scripts 和 CI 命令；这�
 
 入口末尾的 `!` 表示生产入口，不带该标记的测试和开发命令不会在 `--production` 模式中作为入口。生产模式只是辅助观察测试专用导出，不替代默认的全仓报告。
 
-只对操作系统提供的 tasklist、netstat 和测试在可用时调用的 mkfifo 设置 ignoreBinaries。没有整片目录、依赖或导出的 ignore。node_modules 和 .tmp 等产物沿用现有 .gitignore；临时 JSON 报告也应放在 .tmp。
+只对操作系统提供的 tasklist、netstat、Windows 权限测试使用的 icacls.exe 和测试在可用时调用的 mkfifo 设置 ignoreBinaries。node_modules 和 .tmp 等产物沿用现有 .gitignore；临时 JSON 报告也应放在 .tmp。
 
 ## 如何处理候选
 

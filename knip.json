@@ -6,6 +6,7 @@
   "ignoreBinaries": [
     "tasklist",
     "netstat",
+    "icacls.exe",
     "mkfifo"
   ],
   "workspaces": {

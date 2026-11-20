@@ -16,8 +16,15 @@ test('ci workflow: runs the declared checks through the runner, never a copy of 
 });
 
 test('ci workflow: the checks keep their temp files in the runner temp folder, on the fast drive', () => {
-  const step = workflow.slice(workflow.indexOf('- name: Run the checks'), workflow.indexOf('run: node scripts/ci-checks.ts'));
-  for (const name of ['TEMP', 'TMP', 'TMPDIR']) assert.match(step, new RegExp(`\\n\\s+${name}: \\$\\{\\{ runner\\.temp \\}\\}\\n`), name);
+  const preflight = workflow.indexOf('- name: Check Windows registry permissions');
+  const checks = workflow.indexOf('- name: Run the checks');
+  assert.ok(preflight >= 0 && preflight < checks, 'the registry preflight runs before the full suite');
+  const registryStep = workflow.slice(preflight, checks);
+  assert.match(registryStep, /run: node --test test\/hub-registry-acl\.test\.ts/);
+  const suiteStep = workflow.slice(checks, workflow.indexOf('run: node scripts/ci-checks.ts'));
+  for (const step of [registryStep, suiteStep]) {
+    for (const name of ['TEMP', 'TMP', 'TMPDIR']) assert.match(step, new RegExp(`\\n\\s+${name}: \\$\\{\\{ runner\\.temp \\}\\}\\n`), name);
+  }
 });
 
 test('ci workflow: read-only, every action pinned to a full commit SHA, credentials not kept', () => {

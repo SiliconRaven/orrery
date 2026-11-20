@@ -170,6 +170,8 @@ npm run backup                           # Back up local private Hub SQLite data
 npm run plugin:inspect -- <manifest>     # Preflight a third-party plugin manifest before registering (never runs it)
 ```
 
+On Windows, GitHub Actions verifies permissions on a temporary Hub registry before running the full checks.
+
 </details>
 
 ---
