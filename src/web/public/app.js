@@ -6,7 +6,7 @@ import {
   handoverText,
   toolVersionView,
   usageAlertText,
-  attachmentNode, fileLabel, fileUrl, pendingFileNode, rebindWarnings, activeMember, activeMembers, activitySummary, attachMentions, attachTaskRefs, hubRestartAction, longWaitingHint, reloadWouldLose, clusterUsageText, memberTokensText, memberDetails, memberDetailsView, projectName, usageView, attachSkills, autogrowHeight, avatarEl, bodySegments, canHandoff, deliveryAdvice, timelineStageView, resendBlockedText, categoryInput, clampPane, clusterNameInput, clusterOrder, clusterUnread, sidebarSections, unreadLabel, clusterGroups, moveGroup, moveTargets, refreshRelativeTimes, relativeTimeEl, COLLAPSED_GROUPS_KEY, collapsedFromStored, collapsedSignature, confirmDialog, conversationActivity, conversations, deliveryProblem, deliveryView, editFields, effortChoices, expandedFromStored, fmtTime, h, handoffNeedsConfirmation, appRowSummary, createRequest, focusAfterTick, memberNameProblem, rowAfterKey, isSystemMessage, plainTextRecord, chatRowState, chatShowsMessage, jumpCurrent, jumpExceptionId, jumpPending, nextJump, CHAT_FILTER_DEFAULT, CHAT_FILTER_KEY, chatFilterCount, chatFilterFromStored, systemMark, limitFormEdited, limitSubmission, limitView, memberDefaultName, memberHealth, memberStatus, memberStatusLabel, memberSummary, HIDDEN_MARK, memberCounts, heldTasks, heldTasksPath, allPages, hiddenConfirmText, hiddenMentionHint, mergeMemberAt, messageAuthorName, noticeBoard, noticeDialog, notifyFormEdited, notifySubmission, notifyView, offlineHint, PANEL_OPEN_KEY, paneFromStored, paneKey, PANES, pastedFiles, pickFiles, presetName, receiptMembers, recordOnlyNotice, sessionAvailability, snippet, splitReceiptMembers, stackedMembers, submitOnEnter, systemAvatar, UNGROUPED, userAvatar, withLastMessage,
+  attachmentNode, fileLabel, fileUrl, pendingFileNode, rebindWarnings, activeMember, activeMembers, activitySummary, attachMentions, attachTaskRefs, hubRestartAction, longWaitingHint, reloadWouldLose, clusterUsageText, memberTokensText, memberDetails, memberDetailsView, projectName, usageView, attachSkills, autogrowHeight, avatarEl, bodySegments, canHandoff, deliveryAdvice, timelineStageView, resendBlockedText, categoryInput, clampPane, clusterNameInput, clusterOrder, clusterUnread, sidebarSections, unreadLabel, clusterGroups, moveGroup, moveTargets, refreshRelativeTimes, relativeTimeEl, COLLAPSED_GROUPS_KEY, collapsedFromStored, collapsedSignature, confirmDialog, conversationActivity, conversations, deliveryProblem, deliveryView, editFields, effortChoices, expandedFromStored, fmtTime, h, handoffNeedsConfirmation, appRowSummary, createRequest, focusAfterTick, memberNameProblem, rowAfterKey, isSystemMessage, plainTextRecord, chatRowState, chatShowsMessage, jumpCurrent, jumpExceptionId, jumpPending, nextJump, forUserScanPage, mergeForUser, nextForUser, unreadForUser, CHAT_FILTER_DEFAULT, CHAT_FILTER_KEY, chatFilterCount, chatFilterFromStored, systemMark, limitFormEdited, limitSubmission, limitView, memberDefaultName, memberHealth, memberStatus, memberStatusLabel, memberSummary, HIDDEN_MARK, memberCounts, heldTasks, heldTasksPath, allPages, hiddenConfirmText, hiddenMentionHint, mergeMemberAt, messageAuthorName, noticeBoard, noticeDialog, notifyFormEdited, notifySubmission, notifyView, offlineHint, PANEL_OPEN_KEY, paneFromStored, paneKey, PANES, pastedFiles, pickFiles, presetName, receiptMembers, recordOnlyNotice, sessionAvailability, snippet, splitReceiptMembers, stackedMembers, submitOnEnter, systemAvatar, UNGROUPED, userAvatar, withLastMessage,
 } from './ui.js';
 import { attachMenu } from './ui.js';
 import { SYSTEM_CATEGORIES, SYSTEM_CATEGORY_LABELS } from './system-kinds.js';
@@ -1017,6 +1017,8 @@ function scheduleSelectedRead() {
   // position need not be loaded; the Hub only ever moves it forward.
   const w = chatWindows.get(id);
   if (!w?.live || w.pending) return;
+  // An undiscovered target would lose its unread position if the user left the chat during the scan.
+  if (forUser?.cid !== id || forUser.before !== null) return;
   const latest = S.clusterMsgs.get(id)?.at(-1);
   if (!latest || latest === cluster.userReadMessageId) return;
   const state = readRequests.get(id) ?? { lastSent: 0, inFlight: false, timer: null, blocked: false, retryRequested: false, lastSuccess: null };
@@ -1739,6 +1741,8 @@ function renderChat() {
   $('chat-search-open').hidden = !cluster || S.sel.overview;
   chatSearch.sync(cluster && !S.sel.overview ? cid : null);
 
+  if (S.sel.overview || !cluster) renderForUser(null);
+
   if (S.sel.overview) {
     if (box.dataset.cluster) { box.replaceChildren(); box.dataset.cluster = ''; }
     renderConversations();
@@ -1758,12 +1762,21 @@ function renderChat() {
   if (switched) {
     box.replaceChildren();
     box.dataset.cluster = cid;
+    forUser = null;
+  }
+  // Before the read below can move it; not while the event log replays, which may still hold an older position.
+  if (!forUser && replayComplete()) {
+    forUser = { cid, readId: cluster.userReadMessageId ?? null, last: null, found: [], before: undefined, pages: 0, partial: false, inFlight: false, failedAt: 0 };
   }
   const w = chatWindows.get(cid);
   if (!w || (w.failed && switched)) void loadLatest(cid);   // opened for the first time (or again after a failed read)
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
   const loaded = S.clusterMsgs.get(cid) ?? [];
   const ids = loaded.filter((id) => chatRowState(S.messages.get(id), chatFilter, jumpExceptionId(jump, cid)) !== 'hidden');
+  if (forUser && w?.live) forUser.found = mergeForUser(forUser.found, unreadForUser(loaded.map((id) => S.messages.get(id)), forUser.readId), new Set(loaded));
+  if (forUser) scanForUser(cid, w, loaded);
+  renderForUser(cid);
+  const marked = new Set(forUser?.found);
   // A page may add rows at one end and evict them at the other. Anchor to a surviving row, since the change in
   // the total height cannot tell how far a row on screen moved.
   const anchor = w?.anchor && !switched ? chatAnchor(box, ids) : null;
@@ -1828,6 +1841,7 @@ function renderChat() {
       c = { el, sig, titles };
       msgEls.set(id, c);
     }
+    if (c.el.classList.contains('for-user') !== marked.has(id)) c.el.classList.toggle('for-user', marked.has(id));
     // In window order: older messages put in front, a replaced window's messages moved; the leftovers are cut below.
     if (box.children[i] !== c.el) {
       // A kept element coming back (a filter, a jump or another cluster took it out): plugin marks may have changed meanwhile.
@@ -1850,6 +1864,75 @@ function renderChat() {
   }
   for (const id of openReceipts) if (S.messages.get(id)?.clusterId === cid) loadTimelines(S.messages.get(id));
 }
+
+/**
+ * 给你的消息 (ui.js forUser) stay marked until read, and the header button "N 条给你的消息" jumps to them in turn
+ * through openMessage. Read means before the user's read position as it was when the chat last switched to this cluster
+ * (`forUser.readId`): the live position moves to the newest message as soon as the open chat has focus, which would end
+ * every mark the moment the user looks. Leaving the cluster (another cluster, 全部对话) or reloading takes it anew.
+ * `found` holds every target found in this visit, oldest first: the live window's (renderChat) and those older than it,
+ * which scanForUser pages back for from the window's oldest message to that read position. A window read around a
+ * jump or older history changes nothing in it; only one reaching the newest message adds what came since.
+ */
+let forUser = null;   // { cid, readId, last (the button's last jump), found, before, pages, partial, inFlight, failedAt }
+// Search at most 10 pages at a time. The user can resume from the last page.
+const FOR_USER_MAX_PAGES = 10;
+
+/**
+ * The next page of the scan: once the first newest window is in, from its oldest message back (ui.js forUserScanPage).
+ * One request at a time; a failed one keeps what was found and is tried again by the next click on the button, or by
+ * the next render 3 seconds or more later.
+ */
+function scanForUser(cid, w, loaded) {
+  const f = forUser;
+  if (f.before === undefined) {
+    if (!w?.live || w.loading || !loaded.length) return;
+    f.before = w.older && !loaded.includes(f.readId) ? loaded[0] : null;   // null: the read position or the first message is loaded
+  }
+  if (f.before === null || f.partial || f.inFlight || Date.now() - f.failedAt < 3000) return;
+  f.inFlight = true;
+  api('GET', messagesPath(cid, `&before=${encodeURIComponent(f.before)}`)).then((list) => {
+    if (forUser !== f) return;
+    const page = forUserScanPage(list, f.readId, { pageSize: PAGE, pages: ++f.pages, maxPages: FOR_USER_MAX_PAGES });
+    Object.assign(f, { found: mergeForUser(f.found, page.ids), before: page.next, partial: page.partial, failedAt: 0 });
+  }, () => { f.failedAt = Date.now(); })
+    .finally(() => { f.inFlight = false; if (forUser === f) render(); });
+}
+
+function renderForUser(cid) {
+  const f = cid ? forUser : null;
+  const count = f?.found.length ?? 0;
+  // Also expose a zero-result scan, so a failed request or a paused scan can be resumed.
+  const more = f?.before != null;
+  const button = $('for-user-jump');
+  const hidden = !count && !more;
+  if (button.hidden !== hidden) button.hidden = hidden;
+  if (hidden) return;
+  button.disabled = more && !f.failedAt && !f.partial;
+  setText(button, count
+    ? (more ? t('{count}+ 条给你的消息', { count }) : t('{count} 条给你的消息', { count }))
+    : (f.failedAt ? t('重试查找') : f.partial ? t('继续查找') : t('查找中…')));
+  iconLabel(button, f.partial ? t('已找到 {count} 条给你的消息；点击继续查找更早的未读消息', { count })
+    : f.failedAt ? t('已找到 {count} 条给你的消息；读取更早的消息失败，点击重试', { count })
+      : more ? t('跳到下一条给你的未读消息（成员写了 @user 或没有 @ 任何成员）。已找到 {count} 条，还在往前查找', { count })
+        : t('跳到下一条给你的未读消息（成员写了 @user 或没有 @ 任何成员），共 {count} 条', { count }));
+  button.dataset.cluster = cid;
+}
+$('for-user-jump').addEventListener('click', () => {
+  const cid = $('for-user-jump').dataset.cluster;
+  const f = forUser;
+  if (!f || cid !== S.sel.cluster) return;
+  if (f.partial || f.failedAt) {
+    if (f.partial) f.pages = 0;
+    f.partial = false;
+    f.failedAt = 0;
+    render();
+  }
+  const id = nextForUser(f.found, f.last);
+  if (!id) return;
+  f.last = id;
+  void openMessage(cid, id);
+});
 
 function chatAnchor(box, ids) {
   const top = box.getBoundingClientRect().top;

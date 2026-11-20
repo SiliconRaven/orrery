@@ -415,6 +415,67 @@ export const jumpExceptionId = (jump, cid) => (jump !== null && jump.cid === cid
 /** Whether a jump in cluster `cid` still waits to scroll to its target (the live window then keeps its page). */
 export const jumpPending = (jump, cid) => jump !== null && jump.cid === cid && !jump.landed;
 
+/**
+ * Whether `body` writes `@user` where the Hub's parseMentions would count a written @: not inside inline code, a code
+ * block or quotes, not right after a letter or digit (an e-mail address), and only the whole name (`@user2` is not it).
+ */
+export function writesAtUser(body) {
+  if (typeof body !== 'string' || !body.includes('@user')) return false;
+  const quoted = quotedRanges(body);
+  for (let i = body.indexOf('@user'); i >= 0; i = body.indexOf('@user', i + 1)) {
+    if (!inRanges(quoted, i) && !(i > 0 && /[A-Za-z0-9]/.test(body[i - 1])) && mentionAt(body, i, ['user']) !== null) return true;
+  }
+  return false;
+}
+
+/**
+ * A message for the user (给你的消息): a member's (not the user's, a system notice or a plugin's) that writes @user, or
+ * that @-mentions no member. A member's @all is addressed to the members (`explicitMentions` is set even when nobody
+ * else is in the group), and the Hub's own `user` category means something else: a user message @-mentioning nobody.
+ */
+export function forUser(message) {
+  if (!message || message.from === 'user' || message.from === 'system' || message.kind === 'system' || message.kind === 'plugin'
+    || String(message.from).startsWith('plugin:')) return false;
+  return writesAtUser(message.body) || (!message.mentions?.length && message.explicitMentions === undefined);
+}
+
+/**
+ * The ids of `messages` that are for the user and after read position `readId`: a window reaching the newest message,
+ * oldest first. No position, or one not in the window (so older than all of it): every one of them.
+ */
+export function unreadForUser(messages, readId) {
+  const at = readId == null ? -1 : messages.findIndex((m) => m.id === readId);
+  return messages.slice(at + 1).filter(forUser).map((m) => m.id);
+}
+
+/**
+ * One page of the scan for 给你的消息 older than the loaded window (app.js scanForUser): `list` is the page of `pageSize`
+ * messages before the previous one, oldest first, and `pages` how many pages this one makes. Returns its messages for the
+ * user after `readId`, and `next`: the id to read the next page before, or null when the scan ends here: at the read
+ * position or at the cluster's first message (a short page). After `maxPages` pages, `partial` pauses the scan, with
+ * `next` still pointing to the boundary for a later continuation.
+ */
+export function forUserScanPage(list, readId, { pageSize, pages, maxPages }) {
+  const at = readId == null ? -1 : list.findIndex((m) => m.id === readId);
+  const ids = list.slice(at + 1).filter(forUser).map((m) => m.id);
+  if (at >= 0 || list.length < pageSize) return { ids, next: null, partial: false };
+  return { ids, next: list[0].id, partial: pages >= maxPages };
+}
+
+/**
+ * The targets found so far (oldest first) with `ids` added. Without `windowIds`, `ids` come from an older scan page and
+ * go in front. With them, `ids` are the marks of a window reaching the newest message, whose ids `windowIds` are: what
+ * was found outside it is older and stays in front, what is inside it takes the window's order.
+ */
+export function mergeForUser(found, ids, windowIds = null) {
+  if (windowIds) return [...found.filter((id) => !windowIds.has(id)), ...ids];
+  const known = new Set(found);
+  return [...ids.filter((id) => !known.has(id)), ...found];
+}
+
+/** The message "N 条给你的消息" jumps to next: the one after `last` in `ids`, the earliest at first and again after the last one. */
+export const nextForUser = (ids, last) => (ids.length ? ids[(ids.indexOf(last) + 1) % ids.length] : null);
+
 /** The warning mark of a system message: { level, label } for a problem or an attention item, else null. */
 export function systemMark(message) {
   if (!isSystemMessage(message)) return null;

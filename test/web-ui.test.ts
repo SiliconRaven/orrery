@@ -142,6 +142,7 @@ test('sidebar read advancement waits for replay, stops after failure, and rechec
   const appClasses = new Set<string>();   // #app: 'view-open' while a full-page plugin view covers the chat
   const appEl = { classList: { contains: (c: string) => appClasses.has(c) } };
   const context: any = { S: state, clusterSnapshotSeq: 5, chatWindows: windows, unread: new Map(), document: doc,
+    forUser: { cid: 'a', before: null },
     $: (id: string) => (id === 'app' ? appEl : assert.fail(`unexpected $(${id})`)),
     Date: { now: () => now }, setTimeout: (fn: () => void, delay: number) => (timers.push({ fn, delay }), timers.length),
     api: (_method: string, path: string, body: { messageId: string }) => {
@@ -154,7 +155,12 @@ test('sidebar read advancement waits for replay, stops after failure, and rechec
   state.lastSeq = 5;
   doc.visibilityState = 'hidden'; context.read.scheduleSelectedRead();
   assert.equal(calls.length, 0, 'hidden pages do not advance');
-  doc.visibilityState = 'visible'; context.read.scheduleSelectedRead();
+  doc.visibilityState = 'visible';
+  context.forUser.before = 'm1';
+  context.read.scheduleSelectedRead();
+  assert.equal(calls.length, 0, 'do not advance before looking up older messages for the user');
+  context.forUser.before = null;
+  context.read.scheduleSelectedRead();
   assert.deepEqual(calls[0], { path: '/api/clusters/a/read', messageId: 'm1' });
   pending[0].reject(new Error('offline'));
   await new Promise((resolve) => setImmediate(resolve));
@@ -168,7 +174,11 @@ test('sidebar read advancement waits for replay, stops after failure, and rechec
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(timers.length, 1, 'a new message during the request permits one throttled retry');
   assert.equal(timers[0].delay, 2000);
-  state.sel.cluster = 'b'; now += 2000; timers[0].fn();
+  state.sel.cluster = 'b'; now += 2000;
+  context.read.scheduleSelectedRead();
+  assert.equal(calls.length, 2, 'the old group’s finished scan does not clear the newly selected group');
+  context.forUser = { cid: 'b', before: null };
+  timers[0].fn();
   assert.deepEqual(calls[2], { path: '/api/clusters/b/read', messageId: 'n1' }, 'a stale timer cannot advance the old group');
   pending[2].resolve({});
   await new Promise((resolve) => setImmediate(resolve));

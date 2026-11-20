@@ -417,6 +417,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 .usage-message { display: block; text-align: left; max-width: 100%; margin-top: 4px; overflow-wrap: anywhere; }
 .msg { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 10px; padding: 8px 0; }
 .msg.jump-target { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--r-sm); }
+/* 给你的消息 (app.js renderForUser) until read: an accent edge and tint, in every theme through the accent tokens. */
+.msg.for-user { padding-inline: 8px; border-radius: var(--r-sm); background: var(--accent-soft); box-shadow: var(--edge-current); }
+.for-user-jump { white-space: nowrap; color: var(--accent); border-color: var(--accent); }
 .msg-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .msg-head .who { font-weight: 600; }
 .msg.plugin-message .who { overflow-wrap: anywhere; min-width: 0; }
