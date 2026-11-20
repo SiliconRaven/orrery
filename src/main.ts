@@ -11,14 +11,14 @@ import { registries } from './adapters/index.ts';
 import { automaticUpgradeBackup } from './backup.ts';
 import { SIGNATURE_HEADER } from './bridge-protocol.ts';
 import { API_TOKEN_RE, dbModeOf, defaultRegistryDir, disabledPluginsOf, HUB_CLOSE_PLUGIN_GRACE_MS, intEnv, readPluginsFile, REPO_ROOT, resolveConfig, safeModeOf, skillsDirOf, updateChecksOf,
-  writeDisabledPlugins, writePluginsFile } from './config.ts';
+  writePluginsFile } from './config.ts';
 import { AppExtensions } from './core/app-extensions.ts';
 import { loadAvatarPresets } from './core/avatars.ts';
 import { Hub, type Limits } from './core/hub.ts';
 import { HOST_API_VERSION, readExternalPlugin, readExternalPlugins } from './core/external-plugin-config.ts';
 import { ExternalPlugins, type LifecycleOptions } from './core/external-plugins.ts';
 import type { CommandLimits } from './core/external-plugin-commands.ts';
-import { PluginHost, type OfficialPlugin } from './core/plugin.ts';
+import { PluginHost, pluginEnabledBySettings, type OfficialPlugin } from './core/plugin.ts';
 import { PluginSettings } from './core/plugin-settings.ts';
 import { Store, type DbMode } from './core/store.ts';
 import { TrustedPlugins } from './core/trusted-plugins.ts';
@@ -254,8 +254,11 @@ export async function startHub(opts: StartOptions) {
       loadTimeoutMs: opts.trustedLoadTimeoutMs,
     });
     const beforeTrusted = [...base, ...external.installations.map((p) => p.manifest)];
-    const loadedTrusted = await trusted.load(beforeTrusted, [...new Set([...envDisabled, ...fileDisabled])],
-      (file) => import(pathToFileURL(file).href), { hostApi: HOST_API_VERSION, z });
+    const explicitDisabled = [...new Set([...envDisabled, ...fileDisabled])];
+    const beforeTrustedDisabled = [...new Set([...explicitDisabled, ...beforeTrusted
+      .filter((plugin) => !pluginEnabledBySettings(plugin, explicitDisabled, pluginsFile.enabled)).map(({ id }) => id)])];
+    const loadedTrusted = await trusted.load(beforeTrusted, beforeTrustedDisabled,
+      (file) => import(pathToFileURL(file).href), { hostApi: HOST_API_VERSION, z }, pluginsFile.enabled);
     const registered = [...beforeTrusted, ...loadedTrusted];
     const registeredIds = new Set(registered.map((p) => p.id));
     // An id only the file names (a plugin this version does not have) stays in the file and is skipped; a typo in the
@@ -265,7 +268,8 @@ export async function startHub(opts: StartOptions) {
     const pluginHost = new PluginHost(registered, [
       ...envDisabled.filter((id) => registeredIds.has(id) || !skippedIds.has(id)),
       ...fileDisabled.filter((id) => registeredIds.has(id)),
-    ], { fullTrust: loadedTrusted.map((p) => p.id), registeredTrusted: trusted.ids(), onSkip: (id, reason) => trusted.fail(id, reason) });
+    ], { explicitlyEnabled: pluginsFile.enabled, fullTrust: loadedTrusted.map((p) => p.id),
+      registeredTrusted: trusted.ids(), onSkip: (id, reason) => trusted.fail(id, reason) });
     // Back up an existing database before its first pending schema write. Keep the earliest restore point
     // protected until the upgrade finishes (docs/architecture.md「升级前备份」).
     const upgrade = automaticUpgradeBackup(dbPath, join(home, 'backups'));
@@ -330,7 +334,7 @@ export async function startHub(opts: StartOptions) {
         reveal: () => secret,
       },
       toolFingerprints: () => getToolLists().then(fingerprintsOf),
-      plugins: new PluginSettings(pluginHost, envDisabled, fileDisabled, (disabled) => writeDisabledPlugins(home, disabled),
+      plugins: new PluginSettings(pluginHost, envDisabled, pluginsFile, (switches) => writePluginsFile(home, switches),
         trusted.manifests().filter((m) => !pluginHost.installed.some((p) => p.id === m.id))),
       externalPlugins,
       avatarDir: opts.avatarDir,

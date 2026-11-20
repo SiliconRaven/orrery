@@ -62,6 +62,8 @@ Windows 安装版由 `desktop/lib/runtime.mjs` 选择内置 Node、外置 Hub �
 
 ## 原生数据流与成员创建边界
 
+星图的网页读取路由属于默认关闭的官方插件。`src/plugins/starmap/index.ts` 核对成员归属和分页参数，复用 Hub 的只读绑定会话接口。
+
 `src/hub-registry.ts` 管理账户登记处，`src/bridge-protocol.ts` 定义签名格式，`src/mcp/bridge-auth.ts` 在进入处理器前校验。第二实例默认不投递。[原生模式](native-mode.md)
 
 

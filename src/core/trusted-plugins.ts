@@ -181,9 +181,10 @@ export class TrustedPlugins {
    * a line of it. After the import: a failing import or default export, a refused slot, or anything PluginHost would
    * refuse (an id, slot or name collision, a dependency switched off) skip only that plugin and those depending on it.
    * `registry` is what is registered before them (official plugins, then the restricted manifests); `disabled` the ids
-   * switched off for this start.
+   * switched off for this start. `explicitlyEnabled` carries user opt-ins to the same registry validation as the Hub.
    */
-  async load(registry: readonly OfficialPlugin[], disabled: readonly string[], importEntry: ImportEntry, host: { hostApi: number; z: unknown }): Promise<OfficialPlugin[]> {
+  async load(registry: readonly OfficialPlugin[], disabled: readonly string[], importEntry: ImportEntry,
+    host: { hostApi: number; z: unknown }, explicitlyEnabled: readonly string[]): Promise<OfficialPlugin[]> {
     if (this.opts.safeMode) return [];
     const accepted: OfficialPlugin[] = [];
     const pending = this.registrations.filter((r) => !this.errors.has(r.manifest.id) && this.confirmedAtStart.get(r.manifest.id));
@@ -206,7 +207,7 @@ export class TrustedPlugins {
         try {
           const ids = new Set([...registry, ...accepted, plugin].map((p) => p.id));
           // Only the ids this registry knows: PluginHost refuses an unknown one. The real start passes the same lists.
-          new PluginHost([...registry, ...accepted, plugin], disabled.filter((id) => ids.has(id)));
+          new PluginHost([...registry, ...accepted, plugin], disabled.filter((id) => ids.has(id)), { explicitlyEnabled });
         } catch (e) { this.fail(r.manifest.id, `${IMPORTED_REFUSED}${shortError(e)}`); continue; }
         accepted.push(plugin);
         this.loaded.add(r.manifest.id);

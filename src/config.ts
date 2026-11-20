@@ -77,13 +77,13 @@ export function safeModeOf(env: Env): boolean {
 export const HUB_CLOSE_PLUGIN_GRACE_MS = 10_000;
 
 /**
- * <home>/plugins.json: the ids the settings page switched off for the next start (`disabled`), and the third-party
+ * <home>/plugins.json: explicit switch choices for the next start (`disabled`/`enabled`), and the third-party
  * plugins whose automatic restart after a failure (`autoRestart`) or development reload (`devReload`) the user turned
  * on (docs/external-plugins.md「生命周期」), and those whose web UI the user turned off (`uiOff`,「网页界面」). The three
- * lists are optional and empty when absent. `trusted`: the full-trust plugins the user confirmed on the settings page,
+ * lifecycle lists and `enabled` are optional and empty when absent. `trusted`: the full-trust plugins the user confirmed on the settings page,
  * each bound to the real path of its Hub entry file (「完全信任的插件」); only the page's confirmation writes it.
  */
-export interface PluginsFile { disabled: string[]; autoRestart: string[]; devReload: string[]; uiOff: string[]; trusted?: TrustConfirmation[] }
+export interface PluginsFile { disabled: string[]; enabled: string[]; autoRestart: string[]; devReload: string[]; uiOff: string[]; trusted?: TrustConfirmation[] }
 export interface TrustConfirmation { id: string; entry: string }
 const stringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((id) => typeof id === 'string');
 const trustList = (value: unknown): value is TrustConfirmation[] => Array.isArray(value) && value.every((t) =>
@@ -97,22 +97,23 @@ export function readPluginsFile(home: string): PluginsFile {
   try {
     text = readFileSync(file, 'utf8');
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { disabled: [], autoRestart: [], devReload: [], uiOff: [] };
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { disabled: [], enabled: [], autoRestart: [], devReload: [], uiOff: [] };
     throw e;
   }
-  const hint = 'fix the file, or delete it to enable every plugin';
-  let data: { disabled?: unknown; autoRestart?: unknown; devReload?: unknown; uiOff?: unknown; trusted?: unknown } | null;
+  const hint = 'fix the file, or delete it to restore plugin defaults';
+  let data: { disabled?: unknown; enabled?: unknown; autoRestart?: unknown; devReload?: unknown; uiOff?: unknown; trusted?: unknown } | null;
   try {
     data = JSON.parse(text);
   } catch (e) {
     throw new Error(`${file} is not valid JSON (${(e as Error).message}); ${hint}`);
   }
-  const { disabled, autoRestart = [], devReload = [], uiOff = [], trusted } = data && typeof data === 'object' ? data : {};
-  if (!stringList(disabled) || !stringList(autoRestart) || !stringList(devReload) || !stringList(uiOff) || (trusted !== undefined && !trustList(trusted))) {
-    throw new Error(`${file} must look like {"disabled":["plugin-id"]} (optionally with "autoRestart", "devReload" and "uiOff" lists of ids, `
+  const { disabled, enabled = [], autoRestart = [], devReload = [], uiOff = [], trusted } = data && typeof data === 'object' ? data : {};
+  if (!stringList(disabled) || !stringList(enabled) || !stringList(autoRestart) || !stringList(devReload) || !stringList(uiOff)
+    || (trusted !== undefined && !trustList(trusted))) {
+    throw new Error(`${file} must look like {"disabled":["plugin-id"]} (optionally with "enabled", "autoRestart", "devReload" and "uiOff" lists of ids, `
       + `and "trusted": [{"id","entry"}]); ${hint}`);
   }
-  return { disabled, autoRestart, devReload, uiOff, ...(trusted?.length ? { trusted } : {}) };
+  return { disabled, enabled, autoRestart, devReload, uiOff, ...(trusted?.length ? { trusted } : {}) };
 }
 
 /** The ids the settings page switched off, from <home>/plugins.json (readPluginsFile). */
@@ -128,7 +129,8 @@ export function writePluginsFile(home: string, patch: Partial<PluginsFile>): voi
   const file = join(home, 'plugins.json');
   const next = { ...readPluginsFile(home), ...patch };
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ disabled: next.disabled, ...(next.autoRestart.length ? { autoRestart: next.autoRestart } : {}),
+  writeFileSync(tmp, JSON.stringify({ disabled: next.disabled, ...(next.enabled.length ? { enabled: next.enabled } : {}),
+    ...(next.autoRestart.length ? { autoRestart: next.autoRestart } : {}),
     ...(next.devReload.length ? { devReload: next.devReload } : {}), ...(next.uiOff.length ? { uiOff: next.uiOff } : {}),
     ...(next.trusted?.length ? { trusted: next.trusted } : {}) }, null, 2) + '\n');
   try {

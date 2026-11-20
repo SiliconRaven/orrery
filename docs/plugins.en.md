@@ -16,6 +16,8 @@ The orrery core only handles clusters, members, native chat delivery, message st
 
 ## Mechanism
 
+An official plugin with `defaultEnabled: false` starts disabled. Startup and the Settings preview use the same precedence: an environment disable, a user disable, a user enable, then the manifest default. Settings stores explicit switches in `disabled` and `enabled` in `plugins.json`. Removing the file restores each plugin's default.
+
 - Official plugins load at Hub startup. They can register database migrations, collaboration actions and queries, MCP tools, web and bridge routes, message fields, background services, lifecycle hooks and event types, and can register **official web slots** on the collaboration page.
 - `src/core`, `src/mcp` and `src/web` never import a plugin; only the assembly entry `src/main.ts` imports the registry (enforced by `test/boundaries.test.ts`).
 - **Fault isolation**: the core isolates every call into a plugin. If a background service throws while being built, started, swept, closed or notified, a fault is recorded (the Settings card shows "plugin error (phase): reason") and the Hub and other plugins carry on; a plugin whose MCP tools fail to register only loses its own tools; a hook that throws inside a transaction rolls the whole operation back with `PLUGIN_HOOK_FAILED`. Timers the plugin starts itself and hangs (endless loops, synchronous blocking) are outside this isolation.
@@ -37,7 +39,7 @@ A module exports `register(host)` and returns the slots it uses. `host` provides
 
 If a module or slot callback fails, the page logs the reason to the console and other slots and the page keep working.
 
-## Three Official Plugins & Dependencies
+## Official Plugins & Dependencies
 
 1. **`tasks` (Tasks & `ship`)**:
    - Provides task creation, three review tiers (member / self / user), dependencies, review batches, global labels, watches, `#number` refs, local Git branch links, stalled hints, handover records and the `ship` merge flow; see [Collaboration & Tasks](collaboration.en.md).
@@ -46,6 +48,8 @@ If a module or slot callback fails, the page logs the reason to the console and 
    - **Depends on `tasks`**: Runs only when `tasks` is enabled; manages 8 configurable delegation switches plus idle-task and quota alerts.
 3. **`bookmarks` (Cluster Knowledge Base)**:
    - Lets members (`bookmark_message`, `list_bookmarks`) and users archive tagged chat notes and decisions across long conversations.
+
+4. **`starmap` (Star map)** is off by default. When enabled, it registers an authenticated route for reading a member's bound conversation without caching the response.
 
 All three declare their own event types (tasks, bookmarks, coordinator), which third-party plugins can subscribe to with a grant; see [Third-party plugins, "Event subscription and publishing"](external-plugins.en.md#event-subscription-and-publishing).
 

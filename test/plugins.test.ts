@@ -297,32 +297,46 @@ test('plugins.json: written whole and read back; no file means none; a damaged f
 
 test('PluginSettings: dependencies are checked both ways against the next start, and a refused change writes nothing', () => {
   const plugins = [plugin('tasks', { name: '任务' }), plugin('coordinator', { name: '协调员', requires: ['tasks'] })];
-  const saved: string[][] = [];
-  const settings = new PluginSettings(new PluginHost(plugins), [], [], (ids) => saved.push(ids));
+  const saved: { disabled: string[]; enabled: string[] }[] = [];
+  const settings = new PluginSettings(new PluginHost(plugins), [], { disabled: [], enabled: [] }, (switches) => saved.push(switches));
   assert.throws(() => settings.setEnabled('tasks', false), /不能禁用“任务”：“协调员”依赖它/);
   assert.deepEqual(saved, []);
   settings.setEnabled('coordinator', false);
   settings.setEnabled('tasks', false);
-  assert.deepEqual(saved.at(-1), ['coordinator', 'tasks'], 'once its dependent is off for the next start, the dependency may go too');
+  assert.deepEqual(saved.at(-1), { disabled: ['coordinator', 'tasks'], enabled: [] },
+    'once its dependent is off for the next start, the dependency may go too');
   assert.throws(() => settings.setEnabled('coordinator', true), /不能启用“协调员”：它依赖的“任务”没有启用/);
   settings.setEnabled('tasks', true);
   settings.setEnabled('coordinator', true);
-  assert.deepEqual(saved.at(-1), []);
+  assert.deepEqual(saved.at(-1), { disabled: [], enabled: ['tasks', 'coordinator'] });
   assert.deepEqual(settings.list().map((p) => [p.id, p.enabled, p.pendingEnabled]), [['tasks', true, true], ['coordinator', true, true]]);
 });
 
 test('PluginSettings: a failed save changes nothing; an id this version does not know stays in the file', () => {
   let fail = true;
-  const saved: string[][] = [];
-  const settings = new PluginSettings(new PluginHost([plugin('a')]), [], ['removed-later'], (ids) => {
+  const saved: { disabled: string[]; enabled: string[] }[] = [];
+  const settings = new PluginSettings(new PluginHost([plugin('a')]), [], { disabled: ['removed-later'], enabled: ['future'] }, (switches) => {
     if (fail) throw new Error('disk full');
-    saved.push(ids);
+    saved.push(switches);
   });
   assert.throws(() => settings.setEnabled('a', false), /disk full/);
   assert.equal(settings.list()[0].pendingEnabled, true);
   fail = false;
   settings.setEnabled('a', false);
-  assert.deepEqual(saved, [['removed-later', 'a']]);
+  assert.deepEqual(saved, [{ disabled: ['removed-later', 'a'], enabled: ['future'] }]);
+});
+
+test('PluginSettings checks dependencies and explicit switch conflicts for plugins that default to off', () => {
+  const plugins = [plugin('off', { defaultEnabled: false }), plugin('dependent', { defaultEnabled: false, requires: ['off'] })];
+  const host = new PluginHost(plugins);
+  assert.deepEqual(host.enabled, []);
+  const settings = new PluginSettings(host, [], { disabled: ['off'], enabled: ['off'] }, () => {});
+  assert.equal(settings.pendingEnabled('off'), false);
+  assert.throws(() => settings.setEnabled('dependent', true), /依赖/);
+  settings.setEnabled('off', true);
+  settings.setEnabled('dependent', true);
+  assert.equal(settings.pendingEnabled('dependent'), true);
+  assert.throws(() => settings.setEnabled('off', false), /依赖/);
 });
 
 const onlyBookmarks = officialPlugins.filter((plugin) => plugin.id === 'bookmarks');
@@ -351,7 +365,7 @@ test('api: GET lists what is installed; PUT only changes the next start, which t
     assert.deepEqual(now.plugins, [], 'plugins.json is applied at the start');
     assert.deepEqual([now.installed[0].enabled, now.installed[0].disabledByEnv, now.installed[0].pendingEnabled], [false, false, false]);
     assert.equal((await second.api('PUT', '/api/plugins/bookmarks', { enabled: true })).installed[0].pendingEnabled, true);
-    assert.deepEqual(fileOf(dir), { disabled: [] });
+    assert.deepEqual(fileOf(dir), { disabled: [], enabled: ['bookmarks'] });
   } finally { await second.close(); }
 });
 

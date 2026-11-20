@@ -62,6 +62,8 @@ One-way dependencies across `src/` are verified on every import by `test/boundar
 
 ## Native Data Flow & Member Creation Boundaries
 
+The default-off Star map plugin owns the web transcript route. `src/plugins/starmap/index.ts` verifies membership and pagination and reuses the Hub's read-only binding interface.
+
 `src/hub-registry.ts` owns the account registry. `src/bridge-protocol.ts` defines the signature format, and `src/mcp/bridge-auth.ts` validates before dispatch. Secondary Hubs disable native delivery by default. [Native mode](native-mode.en.md)
 
 

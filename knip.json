@@ -12,6 +12,7 @@
         "src/web/public/app.js!",
         "src/web/public/theme.js!",
         "src/web/public/official-plugins/bookmarks.js!",
+        "src/web/public/official-plugins/starmap.js!",
         "scripts/sync-mcp-tools.ts",
         "plugins/antigravity-orrery/sidecar.mjs!",
         "plugins/antigravity-orrery/hook.mjs!",

@@ -186,6 +186,29 @@ test('confirmed but switched off: only the migrations and the two cleanup hooks 
   } finally { await app.close(); }
 });
 
+test('a full-trust plugin can load after its default-off official dependency is explicitly enabled', async () => {
+  const dir = tempDir();
+  const home = join(dir, 'home');
+  const plugin = writePlugin(dir, 'demo', notesBody(join(dir, 'plugin-demo', 'marker.txt')), { requires: ['starmap'] });
+  register(home, [plugin.manifest]);
+  confirm(home, [{ id: 'demo', entry: plugin.entry }]);
+
+  let app = await startTestHub({ dir });
+  try {
+    const card = await cardOf(app, 'demo');
+    assert.match(card.trust?.error ?? '', /依赖的插件 starmap 已关闭.*（没有导入）/);
+    assert.deepEqual(plugin.marker(), []);
+  } finally { await app.close(); }
+
+  writePluginsFile(home, { enabled: ['starmap'] });
+  app = await startTestHub({ dir });
+  try {
+    assert.deepEqual(await app.api('GET', '/api/x/demo/ping'), { pong: true });
+    const card = await cardOf(app, 'demo');
+    assert.deepEqual([card.trust?.state, card.enabled], ['loaded', true]);
+  } finally { await app.close(); }
+});
+
 test('a plugin that fails to load or to fit is skipped alone, with its dependents; the Hub and the others start', async () => {
   const dir = tempDir();
   const home = join(dir, 'home');

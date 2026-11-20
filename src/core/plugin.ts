@@ -11,6 +11,8 @@ import type { HubEvent, Member, Message } from './types.ts';
 
 /** What a plugin says about itself: plain JSON, so a third-party plugin's manifest file can share this shape later. */
 export interface PluginManifest {
+  /** Repo-owned plugins can opt out of starting until the user enables them. Older manifests start by default. */
+  defaultEnabled?: boolean;
   id: string;
   version: string;
   /** Plugins that must be enabled for this one to be enabled, and be registered before it. */
@@ -109,6 +111,8 @@ export interface PluginToolApi {
 export interface PluginRoute {
   method: string;
   pattern: RegExp;
+  /** Do not cache this route's responses, for example when they carry a native transcript. */
+  noStore?: true;
   /** Returns the JSON body of a 200 answer; a thrown error becomes the web API's usual 400. `body` is the request's
    *  JSON object for any method but GET (the web API's usual size and shape checks), undefined for GET. */
   handle(ctx: { hub: Hub; params: string[]; url: URL; body?: unknown }): unknown;
@@ -359,6 +363,8 @@ class StructureError extends Error {
 
 /** What PluginHost knows beyond the registry: which plugins are full-trust third-party ones (docs/external-plugins.md「完全信任的插件」). */
 export interface PluginHostOptions {
+  /** Persisted user opt-ins. The constructor's disabled list still takes priority. */
+  explicitlyEnabled?: readonly string[];
   /** Ids of full-trust plugins: a migration of theirs is checked against their table prefix, and any failure skips them. */
   fullTrust?: Iterable<string>;
   /** A full-trust plugin (or one depending on it) left out after the registry was built: its migration, a backup. */
@@ -373,6 +379,12 @@ const AUTHORIZER_NODE = 'v24.10.0';
 /** What a full-trust migration step may not run: it would end or nest the transaction the check depends on, or reach outside it. */
 const STEP_DENIED = new Set([sqliteConstants.SQLITE_TRANSACTION, sqliteConstants.SQLITE_SAVEPOINT, sqliteConstants.SQLITE_ATTACH,
   sqliteConstants.SQLITE_DETACH, sqliteConstants.SQLITE_PRAGMA]);
+
+/** Forced and user disables share the first check. Only an explicit enable overrides a default of off. */
+export function pluginEnabledBySettings(plugin: Pick<PluginManifest, 'id' | 'defaultEnabled'>,
+  disabled: readonly string[], enabled: readonly string[]): boolean {
+  return !disabled.includes(plugin.id) && (plugin.defaultEnabled !== false || enabled.includes(plugin.id));
+}
 
 /** Validates the registry against the disabled list and answers what the enabled plugins provide. */
 export class PluginHost {
@@ -395,6 +407,7 @@ export class PluginHost {
   private readonly fields = new Map<string, (store: Store, messageId: string) => unknown>();
   private readonly registry: readonly OfficialPlugin[];
   private readonly disabled: readonly string[];
+  private readonly explicitlyEnabled: readonly string[];
   private readonly fullTrust: ReadonlySet<string>;
   private readonly onSkip: (id: string, reason: string) => void;
   private readonly registeredTrusted: readonly string[];
@@ -402,6 +415,7 @@ export class PluginHost {
   constructor(installed: readonly OfficialPlugin[] = [], disabled: readonly string[] = [], options: PluginHostOptions = {}) {
     this.registry = installed;
     this.disabled = disabled;
+    this.explicitlyEnabled = options.explicitlyEnabled ?? [];
     this.fullTrust = new Set(options.fullTrust ?? []);
     this.onSkip = options.onSkip ?? (() => {});
     this.registeredTrusted = [...new Set([...(options.registeredTrusted ?? []), ...this.fullTrust])];
@@ -449,7 +463,7 @@ export class PluginHost {
       if (!known.has(id)) throw new Error(`cannot disable unknown plugin ${id}; registered plugins: ${[...known].join(', ') || 'none'}`);
     }
     this.installed = installed;
-    this.enabled = installed.filter((plugin) => !disabled.includes(plugin.id));
+    this.enabled = installed.filter((plugin) => pluginEnabledBySettings(plugin, disabled, this.explicitlyEnabled));
     const on = new Set(this.enabled.map((plugin) => plugin.id));
     for (const plugin of this.enabled) {
       const missing = (plugin.requires ?? []).filter((dep) => !on.has(dep));

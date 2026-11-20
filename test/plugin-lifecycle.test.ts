@@ -585,11 +585,11 @@ test('plugins.json keeps the switches next to the enable list; a damaged list is
   const home = tempDir();
   writePluginsFile(home, { autoRestart: ['a'] });
   writePluginsFile(home, { disabled: ['b'] });
-  assert.deepEqual(readPluginsFile(home), { disabled: ['b'], autoRestart: ['a'], devReload: [], uiOff: [] });
+  assert.deepEqual(readPluginsFile(home), { disabled: ['b'], enabled: [], autoRestart: ['a'], devReload: [], uiOff: [] });
   writePluginsFile(home, { autoRestart: [], devReload: ['c'], uiOff: ['d'] });
   assert.deepEqual(JSON.parse(readFileSync(join(home, 'plugins.json'), 'utf8')), { disabled: ['b'], devReload: ['c'], uiOff: ['d'] }, 'empty optional lists are left out');
   writePluginsFile(home, { uiOff: [] });
-  assert.deepEqual(readPluginsFile(home), { disabled: ['b'], autoRestart: [], devReload: ['c'], uiOff: [] });
+  assert.deepEqual(readPluginsFile(home), { disabled: ['b'], enabled: [], autoRestart: [], devReload: ['c'], uiOff: [] });
   writeFileSync(join(home, 'plugins.json'), '{"disabled":[],"autoRestart":"a"}');
   assert.throws(() => readPluginsFile(home), /must look like/);
 });

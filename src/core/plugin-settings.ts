@@ -1,5 +1,7 @@
 // Which plugins the user wants on after the next start (docs/plugins.md). The running set never changes: no hot reload.
-import type { PluginHost, PluginManifest } from './plugin.ts';
+import { pluginEnabledBySettings, type PluginHost, type PluginManifest } from './plugin.ts';
+
+type UserSwitches = { disabled: string[]; enabled: string[] };
 
 export interface InstalledPlugin {
   id: string;
@@ -21,23 +23,26 @@ export interface InstalledPlugin {
 export class PluginSettings {
   private readonly host: PluginHost;
   private readonly envDisabled: ReadonlySet<string>;
-  private readonly save: (disabled: string[]) => void;
-  private fileDisabled: string[];
+  private readonly save: (switches: UserSwitches) => void;
+  private file: UserSwitches;
   /** Registered full-trust plugins that are not running this start (unconfirmed, failed, safe mode): data only. */
   private readonly extra: readonly PluginManifest[];
 
-  /** `save` replaces the stored list; it may throw, and then nothing changes. */
-  constructor(host: PluginHost, envDisabled: readonly string[], fileDisabled: readonly string[], save: (disabled: string[]) => void,
+  /** `save` replaces both stored lists together; it may throw, and then nothing changes. */
+  constructor(host: PluginHost, envDisabled: readonly string[], file: UserSwitches, save: (switches: UserSwitches) => void,
     extra: readonly PluginManifest[] = []) {
     this.host = host;
     this.envDisabled = new Set(envDisabled);
-    this.fileDisabled = [...fileDisabled];
+    this.file = { disabled: [...file.disabled], enabled: [...file.enabled] };
     this.save = save;
     this.extra = extra;
   }
 
   private get all(): readonly PluginManifest[] { return [...this.host.installed, ...this.extra]; }
-  private off(id: string): boolean { return this.envDisabled.has(id) || this.fileDisabled.includes(id); }
+  private off(id: string): boolean {
+    const plugin = this.all.find((p) => p.id === id) ?? { id };
+    return this.envDisabled.has(id) || !pluginEnabledBySettings(plugin, this.file.disabled, this.file.enabled);
+  }
   private label(id: string): string { return `“${this.all.find((p) => p.id === id)?.name ?? id}”`; }
 
   has(id: string): boolean { return this.all.some((p) => p.id === id); }
@@ -67,9 +72,9 @@ export class PluginSettings {
       const users = this.all.filter((p) => p.requires?.includes(id) && !this.off(p.id)).map((p) => p.id);
       if (users.length) throw new Error(`不能禁用${this.label(id)}：${names(users)}依赖它，请先禁用${names(users)}。`);
     }
-    const next = this.fileDisabled.filter((x) => x !== id);
-    if (!enabled) next.push(id);
+    const next = { disabled: this.file.disabled.filter((x) => x !== id), enabled: this.file.enabled.filter((x) => x !== id) };
+    next[enabled ? 'enabled' : 'disabled'].push(id);
     this.save(next);
-    this.fileDisabled = next;
+    this.file = next;
   }
 }

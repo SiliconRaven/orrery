@@ -791,6 +791,7 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
     }
     for (const plugin of hub.store.plugins.routes) {
       if (method === plugin.method && (m = route(plugin.pattern))) {
+        if (plugin.noStore) res.setHeader('cache-control', 'no-store');
         return json(res, 200, await plugin.handle({ hub, params: m, url, body: method === 'GET' ? undefined : await readJson(req) }));
       }
     }
