@@ -1,5 +1,5 @@
 // Signed first-party bundles and their per-Hub activation state. Third-party registration never reaches this module.
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createPublicKey, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -14,8 +14,15 @@ import { selectOfficialVersions, type OfficialChoice, type OfficialVariants } fr
 import { compareVersions } from './update-check.ts';
 
 const HOST_API = OFFICIAL_PLUGIN_HOST.hostApi;
-// The first release with official ZIPs pins the production publishers here. Never load keys from local state.
-const RELEASE_KEYS: OfficialKeys = new Map();
+// The built-in public key authenticates official ZIPs. Local state cannot add a publisher.
+const RELEASE_KEYS: OfficialKeys = new Map([['orrery-official-1', {
+  publicKey: createPublicKey({
+    key: Buffer.from('MCowBQYDK2VwAyEAtoxMDC2m+fUgWorXia7RJ7ipyHo2jJzgiGIcj+W+iOg=', 'base64'),
+    format: 'der',
+    type: 'spki',
+  }),
+  ids: ['starmap', 'tasks', 'bookmarks', 'coordinator'],
+}]]);
 const RELEASE_ROOT = 'https://github.com/SiliconRaven/orrery/releases/download/';
 const INDEX = RELEASE_ROOT + 'official-plugins-v1/index.json';
 const ASSET_HOSTS = new Set(['release-assets.githubusercontent.com', 'objects.githubusercontent.com']);

@@ -2,7 +2,7 @@
 
 Language: [中文](README.md) | **English**
 
-A minimal full-trust plugin (bundled with `orrery v0.10.0-beta.2` Beta pre-release; APIs may change). It has the same power as orrery itself and runs inside the Hub process; see [Third-party plugins, "Full-trust plugins"](../../../docs/external-plugins.en.md#full-trust-plugins). The folder can be copied outside the repository; it imports no orrery source, needs no npm dependencies and calls no model or network.
+A minimal full-trust plugin (bundled with `orrery v0.10.0-beta.3` Beta pre-release; APIs may change). It has the same power as orrery itself and runs inside the Hub process; see [Third-party plugins, "Full-trust plugins"](../../../docs/external-plugins.en.md#full-trust-plugins). The folder can be copied outside the repository; it imports no orrery source, needs no npm dependencies and calls no model or network.
 
 It has:
 

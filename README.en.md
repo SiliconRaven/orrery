@@ -1,8 +1,8 @@
-# orrery (`v0.10.0-beta.2` Beta)
+# orrery (`v0.10.0-beta.3` Beta)
 
 Language: [中文](README.md) | **English**
 
-> **Beta Notice**: This release is **v0.10.0-beta.2 (Beta pre-release)**, not a final stable release. Interfaces, protocols, and plugin configurations may change.
+> **Beta Notice**: This release is **v0.10.0-beta.3 (Beta pre-release)**, not a final stable release. Interfaces, protocols, and plugin configurations may change.
 
 orrery is a Windows-first local multi-agent collaboration desktop and Hub (Native Mode only). It connects your existing conversations in AI coding apps (plus newly created native sessions where supported) to shared group chats and task boards. A member receives deliveries only while its app is online. Hub group messages and state stay on your machine.
 
@@ -43,7 +43,7 @@ npm run open
 
 ### Optional: Desktop Shell
 
-`desktop/` provides an optional Electron wrapper (also `v0.10.0-beta.2` Beta) that docks and switches running top-level host windows without embedding third-party UIs:
+`desktop/` provides an optional Electron wrapper (also `v0.10.0-beta.3` Beta) that docks and switches running top-level host windows without embedding third-party UIs:
 
 ```powershell
 npm ci --prefix desktop

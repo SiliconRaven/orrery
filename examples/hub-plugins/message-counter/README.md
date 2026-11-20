@@ -2,7 +2,7 @@
 
 语言：**中文** | [English](README.en.md)
 
-本目录是一个完全独立的外部插件示例（随 `orrery v0.10.0-beta.2` Beta 测试版提供，接口仍可能变化）：可直接复制到仓库之外运行，无第三方依赖，也不直接引用 orrery 源码。
+本目录是一个完全独立的外部插件示例（随 `orrery v0.10.0-beta.3` Beta 测试版提供，接口仍可能变化）：可直接复制到仓库之外运行，无第三方依赖，也不直接引用 orrery 源码。
 
 按照 [外部插件说明](../../../docs/external-plugins.md) 将 `orrery-plugin.json` 的绝对路径登记到专用测试 `<ORRERY_HOME>/external-plugins.json`，授予 `clusters.read`、`messages.read` 权限并填入目标群 ID，重启 Hub 后即可试用。
 

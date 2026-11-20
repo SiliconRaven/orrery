@@ -1,8 +1,8 @@
-# Electron Desktop Shell (`desktop/`, `v0.10.0-beta.2`)
+# Electron Desktop Shell (`desktop/`, `v0.10.0-beta.3`)
 
 Language: [中文](desktop.md) | **English**
 
-> **Beta Notice**: `desktop/` is part of **v0.10.0-beta.2 (Beta pre-release)**, not a stable release; window docking and layout interfaces may change.
+> **Beta Notice**: `desktop/` is part of **v0.10.0-beta.3 (Beta pre-release)**, not a stable release; window docking and layout interfaces may change.
 
 `desktop/` is an optional Electron wrapper around the orrery collaboration UI (using the character-free orbital project icon) built on **top-level window docking** without embedding or reparenting third-party applications.
 
@@ -65,7 +65,7 @@ npm ci --prefix desktop
 npm run dist --prefix desktop
 ```
 
-The build verifies the pinned official Node 24.19.0 archive and includes its license. Output: `desktop/dist/Orrery-0.10.0-beta.2-Setup-x64.exe`. Build files and caches are ignored by Git.
+The build verifies the pinned official Node 24.19.0 archive and includes its license. Output: `desktop/dist/Orrery-0.10.0-beta.3-Setup-x64.exe`. Build files and caches are ignored by Git.
 
 ## Interface language
 

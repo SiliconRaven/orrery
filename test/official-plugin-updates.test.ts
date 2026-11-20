@@ -8,6 +8,7 @@ import type { OfficialPlugin } from '../src/core/plugin.ts';
 import { REPO_ROOT, type StartOptions } from '../src/main.ts';
 import { readPluginsFile, writePluginsFile } from '../src/config.ts';
 import type { OfficialManifest } from '../src/official-plugin-package.ts';
+import { officialPlugins } from '../src/plugins/index.ts';
 import { findBrowser, launchBrowser } from './browser.ts';
 import { rawFetch, startTestHub, tempDir, TEST_TOKEN, type TestHub } from './helpers.ts';
 
@@ -71,6 +72,22 @@ const list = (app: TestHub) => app.api('GET', '/api/plugins');
 const card = async (app: TestHub) => (await list(app)).installed.find((p: { id: string }) => p.id === ID);
 const state = (app: TestHub) => JSON.parse(readFileSync(join(app.home, 'official-plugins', 'state.json'), 'utf8'));
 const schema = (app: TestHub) => Number(app.store.db.prepare('SELECT version FROM plugin_migrations WHERE plugin_id = ?').get(ID)?.version ?? 0);
+
+test('the shipping Hub recognizes only the four IDs authorized by the built-in official publisher', async () => {
+  const allowed = ['bookmarks', 'coordinator', 'starmap', 'tasks'];
+  const releases = [...allowed, ID].map((id) => ({
+    id, version: '1.1.0', tag: 'fixture-1.1.0', asset: id + '.zip', sha256: '1'.repeat(64),
+    hub: { api: 1, minVersion: '0.10.0-beta.3' },
+  }));
+  const app = await startTestHub({
+    plugins: [...officialPlugins, builtIn],
+    officialUpdates: { fetcher: async () => Response.json({ format: 1, releases }) },
+  });
+  try {
+    const result = await app.api('POST', UPDATE + '/check', {});
+    assert.deepEqual(result.candidates, allowed.map((id) => ({ id, version: '1.1.0', compatible: true })));
+  } finally { await app.close(); }
+});
 
 async function stage(app: TestHub, version: string) {
   const check = await app.api('POST', UPDATE + '/check', {});

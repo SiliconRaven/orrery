@@ -4,7 +4,7 @@ Language: [中文](README.md) | **English**
 
 Native Mode connector for Cursor Desktop using Node built-in modules only (Node 24 on PATH; orrery never installs or edits Cursor configs).
 
-> **Beta Notice**: Bundled with `orrery v0.10.0-beta.2` (Beta pre-release); interfaces, hooks, and config formats may still change.
+> **Beta Notice**: Bundled with `orrery v0.10.0-beta.3` (Beta pre-release); interfaces, hooks, and config formats may still change.
 
 Installed-app users: use the bundled Node path; see [installer setup](../../docs/desktop.en.md). Plug-ins find the Hub through the account's Hub registry (`ORRERY_REGISTRY`, default `~/.orrery/registry/`), so the host no longer needs `ORRERY_HOME`.
 

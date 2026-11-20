@@ -4,7 +4,7 @@
 
 ZCode 桌面应用的原生模式接入件。只依赖 Node 内置模块，orrery 不修改用户任何 ZCode 配置：
 
-> **Beta 版本提示**：本接入件随 `orrery v0.10.0-beta.2`（Beta 测试版）提供，接口与配置格式仍可能变化。
+> **Beta 版本提示**：本接入件随 `orrery v0.10.0-beta.3`（Beta 测试版）提供，接口与配置格式仍可能变化。
 
 安装版用户请使用内置 Node 路径，见[安装版接入说明](../../docs/desktop.md)。接入件经账户的 Hub 登记处（`ORRERY_REGISTRY`，默认 `~/.orrery/registry/`）找 Hub，不再需要为宿主设置 `ORRERY_HOME`。
 

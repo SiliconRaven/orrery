@@ -4,7 +4,7 @@ Language: [中文](README.md) | **English**
 
 Native Mode connector for WorkBuddy Desktop providing a stdio MCP bridge and optional skill (uses the MCP SDK installed via root `npm ci`). orrery never installs, trusts, or edits WorkBuddy configs:
 
-> **Beta Notice**: Bundled with `orrery v0.10.0-beta.2` (Beta pre-release); interfaces and config formats may still change.
+> **Beta Notice**: Bundled with `orrery v0.10.0-beta.3` (Beta pre-release); interfaces and config formats may still change.
 
 Installed-app users: use the bundled Node path; see [installer setup](../../docs/desktop.en.md). Plug-ins find the Hub through the account's Hub registry (`ORRERY_REGISTRY`, default `~/.orrery/registry/`), so the host no longer needs `ORRERY_HOME`.
 

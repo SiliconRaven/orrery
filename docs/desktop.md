@@ -1,8 +1,8 @@
-# Electron 桌面外壳（`desktop/`，`v0.10.0-beta.2`）
+# Electron 桌面外壳（`desktop/`，`v0.10.0-beta.3`）
 
 语言：**中文** | [English](desktop.en.md)
 
-> **Beta 提示**：桌面外壳处于 **`v0.10.0-beta.2` Beta 测试版**，非正式稳定版，窗口控制与布局细节仍可能调整。
+> **Beta 提示**：桌面外壳处于 **`v0.10.0-beta.3` Beta 测试版**，非正式稳定版，窗口控制与布局细节仍可能调整。
 
 `desktop/` 是围绕 orrery 协作页打造的可选 Electron 桌面壳（使用无角色的轨道项目图标），采用**顶层窗口跟随停靠（Window Docking）**方案，不把第三方桌面端嵌入或改写到同一个容器内。
 
@@ -65,7 +65,7 @@ npm ci --prefix desktop
 npm run dist --prefix desktop
 ```
 
-构建会校验固定版本 Node 24.19.0 官方压缩包并附带许可证，产物为 `desktop/dist/Orrery-0.10.0-beta.2-Setup-x64.exe`。构建目录与缓存不进入 Git。
+构建会校验固定版本 Node 24.19.0 官方压缩包并附带许可证，产物为 `desktop/dist/Orrery-0.10.0-beta.3-Setup-x64.exe`。构建目录与缓存不进入 Git。
 
 ## 界面语言
 

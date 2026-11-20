@@ -2,7 +2,7 @@
 
 Language: [中文](README.md) | **English**
 
-Standalone external plugin example (bundled with `orrery v0.10.0-beta.2` Beta pre-release; APIs may change) using Node built-ins only. Subscribes to `task.submitted`, waits 5 minutes, and posts one reminder attributed as `"插件 review-reminder"` (without `messages.mention`, so no member is woken) if no `task.approved`, `task.rejected`, or `task.merged` arrives. Resubmitting resets the timer; self-review completions do not trigger reminders.
+Standalone external plugin example (bundled with `orrery v0.10.0-beta.3` Beta pre-release; APIs may change) using Node built-ins only. Subscribes to `task.submitted`, waits 5 minutes, and posts one reminder attributed as `"插件 review-reminder"` (without `messages.mention`, so no member is woken) if no `task.approved`, `task.rejected`, or `task.merged` arrives. Resubmitting resets the timer; self-review completions do not trigger reminders.
 
 ## Running in a Dedicated Test Environment
 

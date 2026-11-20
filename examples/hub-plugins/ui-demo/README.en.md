@@ -2,7 +2,7 @@
 
 Language: [中文](README.md) | **English**
 
-A restricted plugin example (bundled with `orrery v0.10.0-beta.2` Beta pre-release; APIs may change). The whole folder can be copied outside the repository; it imports no orrery source, needs no npm dependencies and calls no model or network.
+A restricted plugin example (bundled with `orrery v0.10.0-beta.3` Beta pre-release; APIs may change). The whole folder can be copied outside the repository; it imports no orrery source, needs no npm dependencies and calls no model or network.
 
 It shows a small per-group counter on the collaboration page in two places: a chip in the group title bar (which opens a panel) and a "界面示例" (UI demo) tab in the task workbench. The example's own texts are in Chinese. Clicking the "加一" (+1) button makes the page (`ui/`) send a `ui.request` to the plugin process through orrery's channel; the plugin answers with the new count, pushes it to every open page of that group with `host.ui.push`, and renames the title-bar chip to "计数 N" (count N) with `host.ui.chip`. The count lives only in the plugin process's memory and restarts at 0 with the plugin.
 
