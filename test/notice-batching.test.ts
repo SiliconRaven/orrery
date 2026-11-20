@@ -9,7 +9,7 @@ import { parseEnvelopes } from './mock.ts';
 import type { Limits } from '../src/core/hub.ts';
 import type { Message } from '../src/core/types.ts';
 import { startTestHub, tempDir, waitFor } from './helpers.ts';
-import { linkCollaborationMessage } from '../src/plugins/tasks/store.ts';
+import { linkCollaborationMessage } from '../src/plugins/tasks/package/hub/store.mts';
 
 const WAIT_MS = 15_000;
 const WINDOW_MS = 300;   // a real timer, short enough for a test

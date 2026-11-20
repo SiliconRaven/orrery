@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import type { NativeDeliverContext } from '../src/core/types.ts';
 import { startTestHub, tempDir, waitFor } from './helpers.ts';
-import { collaborationLinks, collaborationTask } from '../src/plugins/tasks/store.ts';
+import { collaborationLinks, collaborationTask } from '../src/plugins/tasks/package/hub/store.mts';
 
 const OFF = 600_000;   // an automatic check that never comes within a test
 const PREFIX = '排队预警';

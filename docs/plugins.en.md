@@ -26,16 +26,17 @@ An official plugin with `defaultEnabled: false` starts disabled. Startup and the
 
 ## Official Web Slots
 
-An official plugin may declare a `webModule` equal to its ID; the page loads `official-plugins/<id>.js` from a fixed folder. Full-trust plugins provide a module of the same shape through the manifest's `webEntry` (served by the Hub at `/plugin-web/<id>/` and detached in place by open pages when trust ends); restricted plugins have no same-page code, their pages live in sandboxed frames.
+All four official plugins (`tasks`, `bookmarks`, `coordinator`, and `starmap`) follow the official package layout `src/plugins/<id>/{release.json,package/,index.ts}`. Each built-in entry passes the `src/official-plugin-host.ts` contract (`hostApi: 1`) into `package/hub/index.mts` and points `packageSource` at `package/`, so bundled copies and signed updates share `/official-plugin-web/<id>/<digest>/` for web assets/dictionaries and `/api/plugins/<id>/icon` for icons. Full-trust plugins provide a module of the same shape through the manifest's `webEntry` (served by the Hub at `/plugin-web/<id>/` and detached in place by open pages when trust ends); restricted plugins have no same-page code, their pages live in sandboxed frames.
 
-A module exports `register(host)` and returns the slots it uses. `host` provides the `api`, `nameOf` and `command` callbacks and the page's shared UI helpers `ui` (`h`, `icon`, `emptyState`, `noticeDialog`, `confirmDialog`, `formDialog`); full-trust plugins also get `onDispose(fn)`.
+A module exports `register(host)` and returns the slots it uses. `host` provides the `api`, `nameOf`, and `command` callbacks, `i18n` (package dictionary and live helpers `t`, `lt`, `language`, `onLanguageChange`), and shared UI helpers `ui` (`h`, `icon`, `emptyState`, `noticeDialog`, `confirmDialog`, `formDialog`), plus `onDispose(fn)`.
 
 | Slot | Where it goes |
 |---|---|
 | `message` | `render(message, state)` returns a node under the message; optional `key`, `update`, `capture`, `restore` |
 | `composer` | Returns a control placed between the chat composer and the send button |
-| `workbench` | Returns the ID, label, render and load functions of a workbench library tab |
+| `workbench` | Returns the ID, label (accepts live text `lt`), render and load functions of a workbench library tab |
 | `settings` | Returns a node placed below the plugin list in Settings |
+| `view` | Full-page view `{ id, title, icon, mount(el, ctx), unmount() }` |
 
 If a module or slot callback fails, the page logs the reason to the console and other slots and the page keep working.
 

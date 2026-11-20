@@ -1,10 +1,10 @@
-import type { TasksService } from '../src/plugins/tasks/service.ts';
+import type { TasksService } from '../src/plugins/tasks/package/hub/service.mts';
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import type { Limits } from '../src/core/hub.ts';
 import { startTestHub, tempDir, waitFor } from './helpers.ts';
-import { collaborationLinks, collaborationTask, collaborationTasks, saveCollaborationTask } from '../src/plugins/tasks/store.ts';
+import { collaborationLinks, collaborationTask, collaborationTasks, saveCollaborationTask } from '../src/plugins/tasks/package/hub/store.mts';
 
 const PREFIX = '有成员空闲';
 const WAIT_MS = 15_000;   // generous: a cold first run is much slower than later ones

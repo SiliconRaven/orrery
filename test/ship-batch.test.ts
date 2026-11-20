@@ -7,10 +7,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { dirname, join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { parseCommandLine, shipBatch, ShipRefused as ScriptRefused, type BatchShipOptions, type BatchVerified } from '../scripts/ship.ts';
-import { batchShipState } from '../src/plugins/tasks/batches.ts';
-import { setBranchLookup } from '../src/plugins/tasks/branch-link.ts';
-import { batchMergedOnTarget, batchShipFor, batchShipTicket, reportBatchShip, shipFor, shipTicket, ShipRefused, verifyBatchShip, verifyShip } from '../src/plugins/tasks/ship.ts';
-import { collaborationRecords } from '../src/plugins/tasks/store.ts';
+import { batchShipState } from '../src/plugins/tasks/package/hub/batches.mts';
+import { setBranchLookup } from '../src/plugins/tasks/package/hub/branch-link.mts';
+import { batchMergedOnTarget, batchShipFor, batchShipTicket, reportBatchShip, shipFor, shipTicket, ShipRefused, verifyBatchShip, verifyShip } from '../src/plugins/tasks/package/hub/ship.mts';
+import { collaborationRecords } from '../src/plugins/tasks/package/hub/store.mts';
 import { a, b, batchFixture, c, chain, r, user } from './batch-fixture.ts';
 import { tempDir } from './helpers.ts';
 

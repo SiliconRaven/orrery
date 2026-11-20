@@ -6,7 +6,7 @@ import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import type { CollaborationCommand, CollaborationResult } from '../src/core/collaboration-types.ts';
 import type { Message } from '../src/core/types.ts';
 import { startTestHub, tempDir, waitFor } from './helpers.ts';
-import { collaborationLinks, collaborationTask, linkCollaborationMessage } from '../src/plugins/tasks/store.ts';
+import { collaborationLinks, collaborationTask, linkCollaborationMessage } from '../src/plugins/tasks/package/hub/store.mts';
 
 async function fixture() {
   const dir = tempDir();

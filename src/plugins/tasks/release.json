@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "id": "tasks",
+  "version": "0.10.0-beta.2",
+  "keyId": "orrery-official-1",
+  "hub": { "api": 1, "minVersion": "0.10.0-beta.3" },
+  "requires": [],
+  "migrationVersion": 8,
+  "entry": "hub/index.mts",
+  "icon": "icon.svg"
+}

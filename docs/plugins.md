@@ -26,16 +26,17 @@ orrery 核心只负责集群、成员、原生群聊投递、消息存储、权�
 
 ## 官方网页插槽
 
-官方插件可以声明与插件 ID 相同的 `webModule`，网页从固定目录加载 `official-plugins/<id>.js`。完全信任插件用清单的 `webEntry` 提供同样形状的模块（Hub 在 `/plugin-web/<id>/` 提供，信任结束时页面就地卸下它）；受限插件没有同页代码，它的网页在沙盒框架里。
+四个官方插件（`tasks`、`bookmarks`、`coordinator`、`starmap`）均采用官方包目录结构 `src/plugins/<id>/{release.json,package/,index.ts}`：内置入口通过 `src/official-plugin-host.ts` 的宿主合同（`hostApi: 1`）调用包内 `package/hub/index.mts` 并用 `packageSource` 指向 `package/`，使其网页模块、图标与独立词表在内置与签名更新模式下同走 `/official-plugin-web/<id>/<digest>/` 与 `/api/plugins/<id>/icon`。完全信任插件用清单的 `webEntry` 提供同样形状的模块（Hub 在 `/plugin-web/<id>/` 提供，信任结束时页面就地卸下它）；受限插件没有同页代码，它的网页在沙盒框架里。
 
-模块导出 `register(host)`，返回用到的插槽。`host` 有 `api`、`nameOf`、`command` 三个回调和页面共用的界面工具 `ui`（`h`、`icon`、`emptyState`、`noticeDialog`、`confirmDialog`、`formDialog`）；完全信任插件另有 `onDispose(fn)`。
+模块导出 `register(host)`，返回用到的插槽。`host` 有 `api`、`nameOf`、`command`、`i18n`（包内自带译文及实时切换 `t`、`lt`、`language`、`onLanguageChange`）和页面共用的界面工具 `ui`（`h`、`icon`、`emptyState`、`noticeDialog`、`confirmDialog`、`formDialog`）；`plugin-slots.js` 也提供 `onDispose(fn)`。
 
 | 插槽 | 接在哪里 |
 |---|---|
 | `message` | `render(message, state)` 返回消息下的节点；可选 `key`、`update`、`capture`、`restore` |
 | `composer` | 返回放在群聊输入框和发送按钮之间的控件 |
-| `workbench` | 返回工作台资料库页签的 ID、名称、渲染和加载函数 |
+| `workbench` | 返回工作台资料库页签的 ID、名称（支持 `lt` 实时文本）、渲染和加载函数 |
 | `settings` | 返回放在设置的插件列表下方的节点 |
+| `view` | 整页视图 `{ id, title, icon, mount(el, ctx), unmount() }` |
 
 模块或插槽回调失败时，网页在控制台记录原因，其他插槽和页面继续运行。
 

@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { runInNewContext as runVm } from 'node:vm';
 import { REPO_ROOT } from '../src/main.ts';
 import { t, language } from '../shared/i18n/index.js';
+import './plugin-host-hook.ts';
 
 // Extracted browser functions close over the same real translations as their module imports.
 const runInNewContext = (code: string, context: Record<string, any>) =>
@@ -14,7 +15,7 @@ const runInNewContext = (code: string, context: Record<string, any>) =>
 
 // A browser module without types: a computed specifier keeps tsc from looking for declarations.
 const ui = await import(pathToFileURL(join(REPO_ROOT, 'src', 'web', 'public', 'ui.js')).href);
-const bookmarks = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/official-plugins/bookmarks.js')).href);
+const bookmarks = await import(pathToFileURL(join(REPO_ROOT, 'src/plugins/bookmarks/package/web/index.js')).href);
 const { createUsageRenderer } = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/usage-view.js')).href);
 
 const base = { harness: 'codex', nativeCreate: true, project: '', sessions: [] as { sessionId: string; name?: string; avatar?: string }[], create: false, name: '', avatar: '', model: '', effort: '' };
@@ -2157,7 +2158,12 @@ test('web ui: the chat header actions and the composer controls are icon buttons
   const uiSource = readFileSync(join(pub, 'ui.js'), 'utf8');
   // The member list: its row actions (both hide states) and the marks of its details line.
   // Every script under public/ that draws an icon names it as icon('name'…) or, in a table, icon: 'name'.
-  const scripts = readdirSync(pub, { recursive: true }).map(String).filter((f) => f.endsWith('.js')).map((f) => readFileSync(join(pub, f), 'utf8')).join('\n');
+  const scripts = [
+    ...readdirSync(pub, { recursive: true }).map(String).filter((f) => f.endsWith('.js')).map((f) => readFileSync(join(pub, f), 'utf8')),
+    ...readdirSync(join(REPO_ROOT, 'src', 'plugins'), { recursive: true }).map(String)
+      .filter((f) => /^[^\\/]+[\\/]package[\\/]web[\\/].*\.js$/.test(f) && !/[\\/]vendor[\\/]/.test(f))
+      .map((f) => readFileSync(join(REPO_ROOT, 'src', 'plugins', f), 'utf8')),
+  ].join('\n');
   const used = [...html.matchAll(/<use href="#(i-[a-z-]+)"\/>/g)].map((m) => m[1])
     .concat([...scripts.matchAll(/\bicon\('([a-z-]+)'/g), ...scripts.matchAll(/\bicon: '([a-z-]+)'/g)].map((m) => `i-${m[1]}`))
     .concat([{}, { hiddenAt: 'x' }].flatMap((m) => ui.memberRowActions({ name: 'n', ...m }, 'native').map((a: any) => `i-${a.icon}`)))

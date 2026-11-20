@@ -5,7 +5,7 @@ import { PluginHost } from '../src/core/plugin.ts';
 import { Store } from '../src/core/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
 import type { CollaborationActor, CollaborationCommand } from '../src/core/collaboration-types.ts';
-import { collaborationEvents, saveCollaborationTask } from '../src/plugins/tasks/store.ts';
+import { collaborationEvents, saveCollaborationTask } from '../src/plugins/tasks/package/hub/store.mts';
 
 function fixture(opts: { twins?: boolean } = {}) {
   const store = new Store(':memory:', new PluginHost(officialPlugins));

@@ -671,7 +671,8 @@ test('/plugin-web/ serves a loaded plugin\'s page module folder read-only: no tr
     await assertUnknown(app, '/plugin-web/shown/', { method: 'POST' });
     const listing = await app.api('GET', '/api/plugins');
     assert.deepEqual(listing.trustedFrontend, ['shown']);
-    assert.deepEqual(listing.frontend, ['bookmarks'], 'the official list is unchanged');
+    assert.deepEqual(listing.frontend, [], 'legacy static official list is empty');
+    assert.deepEqual(listing.officialFrontend.map((e: { id: string }) => e.id), ['bookmarks'], 'the official list is unchanged');
     // The Hub entry moved (or rebuilt) after the start: the page module folder is still served.
     renameSync(join(shown.folder, 'hub', 'index.mjs'), join(shown.folder, 'hub', 'moved.mjs'));
     assert.equal((await rawFetch(`${app.url}/plugin-web/shown/`)).status, 200, 'the module after the entry moved');

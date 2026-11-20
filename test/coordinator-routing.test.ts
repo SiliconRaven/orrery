@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { CoordinatorPolicy } from '../src/core/collaboration-types.ts';
-import { coordinatorSnapshot, saveCoordinator } from '../src/plugins/coordinator/store.ts';
+import { coordinatorSnapshot, saveCoordinator } from '../src/plugins/coordinator/package/hub/store.mts';
 import { startTestHub, waitFor } from './helpers.ts';
 
 async function fixture(options: Parameters<typeof startTestHub>[0] = {}) {

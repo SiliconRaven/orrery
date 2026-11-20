@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { reportBatchShip } from '../src/plugins/tasks/ship.ts';
+import { reportBatchShip } from '../src/plugins/tasks/package/hub/ship.mts';
 import { bearer, holdScript, startTestHub, waitFor, turnsOf, memberHeaders } from './helpers.ts';
 
 test('mcp slim: list_tasks, get_task, get_task_context and list_bookmarks default to small results; parameters give the full shape', async (t) => {

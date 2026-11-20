@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // ship: merge a reviewed commit into the target branch (docs/collaboration.md, review levels and merging). Run by a member, with that member's own permissions,
 // from any worktree of the repository, using the command the Hub handed over. It never imports the Hub: all it knows
-// comes over HTTP, and the Hub takes the result only after checking it with read-only git (src/plugins/tasks/ship.ts).
+// comes over HTTP, and the Hub takes the result only after checking it with read-only git (src/plugins/tasks/package/hub/ship.mts).
 // A file lock in the git common dir serializes ship runs. Exit 0 only when merged and, with an origin, pushed.
 // `--release` reuses the same lock, merge and checks to merge the ship target branch into main without the Hub.
 import { spawn, spawnSync } from 'node:child_process';
@@ -47,7 +47,7 @@ const DEFAULT_LOCK_WAIT_S = 1800;
 const GIT_TIMEOUT_MS = 120_000;
 const LOCK_POLL_MS = 200;
 const OUTPUT_TAIL = 4000;
-const MAX_FAILURE_DETAIL = 4400;   // comfortably inside src/plugins/tasks/ship.ts MAX_DETAIL (4600)
+const MAX_FAILURE_DETAIL = 4400;   // comfortably inside src/plugins/tasks/package/hub/ship.mts MAX_DETAIL (4600)
 const MAX_FAILURE_RUNS = 10;
 const MAX_SAVED_LOGS = 10;
 const MAX_SAVED_SHOTS = 40;
@@ -627,6 +627,12 @@ async function mergeBatchUnderLock(o: BatchShipOptions, v: BatchVerified, log: (
     beforeLand: () => o.hub.verify() });   // the checks can take long enough for a task to be reopened or the batch cancelled
 }
 
+const errorText = (e: unknown): string => {
+  if (!(e instanceof Error)) return String(e);
+  const cause = e.cause instanceof Error ? e.cause.message : typeof e.cause === 'string' ? e.cause : '';
+  return cause && !e.message.includes(cause) ? `${e.message} (${cause})` : e.message;
+};
+
 /** Pushes a landing on main, then tells the Hub; `fallback` names the way to record a merge the Hub did not take. */
 async function landed(o: { cwd: string; hub: HubClient<unknown> }, result: Landed, fallback: string): Promise<ShipOutcome> {
   if ('kind' in result) {
@@ -640,7 +646,7 @@ async function landed(o: { cwd: string; hub: HubClient<unknown> }, result: Lande
   try {
     await o.hub.report({ mergeCommit: result.mergeCommit, pushed, retried: result.retried });
   } catch (e) {
-    throw new Error(`${result.mergeCommit} is on ${result.target}${pushed ? ' and pushed' : ''}, but the Hub did not record it (${e instanceof Error ? e.message : String(e)}); record it with ${fallback}`);
+    throw new Error(`${result.mergeCommit} is on ${result.target}${pushed ? ' and pushed' : ''}, but the Hub did not record it (${errorText(e)}); record it with ${fallback}`);
   }
   return { merged: true, mergeCommit: result.mergeCommit, pushed, ...(pushError ? { pushError } : {}) };
 }
@@ -728,11 +734,16 @@ export async function release(o: ReleaseOptions): Promise<ReleaseOutcome> {
     ...(pushed?.pushError ? { pushError: pushed.pushError } : {}), ...(result.syncNote ? { syncNote: result.syncNote } : {}) };
 }
 
-/** The Hub, over the loopback HTTP routes in src/plugins/tasks/routes.ts. */
+/** The Hub, over the loopback HTTP routes in src/plugins/tasks/package/hub/routes.mts. */
 export function httpHub<V = Verified>(hubUrl: string, ticket: string): HubClient<V> {
   if (!/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(hubUrl)) throw new ShipRefused(`--hub must be a loopback Hub address: ${hubUrl}`);
+  // Close each loopback connection immediately so undici does not reuse a stale keep-alive socket across multi-second git steps.
   const post = async (route: string, body: object) => {
-    const res = await fetch(`${hubUrl}/bridge/${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket, ...body }) });
+    const res = await fetch(`${hubUrl}/bridge/${route}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', connection: 'close' },
+      body: JSON.stringify({ ticket, ...body }),
+    });
     const data = await res.json() as { error?: string };
     if (!res.ok) throw new ShipRefused(`the Hub refused: ${data.error ?? res.status}`);
     return data;

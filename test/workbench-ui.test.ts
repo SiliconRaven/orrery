@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { REPO_ROOT } from '../src/main.ts';
+import './plugin-host-hook.ts';
 
 const ui = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/workbench.js')).href);
 const form = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/workbench-form.js')).href);
@@ -37,7 +38,7 @@ test('workbench dependency graph preserves an unloaded predecessor as unknown', 
 });
 
 test('member collections classify shared messages under each task and only unlinked messages as other', async () => {
-  const { collectionBins } = await import(pathToFileURL(join(REPO_ROOT, 'src/web/public/official-plugins/bookmarks.js')).href);
+  const { collectionBins } = await import(pathToFileURL(join(REPO_ROOT, 'src/plugins/bookmarks/package/web/index.js')).href);
   const first = { message: { id: 'one' }, taskIds: ['a', 'b'] };
   const second = { message: { id: 'two' }, taskIds: [] };
   const bins = collectionBins([first, second]);

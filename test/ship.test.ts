@@ -11,18 +11,18 @@ import { test, type TestContext } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { acquireLock, docsOnly, parseCommandLine, redactPaths, redactSecrets, ship, ShipRefused as ScriptRefused, type ShipOptions, type ShipReport, type Verified } from '../scripts/ship.ts';
+import { acquireLock, docsOnly, httpHub, parseCommandLine, redactPaths, redactSecrets, ship, ShipRefused as ScriptRefused, type ShipOptions, type ShipReport, type Verified } from '../scripts/ship.ts';
 import type { CollaborationActor, CollaborationCommand, Task, TaskResult } from '../src/core/collaboration-types.ts';
 import { Hub } from '../src/core/hub.ts';
 import { gitRead } from '../src/core/projects.ts';
 import { Store } from '../src/core/store.ts';
-import { shipState } from '../src/plugins/tasks/model.ts';
-import { setBranchLookup } from '../src/plugins/tasks/branch-link.ts';
-import { readShipTicket, reportShip, SHIP_SCRIPT, shipCommand, shipFor, shipForRunner, ShipRefused, shipTicket, verifyShip } from '../src/plugins/tasks/ship.ts';
+import { shipState } from '../src/plugins/tasks/package/hub/model.mts';
+import { setBranchLookup } from '../src/plugins/tasks/package/hub/branch-link.mts';
+import { readShipTicket, reportShip, shipCommand, shipFor, shipForRunner, ShipRefused, shipScript, shipTicket, verifyShip } from '../src/plugins/tasks/package/hub/ship.mts';
 import { ticketFor } from '../src/mcp/wait-core.ts';
 import { ZCODE_WAIT } from '../src/core/types.ts';
 import { bearer, holdScript, startTestHub, tempDir, waitFor, turnsOf, memberHeaders } from './helpers.ts';
-import { collaborationRecords, saveCollaborationRecord } from '../src/plugins/tasks/store.ts';
+import { collaborationRecords, saveCollaborationRecord } from '../src/plugins/tasks/package/hub/store.mts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
 
@@ -542,7 +542,7 @@ test('get_task shows ship only to the member who runs it: the approving member, 
   const userTask = f.submitted('abcdef0', user);
   f.act(user, userTask.task, { action: 'task.review', submissionId: userTask.submission.id, verdict: 'approve' });
   const command = (of(userTask.task, 'a').ship as { command: string }).command;
-  assert.ok(command.includes(`node "${SHIP_SCRIPT}" --ticket s1.`), command);
+  assert.ok(command.includes(`node "${shipScript()}" --ticket s1.`), command);
   assert.ok(command.includes(`--hub ${url} --agent <name> --type <type> --summary "<English summary>" [--trailer "..."]`), command);
   assert.deepEqual(of(userTask.task, 'b'), {}, 'not the executor');
 
@@ -566,13 +566,13 @@ test('get_task shows ship only to the member who runs it: the approving member, 
 });
 
 test('the ship command uses the Hub\'s own checkout and refuses an address or path it cannot put in a shell', () => {
-  assert.ok(SHIP_SCRIPT.endsWith('/scripts/ship.ts') && !SHIP_SCRIPT.includes('\\'));
+  assert.ok(shipScript().endsWith('/scripts/ship.ts') && !shipScript().includes('\\'));
   assert.throws(() => shipCommand('s1.x.y', 'http://example.com:80'));
   assert.throws(() => shipCommand('s1.x.y', 'http://127.0.0.1:1', 'C:/a"b/ship.ts'));
 });
 
 test('the Hub\'s ship code only ever runs read-only git', () => {
-  const code = readFileSync(resolve(import.meta.dirname, '../src/plugins/tasks/ship.ts'), 'utf8');
+  const code = readFileSync(resolve(import.meta.dirname, '../src/plugins/tasks/package/hub/ship.mts'), 'utf8');
   assert.equal(/child_process|execFile|spawn/.test(code), false, 'no way to start a process but the read-only helper');
   const calls = [...code.matchAll(/\bgitSync\(([^)]*)\)/g)].map((m) => m[1]);
   assert.ok(calls.length >= 2);
@@ -1325,4 +1325,29 @@ test('reopen after ship_failed restores and wakes eligible approved executor, an
   assert.equal(remReopen.task!.assignedMemberId, null);
   assert.deepEqual(woke(remReopen.eventId), []);
   assert.match(reopenNotice(remReopen.eventId)!.body, /成员已不在本群.*task_action assign/);
+});
+
+test('httpHub sends connection close so multi-second git steps cannot hit stale keep-alive sockets', async (t) => {
+  const requests: { url: string | undefined; connection: string | undefined }[] = [];
+  const server = createServer((req, res) => {
+    requests.push({ url: req.url, connection: req.headers.connection });
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+    });
+  });
+  server.keepAliveTimeout = 50;
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+  const { port } = server.address() as { port: number };
+  const hub = httpHub(`http://127.0.0.1:${port}`, 's1.test');
+  await hub.verify();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await hub.report({ mergeCommit: 'a'.repeat(40), pushed: false, retried: [] });
+
+  assert.deepEqual(requests, [
+    { url: '/bridge/ship-verify', connection: 'close' },
+    { url: '/bridge/ship-result', connection: 'close' },
+  ]);
 });

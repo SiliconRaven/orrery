@@ -6,7 +6,7 @@ import { Hub } from '../src/core/hub.ts';
 import { Store } from '../src/core/store.ts';
 import type { CollaborationActor, CollaborationCommand, Task, TaskResult } from '../src/core/collaboration-types.ts';
 import { bearer, holdScript, startTestHub, waitFor, turnsOf, memberHeaders } from './helpers.ts';
-import { saveCollaborationTask } from '../src/plugins/tasks/store.ts';
+import { saveCollaborationTask } from '../src/plugins/tasks/package/hub/store.mts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
 

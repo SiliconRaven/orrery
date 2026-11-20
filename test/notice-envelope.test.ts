@@ -6,7 +6,7 @@ import { parseEnvelopes } from './mock.ts';
 import type { CollaborationCommand } from '../src/core/collaboration-types.ts';
 import type { Message } from '../src/core/types.ts';
 import { startTestHub, tempDir, waitFor } from './helpers.ts';
-import { linkCollaborationMessage } from '../src/plugins/tasks/store.ts';
+import { linkCollaborationMessage } from '../src/plugins/tasks/package/hub/store.mts';
 
 test('task envelope groups interleaved verified notices while preserving IDs, text, attachments and current task state', async () => {
   const dir = tempDir();

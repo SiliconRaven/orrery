@@ -9,7 +9,7 @@ import type { CollaborationActor, CollaborationCommand, Submission, Task } from 
 import { startTestHub, waitFor } from './helpers.ts';
 import {
   collaborationLinkCount, collaborationLinks, collaborationRecords, collaborationTask, saveCollaborationRecord, saveCollaborationTask,
-} from '../src/plugins/tasks/store.ts';
+} from '../src/plugins/tasks/package/hub/store.mts';
 
 test('a task is created and read within its cluster, with idempotent retries', () => {
   const store = new Store(':memory:', new PluginHost(officialPlugins));

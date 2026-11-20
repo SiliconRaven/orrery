@@ -11,8 +11,8 @@ import { Hub } from '../src/core/hub.ts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { Store } from '../src/core/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
-import { PRESET_PACKS } from '../src/plugins/tasks/labels.ts';
-import { collaborationTask, MIGRATIONS } from '../src/plugins/tasks/store.ts';
+import { PRESET_PACKS } from '../src/plugins/tasks/package/hub/labels.mts';
+import { collaborationTask, MIGRATIONS } from '../src/plugins/tasks/package/hub/store.mts';
 import { rawFetch, startTestHub, tempDir, type TestHub } from './helpers.ts';
 
 const user: CollaborationActor = { kind: 'user' };

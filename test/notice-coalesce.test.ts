@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { coalesceNotices, type NoticeInput, type NoticeTask } from '../src/plugins/tasks/notice-coalesce.ts';
+import { coalesceNotices, type NoticeInput, type NoticeTask } from '../src/plugins/tasks/package/hub/notice-coalesce.mts';
 import type { HubEvent, Message } from '../src/core/types.ts';
 
 function notice(id: string, seq: number, taskId: string, action: string,

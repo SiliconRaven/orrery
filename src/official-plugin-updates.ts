@@ -4,8 +4,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { dirname, extname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
-import { z } from 'zod';
-import { TRANSCRIPT_MAX_ITEMS } from './core/native-transcript.ts';
+import { OFFICIAL_PLUGIN_HOST } from './official-plugin-host.ts';
 import { PluginHost, pluginEnabledBySettings, shortError, type OfficialPlugin } from './core/plugin.ts';
 import { MAX_ARCHIVE_BYTES, unpackPlugin } from './plugin-install-archive.ts';
 import {
@@ -14,7 +13,7 @@ import {
 import { selectOfficialVersions, type OfficialChoice, type OfficialVariants } from './official-plugin-selection.ts';
 import { compareVersions } from './update-check.ts';
 
-const HOST_API = 1;
+const HOST_API = OFFICIAL_PLUGIN_HOST.hostApi;
 // The first release with official ZIPs pins the production publishers here. Never load keys from local state.
 const RELEASE_KEYS: OfficialKeys = new Map();
 const RELEASE_ROOT = 'https://github.com/SiliconRaven/orrery/releases/download/';
@@ -156,7 +155,7 @@ async function loadChoice(choice: Choice): Promise<OfficialPlugin> {
       (async () => {
         const entry = await import(pathToFileURL(join(pkg.directory, pkg.manifest.entry)).href);
         if (typeof entry.default !== 'function') throw error('OFFICIAL_PACKAGE_INVALID', '官方包没有默认入口函数。');
-        return descriptor(await entry.default({ hostApi: HOST_API, z, transcriptMaxItems: TRANSCRIPT_MAX_ITEMS }), choice);
+        return descriptor(await entry.default(OFFICIAL_PLUGIN_HOST), choice);
       })(),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(error('OFFICIAL_PACKAGE_INVALID', '官方包的入口加载超时。')), LOAD_MS);
@@ -235,9 +234,16 @@ export class OfficialPluginUpdates {
     if (plugin.packageSource) {
       try {
         const pkg = sourceOfficialPackage(plugin.packageSource.directory, plugin.packageSource.metadata);
-        if (pkg.manifest.id !== plugin.id || pkg.manifest.version !== plugin.version) throw error('OFFICIAL_PACKAGE_INVALID', '内置副本与其发布元数据不一致。');
+        const requires = plugin.requires ?? [];
+        if (pkg.manifest.id !== plugin.id || pkg.manifest.version !== plugin.version
+          || pkg.manifest.migrationVersion !== (plugin.migrations?.length ?? 0)
+          || pkg.manifest.requires.length !== requires.length
+          || pkg.manifest.requires.some((dep, i) => dep.id !== requires[i])) {
+          throw error('OFFICIAL_PACKAGE_INVALID', '内置副本与其发布元数据不一致。');
+        }
         const english = pkg.manifest.web?.english;
         this.sources.set(plugin.id, { pkg, english: english ? dictionary(pkg, english) : undefined });
+        return { id: plugin.id, version: plugin.version, plugin, requires: pkg.manifest.requires };
       } catch (cause) {
         this.rejected = reportOf(plugin.id, cause);
         return undefined;
@@ -272,14 +278,22 @@ export class OfficialPluginUpdates {
   async boot(): Promise<OfficialPlugin[]> {
     const switches = this.options.switches();
     const original = [...this.builtins.values()];
+    const migrations = appliedMigrations(this.options.dbPath);
     const bundles = new Map(original.map((p) => [p.id, this.bundled(p)]));
     if (!Object.keys(this.saved.active).length && !Object.keys(this.saved.previous ?? {}).length && !this.saved.pending
       && [...bundles.values()].every(Boolean)) {
-      this.running = new Map(original.map((p) => [p.id, this.bundle(p)]));
-      this.activePlugins = new Map(original.map((p) => [p.id, p]));
-      return original;
+      const group = original.map((p) => bundles.get(p.id)!);
+      const incompatibleDb = group.find((c) => (c.plugin.migrations?.length ?? 0) < (migrations.get(c.id) ?? 0));
+      if (incompatibleDb) {
+        this.rejected = reportOf(incompatibleDb.id, error('OFFICIAL_DATABASE_INCOMPATIBLE', '该插件版本无法读取已提交的数据库迁移。'));
+      } else if (!selectOfficialVersions(group.map((c) => ({ id: c.id, enabled: true, original: c })))) {
+        this.rejected = reportOf(group[0]?.id ?? '', error('OFFICIAL_DEPENDENCY_CONFLICT', '内置官方插件版本依赖不相容。'));
+      } else {
+        this.running = new Map(group.map((c) => [c.id, c]));
+        this.activePlugins = new Map(original.map((p) => [p.id, p]));
+        return original;
+      }
     }
-    const migrations = appliedMigrations(this.options.dbPath);
     const references = new Map<string, VerifiedOfficialPackage | undefined>();
     const reason = new Map<string, Problem>();
     const read = (id: string, ref: Ref): VerifiedOfficialPackage | undefined => {

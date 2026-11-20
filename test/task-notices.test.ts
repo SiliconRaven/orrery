@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
-import { COORDINATOR_RULES } from '../src/plugins/coordinator/coordinator-rules.ts';
+import { COORDINATOR_RULES } from '../src/plugins/coordinator/package/hub/coordinator-rules.mts';
 import { rawFetch, startTestHub, tempDir, waitFor } from './helpers.ts';
 
 /** Three native mock members: A, B and C (A becomes the coordinator where a test needs one). */

@@ -14,7 +14,7 @@
         "src/bridge/claude-bridge.ts!",
         "src/web/public/app.js!",
         "src/web/public/theme.js!",
-        "src/web/public/official-plugins/bookmarks.js!",
+        "src/plugins/bookmarks/package/web/index.js!",
         "src/plugins/starmap/package/web/index.js!",
         "src/web/public/plugin-host/v1.js!",
         "scripts/sync-mcp-tools.ts",

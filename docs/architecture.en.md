@@ -13,7 +13,7 @@ Code resides under `src/` and `desktop/`, with entry points defined in `package.
 | `src/core/types.ts` | Core domain types and `NativeAdapter` contracts (imports `system-kinds`) | — |
 | `src/core/hub.ts` | `Hub`: scheduler, event bus, routing/batching, loop caps, hidden state, bridge registry | — |
 | `src/core/store.ts` | SQLite persistence (`node:sqlite`), forward-only migrations, messages/deliveries/settings | — |
-| `src/core/handover.ts` | Handover package builder (paired with `src/plugins/tasks/handover.ts`) | [Members & Handover](cluster-members.en.md) |
+| `src/core/handover.ts` | Handover package builder (paired with `src/plugins/tasks/package/hub/handover.mts`) | [Members & Handover](cluster-members.en.md) |
 | `src/core/activity.ts` | Per-member activity telemetry state (`observing`, `stale`, `disconnected`, `unknown`) | [Activity Observation](activity.en.md) |
 | `src/core/files.ts` | Web uploads, native member outbox imports, and path-safety checks | [Files & Skills](files.en.md) |
 | `src/core/external-plugin*.ts`, `event-registry.ts` | Restricted third-party plugins: registration and manifests, process protocol, event channel, posting, commands, member tools, web UI and marks, configuration | [Third-Party Plugins](external-plugins.en.md) |
@@ -25,7 +25,7 @@ Code resides under `src/` and `desktop/`, with entry points defined in `package.
 | `src/mcp/bridge.ts` | `/bridge/*` SSE streams, acks, turn outcomes, wait/park and plugin bridge routes | [Native Mode](native-mode.en.md) |
 | `src/mcp/wait-core.ts`, `hook-park.ts`, `antigravity.ts` | Background wait tickets, parked hook registry, and Antigravity HMAC verification | Adapter guides |
 | `src/adapters/` | Native harness adapters, `shared/` helpers, and test-only `mock/native.ts` | Adapter guides |
-| `src/plugins/` | Official built-in plugins: `tasks` (includes `ship`), `coordinator`, `bookmarks` | [Built-in Plugins](plugins.en.md) |
+| `src/plugins/`, `src/official-plugin*.ts` | Official plugin packages (`tasks` with `ship`, `coordinator`, `bookmarks`, `starmap`): `release.json`, thin `index.ts` + self-contained `package/`, connected via `OFFICIAL_PLUGIN_HOST` (`hostApi: 1`) and signed updates | [Built-in Plugins](plugins.en.md) |
 | `src/web/` | Static assets, HTTP API, SSE (`GET /api/stream`), and session auth | [Collaboration API](collaboration-api.en.md) |
 | `desktop/` | Standalone Electron wrapper & Win32 docking (zero `src/` imports) | [Desktop Shell](desktop.en.md) |
 

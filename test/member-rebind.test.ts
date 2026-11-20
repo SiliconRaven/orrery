@@ -1,5 +1,5 @@
 // Moving a member to another conversation (docs/cluster-members.md「换对话」), with mock native adapters only.
-import type { TasksService } from '../src/plugins/tasks/service.ts';
+import type { TasksService } from '../src/plugins/tasks/package/hub/service.mts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';

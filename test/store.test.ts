@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { DEFAULT_DB_MODE, eventJson, Store, toEvent } from '../src/core/store.ts';
 import { Hub } from '../src/core/hub.ts';
 import { fixtureNativeMock, startTestHub, tempDir, waitFor } from './helpers.ts';
-import { collaborationRecords, collaborationTask } from '../src/plugins/tasks/store.ts';
+import { collaborationRecords, collaborationTask } from '../src/plugins/tasks/package/hub/store.mts';
 import type { Message } from '../src/core/types.ts';
 
 /** Back to the v18 clusters table: no pin, archive or read position. */

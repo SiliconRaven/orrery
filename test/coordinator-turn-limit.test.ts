@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import type { CoordinatorPolicy } from '../src/core/collaboration-types.ts';
 import type { Limits } from '../src/core/hub.ts';
 import { intEnv } from '../src/config.ts';
-import { coordinatorSnapshot, saveCoordinator } from '../src/plugins/coordinator/store.ts';
+import { coordinatorSnapshot, saveCoordinator } from '../src/plugins/coordinator/package/hub/store.mts';
 import { startTestHub, waitFor } from './helpers.ts';
 
 const COORDINATOR_PERMISSIONS: CoordinatorPolicy['permissions'] = {

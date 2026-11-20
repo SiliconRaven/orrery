@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { Hub } from '../src/core/hub.ts';
 import { Store } from '../src/core/store.ts';
 import { actorKey } from '../src/core/collaboration.ts';
-import { fingerprint, idleTaskCandidates, memberEligible, type IdleCandidateInput } from '../src/plugins/tasks/idle-candidates.ts';
+import { fingerprint, idleTaskCandidates, memberEligible, type IdleCandidateInput } from '../src/plugins/tasks/package/hub/idle-candidates.mts';
 import type { CollaborationActor, CollaborationCommand, Task } from '../src/core/collaboration-types.ts';
 import type { MemberStatus } from '../src/core/types.ts';
 import { PluginHost } from '../src/core/plugin.ts';

@@ -1,15 +1,15 @@
-import type { TasksService } from '../src/plugins/tasks/service.ts';
+import type { TasksService } from '../src/plugins/tasks/package/hub/service.mts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import { Store } from '../src/core/store.ts';
 import type { Limits } from '../src/core/hub.ts';
 import { quotaLevel, UsageTracker } from '../src/core/usage.ts';
-import { idleTaskCandidates } from '../src/plugins/tasks/idle-candidates.ts';
+import { idleTaskCandidates } from '../src/plugins/tasks/package/hub/idle-candidates.mts';
 import type { Task } from '../src/core/collaboration-types.ts';
 import type { MemberStatus, QuotaSnapshot, QuotaWindow } from '../src/core/types.ts';
 import { startTestHub, tempDir, waitFor } from './helpers.ts';
-import { collaborationLinks } from '../src/plugins/tasks/store.ts';
+import { collaborationLinks } from '../src/plugins/tasks/package/hub/store.mts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
 

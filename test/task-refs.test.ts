@@ -9,7 +9,7 @@ import { runInNewContext } from 'node:vm';
 import { REPO_ROOT } from '../src/main.ts';
 import { t } from '../shared/i18n/index.js';
 import { startTestHub } from './helpers.ts';
-import { collaborationTask, saveCollaborationTask } from '../src/plugins/tasks/store.ts';
+import { collaborationTask, saveCollaborationTask } from '../src/plugins/tasks/package/hub/store.mts';
 
 class FakeElement {
   readonly tagName: string;

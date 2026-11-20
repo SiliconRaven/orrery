@@ -6,7 +6,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import { REPO_ROOT } from '../src/main.ts';
-import { shipForRunner, verifyShip } from '../src/plugins/tasks/ship.ts';
+import { shipForRunner, verifyShip } from '../src/plugins/tasks/package/hub/ship.mts';
 import { startTestHub, tempDir } from './helpers.ts';
 
 /** Five native mock members A-E on sessions s1-s5. */
@@ -212,14 +212,14 @@ test('a second takeover by user after upgrading reviewer supersedes the prior ta
 });
 
 test('boundary: reviewer self is only written through the takeover rule on taken-over tasks, and submit checks the binding', () => {
-  const dir = join(REPO_ROOT, 'src/plugins/tasks');
-  const source = readFileSync(join(dir, 'actions.ts'), 'utf8');
+  const dir = join(REPO_ROOT, 'src/plugins/tasks/package/hub');
+  const source = readFileSync(join(dir, 'actions.mts'), 'utf8');
   // Command reference copies do not change a task. Batch joins copy a user/member reviewer only;
   // task-batches.test.ts verifies that batches reject self review. Other changes use setReviewer.
-  const writers = readdirSync(dir).filter((name) => name.endsWith('.ts'))
+  const writers = readdirSync(dir).filter((name) => name.endsWith('.mts'))
     .flatMap((name) => [...readFileSync(join(dir, name), 'utf8').matchAll(/(\w+)!?\.reviewer\s*=[^=]/g)].map((m) => `${name}:${m[1]}`))
-    .filter((writer) => !['actions.ts:out', 'batches.ts:out'].includes(writer)).sort();
-  assert.deepEqual(writers, ['actions.ts:task', 'actions.ts:task', 'batches.ts:task'],
+    .filter((writer) => !['actions.mts:out', 'batches.mts:out'].includes(writer)).sort();
+  assert.deepEqual(writers, ['actions.mts:task', 'actions.mts:task', 'batches.mts:task'],
     'only setReviewer and the two restricted batch joins write task reviewers');
   assert.match(source, /const setReviewer = /);
   assert.match(source, /\/\/ SELF-BINDING CHECK[\s\S]{0,400}selfReviewBound\(/, 'submit checks the binding before writing a self review');

@@ -172,10 +172,11 @@ test('GET /api/plugins and the icon route: official and third-party icons, reaso
   try {
     const { installed } = await app.api('GET', '/api/plugins');
     const row = (id: string) => installed.find((p: any) => p.id === id);
-    assert.equal(row('tasks').iconUrl, '/official-plugins/tasks.svg');
+    assert.equal(row('tasks').iconUrl, '/api/plugins/tasks/icon');
     assert.match(row('tasks').details, /关闭后/);
     assert.equal(row('tasks').iconError, undefined);
-    assert.equal((await rawFetch(app.url + row('tasks').iconUrl)).headers.get('content-type'), 'image/svg+xml');
+    assert.equal((await rawFetch(app.url + row('tasks').iconUrl)).status, 401);
+    assert.equal((await fetch(app.url + row('tasks').iconUrl)).headers.get('content-type'), 'image/svg+xml');
     assert.equal(row('good-icon').iconUrl, '/api/plugins/good-icon/icon');
     assert.equal(row('good-icon').details, '**粗体** <script>x</script>', 'details travel as data; the page renders them as text');
     assert.equal(row('bad-icon').iconUrl, null);
@@ -195,7 +196,7 @@ test('GET /api/plugins and the icon route: official and third-party icons, reaso
     assert.equal((await fetch(app.url + '/api/plugins/png-icon/icon')).headers.get('content-type'), 'image/png');
     assert.equal((await rawFetch(app.url + '/api/plugins/good-icon/icon')).status, 401, 'the API token is required, as for every /api/* route');
     assert.equal((await rawFetch(app.url + '/api/plugins/good-icon/icon', { headers: { authorization: 'Bearer x', origin: 'https://evil.invalid' } })).status, 403);
-    for (const id of ['bad-icon', 'failed-icon', 'tasks', 'nobody', '..%2Fapp.js']) {
+    for (const id of ['bad-icon', 'failed-icon', 'nobody', '..%2Fapp.js']) {
       assert.equal((await fetch(app.url + `/api/plugins/${id}/icon`)).status, 404, id);
     }
     // Checked on every read: a file that changes after start-up is refused from then on.

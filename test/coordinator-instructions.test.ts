@@ -5,8 +5,8 @@ import { Hub } from '../src/core/hub.ts';
 import { Store } from '../src/core/store.ts';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import { startTestHub, tempDir, waitFor } from './helpers.ts';
-import { COORDINATOR_RULES } from '../src/plugins/coordinator/coordinator-rules.ts';
-import { collaborationLinks } from '../src/plugins/tasks/store.ts';
+import { COORDINATOR_RULES } from '../src/plugins/coordinator/package/hub/coordinator-rules.mts';
+import { collaborationLinks } from '../src/plugins/tasks/package/hub/store.mts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
 

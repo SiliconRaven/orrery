@@ -5,10 +5,10 @@ import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
-import { COORDINATOR_RULES } from '../src/plugins/coordinator/coordinator-rules.ts';
+import { COORDINATOR_RULES } from '../src/plugins/coordinator/package/hub/coordinator-rules.mts';
 import type { CollaborationActor, CollaborationCommand, CollaborationResult, Task } from '../src/core/collaboration-types.ts';
 import { startTestHub, tempDir, waitFor } from './helpers.ts';
-import { collaborationLinks, collaborationTasks } from '../src/plugins/tasks/store.ts';
+import { collaborationLinks, collaborationTasks } from '../src/plugins/tasks/package/hub/store.mts';
 
 async function fixture() {
   const dir = tempDir();

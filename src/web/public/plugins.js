@@ -13,10 +13,8 @@ const canMention = (plugin) => plugin.permissions.includes('messages.mention');
 const pluginText = (plugin, text) => plugin.origin === 'external' || plugin.origin === 'trusted' ? text : t(text);
 const official = (plugin) => plugin.origin !== 'external' && plugin.origin !== 'trusted';
 const pluginField = (plugin, field) => {
-  const update = official(plugin) && plugin.officialUpdate;
-  const english = update?.english?.[field];
-  if (language() === 'en' && typeof english === 'string') return english;
-  return update?.source === 'package' ? plugin[field] : pluginText(plugin, plugin[field]);
+  const english = official(plugin) && plugin.officialUpdate?.english?.[field];
+  return language() === 'en' && typeof english === 'string' ? english : pluginText(plugin, plugin[field]);
 };
 const OFFICIAL_UPDATES = '/api/plugins/official-updates';
 const WAKE_WARNING = '开启后，插件点名可能唤醒成员并消耗模型用量。';

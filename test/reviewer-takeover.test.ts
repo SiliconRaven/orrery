@@ -12,9 +12,9 @@ import { PluginHost } from '../src/core/plugin.ts';
 import { Store } from '../src/core/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
 import { gitRead } from '../src/core/projects.ts';
-import { setBranchLookup, type GitRunner } from '../src/plugins/tasks/branch-link.ts';
-import { shipForRunner, verifyShip } from '../src/plugins/tasks/ship.ts';
-import { MIGRATIONS } from '../src/plugins/tasks/store.ts';
+import { setBranchLookup, type GitRunner } from '../src/plugins/tasks/package/hub/branch-link.mts';
+import { shipForRunner, verifyShip } from '../src/plugins/tasks/package/hub/ship.mts';
+import { MIGRATIONS } from '../src/plugins/tasks/package/hub/store.mts';
 import { startTestHub, tempDir } from './helpers.ts';
 
 /** Five native mock members A-E on sessions s1-s5. B executes and C reviews in the helpers below. */

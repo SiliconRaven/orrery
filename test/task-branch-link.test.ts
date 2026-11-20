@@ -1,4 +1,4 @@
-// The automatic branch link at submit (docs/collaboration.md「任务关联本地 Git 分支」, src/plugins/tasks/branch-link.ts):
+// The automatic branch link at submit (docs/collaboration.md「任务关联本地 Git 分支」, src/plugins/tasks/package/hub/branch-link.mts):
 // read-only git before the transaction, the decision inside it, and the paths that create a submission.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync, type ChildProcess } from 'node:child_process';
@@ -11,8 +11,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { CollaborationActor, CollaborationCommand, CollaborationResult } from '../src/core/collaboration-types.ts';
 import { git as gitAsync, GIT_READ_ENV, gitRead, gitSync, setGitTreeKill } from '../src/core/projects.ts';
-import { BRANCH_LOOKUP_BUDGET_MS, detectProductCodeChanges, setBranchLookup, type GitRunner } from '../src/plugins/tasks/branch-link.ts';
-import { saveCollaborationRecord } from '../src/plugins/tasks/store.ts';
+import { BRANCH_LOOKUP_BUDGET_MS, detectProductCodeChanges, setBranchLookup, type GitRunner } from '../src/plugins/tasks/package/hub/branch-link.mts';
+import { saveCollaborationRecord } from '../src/plugins/tasks/package/hub/store.mts';
 import { bearer, holdScript, startTestHub, tempDir, waitFor, type TestHub, turnsOf, memberHeaders } from './helpers.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, windowsHide: true, stdio: 'pipe', encoding: 'utf8' }).trim();

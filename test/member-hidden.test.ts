@@ -8,8 +8,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import { HIDDEN_TOOL_TEXT } from '../src/core/collaboration.ts';
 import { HIDDEN_DELIVERY_REASON } from '../src/core/hub.ts';
-import { saveCoordinator, coordinatorSnapshot } from '../src/plugins/coordinator/store.ts';
-import { idleTaskCandidates } from '../src/plugins/tasks/idle-candidates.ts';
+import { saveCoordinator, coordinatorSnapshot } from '../src/plugins/coordinator/package/hub/store.mts';
+import { idleTaskCandidates } from '../src/plugins/tasks/package/hub/idle-candidates.mts';
 import type { Task } from '../src/core/collaboration-types.ts';
 import { startTestHub, tempDir, waitFor } from './helpers.ts';
 

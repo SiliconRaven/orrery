@@ -8,7 +8,7 @@ import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { Store } from '../src/core/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
-import { MIGRATIONS } from '../src/plugins/tasks/store.ts';
+import { MIGRATIONS } from '../src/plugins/tasks/package/hub/store.mts';
 import { startTestHub, tempDir, waitFor } from './helpers.ts';
 
 /** Four native mock members A-D on their own sessions; `dir` reuses a database across a restart. */

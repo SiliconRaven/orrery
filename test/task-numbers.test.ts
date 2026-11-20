@@ -11,8 +11,8 @@ import { Hub } from '../src/core/hub.ts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { Store } from '../src/core/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
-import { collaborationTask, MIGRATIONS, saveCollaborationTask } from '../src/plugins/tasks/store.ts';
-import { taskSummary } from '../src/plugins/tasks/tools.ts';
+import { collaborationTask, MIGRATIONS, saveCollaborationTask } from '../src/plugins/tasks/package/hub/store.mts';
+import { taskSummary } from '../src/plugins/tasks/package/hub/tools.mts';
 import { bearer, holdScript, startTestHub, tempDir, waitFor, turnsOf, memberHeaders } from './helpers.ts';
 
 const user: CollaborationActor = { kind: 'user' };

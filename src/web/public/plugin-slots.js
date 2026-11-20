@@ -2,7 +2,7 @@
 // An independently loaded module's slots and host handles are released together when it stops being the current
 // selection. Its code stays in the page until reload.
 import { interpolate, language, onLanguageChange } from './i18n.js';
-import { lt } from './ui.js';
+import { isLive, lt } from './ui.js';
 
 const ID = /^[a-z][a-z0-9-]*$/;
 /** How long an independently loaded module may take to import before the page starts without it. */
@@ -26,7 +26,7 @@ const catchThenable = (value, label) => Promise.resolve(value).catch(warnOf(labe
  * three are functions (factories) the host calls; a workbench factory returns a TAB.
  */
 const MESSAGE = { required: ['render'], optional: ['key', 'capture', 'restore', 'update'] };
-const TAB = { required: ['render', 'load'], optional: ['reset', 'itemRow'], data: { id: 'string', label: 'string' } };
+const TAB = { required: ['render', 'load'], optional: ['reset', 'itemRow'], data: { id: 'string', label: 'text' } };
 const SLOTS = ['message', 'composer', 'workbench', 'settings', 'view'];
 const VIEW_KEYS = ['id', 'title', 'icon', 'mount', 'unmount'];
 /** Whether the page's sprite has the icon `i-<name>` (a view names its icon, it never brings its own markup). */
@@ -40,7 +40,12 @@ function checkShape(what, value, { required, optional, data = {} }) {
   for (const key of [...required, ...optional]) {
     if ((required.includes(key) || value[key] !== undefined) && typeof value[key] !== 'function') throw new Error(`${what}.${key} must be a function`);
   }
-  for (const [key, type] of Object.entries(data)) if (typeof value[key] !== type || !value[key]) throw new Error(`${what}.${key} must be a non-empty ${type}`);
+  for (const [key, type] of Object.entries(data)) {
+    const item = value[key];
+    if (type === 'text') {
+      if ((typeof item !== 'string' && !isLive(item)) || !String(item).trim()) throw new Error(`${what}.${key} must be a non-empty string`);
+    } else if (typeof item !== type || !item) throw new Error(`${what}.${key} must be a non-empty ${type}`);
+  }
 }
 
 /**
@@ -384,6 +389,7 @@ function packageI18n(english, onDispose) {
   return Object.freeze({
     t,
     lt: (msgid, params) => lt(() => t(msgid, params)),
+    language,
     onLanguageChange(fn) {
       const unsubscribe = onLanguageChange(fn);
       onDispose(unsubscribe);

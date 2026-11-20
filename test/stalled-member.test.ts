@@ -1,10 +1,10 @@
-import type { StalledHint, TasksService } from '../src/plugins/tasks/service.ts';
+import type { StalledHint, TasksService } from '../src/plugins/tasks/package/hub/service.mts';
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Limits } from '../src/core/hub.ts';
 import type { CoordinatorPolicy } from '../src/core/collaboration-types.ts';
-import { coordinatorSnapshot, saveCoordinator } from '../src/plugins/coordinator/store.ts';
-import { saveCollaborationTask } from '../src/plugins/tasks/store.ts';
+import { coordinatorSnapshot, saveCoordinator } from '../src/plugins/coordinator/package/hub/store.mts';
+import { saveCollaborationTask } from '../src/plugins/tasks/package/hub/store.mts';
 import { startTestHub, waitFor } from './helpers.ts';
 
 const PREFIX = '成员长时间没有活动';

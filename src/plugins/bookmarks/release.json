@@ -1,0 +1,12 @@
+{
+  "format": 1,
+  "id": "bookmarks",
+  "version": "0.10.0-beta.2",
+  "keyId": "orrery-official-1",
+  "hub": { "api": 1, "minVersion": "0.10.0-beta.3" },
+  "requires": [],
+  "migrationVersion": 1,
+  "entry": "hub/index.mts",
+  "icon": "web/icon.svg",
+  "web": { "entry": "web/index.js", "english": "web/i18n/en.json" }
+}

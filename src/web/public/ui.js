@@ -79,7 +79,7 @@ let tracked = 0;
  * Outside h() it is just its translation now (String(value)).
  */
 export const lt = (msgid, params) => ({ [LIVE]: true, toString: typeof msgid === 'function' ? msgid : () => t(msgid, params) });
-const isLive = (value) => Boolean(value?.[LIVE]);
+export const isLive = (value) => Boolean(value?.[LIVE]);
 function track(target, attr, text) {
   liveTexts.add({ ref: new WeakRef(target), attr, text });
   if (++tracked % 1000 === 0) for (const entry of liveTexts) if (!entry.ref.deref()) liveTexts.delete(entry);

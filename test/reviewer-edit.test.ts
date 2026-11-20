@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { Hub } from '../src/core/hub.ts';
 import { Store } from '../src/core/store.ts';
 import type { CollaborationActor, CollaborationCommand, Task } from '../src/core/collaboration-types.ts';
-import { collaborationTask, saveCollaborationTask } from '../src/plugins/tasks/store.ts';
+import { collaborationTask, saveCollaborationTask } from '../src/plugins/tasks/package/hub/store.mts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
 

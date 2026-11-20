@@ -11,9 +11,10 @@ import { Hub } from '../src/core/hub.ts';
 import { PluginHost, type OfficialPlugin } from '../src/core/plugin.ts';
 import { PluginSettings } from '../src/core/plugin-settings.ts';
 import { Store } from '../src/core/store.ts';
+import { REPO_ROOT } from '../src/main.ts';
 import { fingerprintTools } from '../src/mcp/tool-fingerprint.ts';
 import { bookmarksOf } from '../src/plugins/bookmarks/index.ts';
-import { saveCoordinator } from '../src/plugins/coordinator/store.ts';
+import { saveCoordinator } from '../src/plugins/coordinator/package/hub/store.mts';
 import { officialPlugins } from '../src/plugins/index.ts';
 import { rawFetch, startTestHub, tempDir, waitFor, type TestHub } from './helpers.ts';
 
@@ -219,7 +220,11 @@ test('tools: enabled, the two bookmark tools are exactly the ones from before th
     assert.equal(fingerprintTools(two), 'sha256:4db3b48da91eff2f86ac754c9b6d01f1c8bdcca97eaf9932748991420b0fb797');
     const listing = await app.api('GET', '/api/plugins');
     assert.deepEqual(listing.plugins, [{ id: 'tasks', version: '0.10.0-beta.2' }, { id: 'bookmarks', version: '0.10.0-beta.2' }, { id: 'coordinator', version: '0.10.0-beta.2' }]);
-    assert.deepEqual(listing.frontend, ['bookmarks']);
+    assert.deepEqual(listing.frontend, []);
+    assert.equal(listing.officialFrontend.length, 1);
+    assert.equal(listing.officialFrontend[0].id, 'bookmarks');
+    assert.match(listing.officialFrontend[0].entry, /^\/official-plugin-web\/bookmarks\/[a-f0-9]{64}\/index\.js$/);
+    assert.match(listing.officialFrontend[0].english, /^\/official-plugin-web\/bookmarks\/[a-f0-9]{64}\/i18n\/en\.json$/);
   } finally { await app.close(); }
 });
 
@@ -234,6 +239,7 @@ test('disabled: no tools, no route, no field, and a Hub still runs a cluster cha
     const listing = await app.api('GET', '/api/plugins');
     assert.deepEqual(listing.plugins, [{ id: 'tasks', version: '0.10.0-beta.2' }, { id: 'coordinator', version: '0.10.0-beta.2' }]);
     assert.deepEqual(listing.frontend, []);
+    assert.deepEqual(listing.officialFrontend, []);
     const { cluster, members } = await app.cluster('p', ['alice']);
     const path = `/api/clusters/${cluster.id}`;
     const sent = await app.api('POST', `${path}/messages`, { body: `@${members[0].name} hello` });
@@ -346,9 +352,12 @@ test('api: GET lists what is installed; PUT only changes the next start, which t
   const first = await startTestHub({ dir, plugins: onlyBookmarks });
   try {
     const before = await first.api('GET', '/api/plugins');
+    const bookmarksEnglish = JSON.parse(readFileSync(join(REPO_ROOT, 'src/plugins/bookmarks/package/web/i18n/en.json'), 'utf8'));
     assert.deepEqual(before.installed, [{ id: 'bookmarks', version: '0.10.0-beta.2', requires: [], name: '收藏', description: onlyBookmarks[0].description,
-      details: onlyBookmarks[0].details, iconUrl: '/official-plugins/bookmarks.svg', enabled: true, disabledByEnv: false, pendingEnabled: true,
-      officialUpdate: { source: 'bundled' } }]);
+      details: onlyBookmarks[0].details, iconUrl: '/api/plugins/bookmarks/icon', enabled: true, disabledByEnv: false, pendingEnabled: true,
+      officialUpdate: { source: 'bundled', english: {
+        name: bookmarksEnglish['收藏'], description: bookmarksEnglish[onlyBookmarks[0].description!], details: bookmarksEnglish[onlyBookmarks[0].details!],
+      } } }]);
     const after = await first.api('PUT', '/api/plugins/bookmarks', { enabled: false });
     assert.deepEqual(after.plugins, [{ id: 'bookmarks', version: '0.10.0-beta.2' }], 'still running until the Hub restarts');
     assert.equal(after.installed[0].enabled, true);

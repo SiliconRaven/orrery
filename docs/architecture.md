@@ -13,7 +13,7 @@
 | `src/core/types.ts` | 核心领域类型与 `NativeAdapter` 接口（含 `system-kinds` 引用） | — |
 | `src/core/hub.ts` | `Hub` 核心调度、事件总线、路由/合批、防循环、隐身与桥登记 | — |
 | `src/core/store.ts` | SQLite 持久化（`node:sqlite`）、单向增量迁移、消息/投递/设置查询 | — |
-| `src/core/handover.ts` | 成员交接包组装（结合任务插件 `src/plugins/tasks/handover.ts`） | [成员管理](cluster-members.md) |
+| `src/core/handover.ts` | 成员交接包组装（结合任务插件 `src/plugins/tasks/package/hub/handover.mts`） | [成员管理](cluster-members.md) |
 | `src/core/activity.ts` | 成员活动观察状态（心跳、过期、断连） | [活动观察](activity.md) |
 | `src/core/files.ts` | 网页上传与原生成员发件箱副本及路径校验 | [文件与 Skill](files.md) |
 | `src/core/external-plugin*.ts`、`event-registry.ts` | 受限第三方插件：登记与清单、进程协议、事件通道、发言、命令、群员工具、网页界面与标记、配置 | [第三方插件](external-plugins.md) |
@@ -25,7 +25,7 @@
 | `src/mcp/bridge.ts` | `/bridge/*` SSE 流、回执、轮次结束、等待/停靠及插件桥路由 | [原生模式](native-mode.md) |
 | `src/mcp/wait-core.ts`、`hook-park.ts`、`antigravity.ts` | 后台等待票据、Hook 停靠登记与 Antigravity HMAC 签名校验 | 各适配器文档 |
 | `src/adapters/` | 各 harness 原生适配器、`shared/` 与测试用 `mock/native.ts` | 各适配器文档 |
-| `src/plugins/` | 官方内置插件：`tasks`（含 `ship`）、`coordinator`、`bookmarks` | [官方插件](plugins.md) |
+| `src/plugins/`、`src/official-plugin*.ts` | 官方插件包（`tasks` 含 `ship`、`coordinator`、`bookmarks`、`starmap`）：`release.json`、薄入口与自包含的 `package/` 载荷，经 `OFFICIAL_PLUGIN_HOST`（`hostApi: 1`）与签名更新器运行 | [官方插件](plugins.md) |
 | `src/web/` | 静态网页资源、HTTP API、SSE（`GET /api/stream`）与会话认证 | [协作 API](collaboration-api.md) |
 | `desktop/` | 独立 Electron 桌面外壳与 Win32 顶层窗口停靠（无 `src/` 代码依赖） | [桌面外壳](desktop.md) |
 

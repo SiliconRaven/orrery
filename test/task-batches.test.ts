@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { PluginHost } from '../src/core/plugin.ts';
 import { Store } from '../src/core/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
-import { MIGRATIONS } from '../src/plugins/tasks/store.ts';
+import { MIGRATIONS } from '../src/plugins/tasks/package/hub/store.mts';
 import { a, b, batchFixture, c, chain, r, user } from './batch-fixture.ts';
 import { tempDir } from './helpers.ts';
 

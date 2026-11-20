@@ -9,7 +9,7 @@ import { Hub } from '../src/core/hub.ts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { Store } from '../src/core/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
-import { collaborationRecords, saveCollaborationRecord } from '../src/plugins/tasks/store.ts';
+import { collaborationRecords, saveCollaborationRecord } from '../src/plugins/tasks/package/hub/store.mts';
 import { tempDir } from './helpers.ts';
 
 const user: CollaborationActor = { kind: 'user' };

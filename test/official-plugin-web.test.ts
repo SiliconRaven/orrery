@@ -69,6 +69,78 @@ test('signed package slots use the selected digest and their own live translatio
   }
 });
 
+test('host.i18n.language follows switches and workbench TAB validates string id vs live label', async () => {
+  const { detachPluginSlots, loadPluginSlots } = await import(pathToFileURL(join(pub, 'plugin-slots.js')).href);
+  const { setLanguage } = await import(pathToFileURL(join(pub, 'i18n.js')).href);
+  const { isLive } = await import(pathToFileURL(join(pub, 'ui.js')).href);
+
+  const digest = 'c'.repeat(64);
+  const validId = 'tab-live-valid';
+  let capturedLang: (() => string) | undefined;
+  const loadTabCase = async (id: string, tabFactory: (host: any) => Record<string, unknown>) => {
+    const entry = `/official-plugin-web/${id}/${digest}/index.js`;
+    const english = `/official-plugin-web/${id}/${digest}/i18n/en.json`;
+    const list = {
+      plugins: [{ id }], frontend: [], trustedFrontend: [],
+      officialFrontend: [{ id, entry, english }],
+    };
+    return loadPluginSlots(
+      list,
+      { api: async () => ({}), ui: {} },
+      () => assert.fail('must not use legacy frontend'),
+      () => assert.fail('must not use trusted frontend'),
+      () => false,
+      {
+        loadEnglish: async () => ({ 确定: 'Package label' }),
+        loadOfficial: async () => ({
+          register(host: any) {
+            capturedLang = host.i18n.language;
+            return { workbench: () => tabFactory(host) };
+          },
+        }),
+      },
+    );
+  };
+
+  setLanguage('zh');
+  const goodSlots = await loadTabCase(validId, (host) => ({
+    id: validId, label: host.i18n.lt('确定'), render() {}, load() {},
+  }));
+  try {
+    assert.equal(typeof capturedLang, 'function');
+    assert.equal(capturedLang!(), 'zh');
+    const tab = goodSlots.workbench[0]({});
+    assert.equal(isLive(tab?.label), true);
+    assert.equal(String(tab?.label), '确定');
+    setLanguage('en');
+    assert.equal(capturedLang!(), 'en');
+    assert.equal(String(tab?.label), 'Package label');
+    setLanguage('zh');
+    assert.equal(capturedLang!(), 'zh');
+  } finally {
+    detachPluginSlots(goodSlots, [validId]);
+    setLanguage('zh');
+  }
+
+  const invalidCases: [string, (host: any) => Record<string, unknown>][] = [
+    ['bad-label-empty', () => ({ id: 'bad-label-empty', label: '', render() {}, load() {} })],
+    ['bad-label-blank', () => ({ id: 'bad-label-blank', label: '   ', render() {}, load() {} })],
+    ['bad-label-unbranded', () => ({ id: 'bad-label-unbranded', label: { toString: () => 'Unbranded' }, render() {}, load() {} })],
+    ['bad-label-number', () => ({ id: 'bad-label-number', label: 123, render() {}, load() {} })],
+    ['bad-id-live', (host) => ({ id: host.i18n.lt('确定'), label: 'Valid', render() {}, load() {} })],
+    ['bad-id-empty', () => ({ id: '', label: 'Valid', render() {}, load() {} })],
+  ];
+  for (const [id, factory] of invalidCases) {
+    const slots = await loadTabCase(id, factory);
+    assert.equal(slots.workbench.length, 1, id);
+    const result = slots.workbench[0]({});
+    assert.equal(result, undefined, `${id} should be refused`);
+    await Promise.resolve();
+    assert.equal(slots.workbench.length, 0, `${id} should release invalid tab slot`);
+    assert.equal(slots.officialPackages.has(id), false, `${id} should detach invalid plugin`);
+  }
+});
+
 test('official settings check, cancel and confirm a verified update before displaying its pending version', { skip: skipBrowser }, async (ctx) => {
   assert.ok(browser.path);
   const html = `<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="data:,"></head><body>
@@ -85,6 +157,12 @@ test('official settings check, cancel and confirm a verified update before displ
       if (path === '/api/plugins') return { instance: 'test', installed: [
         { id: 'fixture', name: '测试插件', description: '说明', version: '1.0.0', requires: [], enabled: false, pendingEnabled: false,
           officialUpdate: { source: 'package', english: { name: 'Fixture plugin', description: 'Package description' }, pendingVersion: pending } },
+        { id: 'tasks', name: '任务系统', description: 'Beta 测试版。任务、依赖、验收和 ship 合并；关闭后群聊和投递照常，任务数据保留。',
+          version: '0.10.0-beta.2', requires: [], enabled: true, pendingEnabled: true, officialUpdate: { source: 'bundled' } },
+        { id: 'partial', name: '任务系统',
+          description: 'Beta 测试版。让一名成员按授权协调本群：主动派工、收用户未点名的消息、交接时带上摘要；关闭后没写收件人的消息只留在群聊记录里。',
+          version: '1.0.0', requires: [], enabled: true, pendingEnabled: true,
+          officialUpdate: { source: 'package', english: { name: 'Custom English Name' } } },
         { id: 'another', name: 'Another plugin', version: '1.0.0', requires: [], enabled: true, pendingEnabled: true,
           officialUpdate: { source: 'bundled' } },
       ] };
@@ -127,7 +205,12 @@ test('official settings check, cancel and confirm a verified update before displ
   const button = (text: string) => page.evaluate(`[...document.querySelectorAll('dialog[open] button')].find(b => b.textContent === ${JSON.stringify(text)}).click()`);
   await page.waitFor(`document.querySelector('${check}')`, 'check action');
   assert.equal(await page.evaluate("window.calls.length"), 1, 'opening settings does not fetch the catalog');
-  assert.match(await page.evaluate<string>('document.querySelector("#list").textContent'), /Fixture plugin/);
+  const initialListText = await page.evaluate<string>('document.querySelector("#list").textContent');
+  assert.match(initialListText, /Fixture plugin/);
+  assert.match(initialListText, /Tasks 0\.10\.0-beta\.2/, 'Hub-only bundled plugin translates name via catalog');
+  assert.match(initialListText, /Beta\. Tasks, dependencies, review, and ship integration/, 'Hub-only bundled plugin translates description via catalog');
+  assert.match(initialListText, /Custom English Name 1\.0\.0/, 'partial package uses package english name');
+  assert.match(initialListText, /Beta\. Delegate cluster coordination to a member/, 'partial package falls back per field to catalog description');
   await click(check);
   await page.waitFor(`document.querySelector('${review}')`, 'compatible candidate can be reviewed');
   assert.match(await page.evaluate<string>('document.querySelector("#list").textContent'), /Version 3\.0\.0 is incompatible/);

@@ -56,9 +56,13 @@ export function checkBoundaries(sources: Source[]): string[] {
       else if (area === 'plugin-install-archive.ts') ok = ['tar', 'yauzl'].includes(spec);
       else if (area === 'official-plugin-package.ts') ok = target === 'plugin-install-archive.ts' || target === 'update-check.ts';
       else if (area === 'official-plugin-selection.ts') ok = target === 'update-check.ts';
-      else if (area === 'official-plugin-updates.ts') ok = spec === 'zod' || [
-        'core/native-transcript.ts', 'core/plugin.ts', 'plugin-install-archive.ts',
-        'official-plugin-package.ts', 'official-plugin-selection.ts', 'update-check.ts',
+      else if (area === 'official-plugin-host.ts') ok = spec === 'zod' || [
+        'config.ts', 'core/collaboration.ts', 'core/files.ts', 'core/hub.ts',
+        'core/native-transcript.ts', 'core/projects.ts', 'core/store.ts',
+      ].includes(target ?? '');
+      else if (area === 'official-plugin-updates.ts') ok = [
+        'core/plugin.ts', 'official-plugin-host.ts', 'official-plugin-package.ts',
+        'official-plugin-selection.ts', 'plugin-install-archive.ts', 'update-check.ts',
       ].includes(target ?? '');
       else if (area === 'core') ok = target !== null && target.startsWith('core/')
         || (path === 'core/app-extensions.ts' && spec === 'smol-toml');   // data-only parsing of the app's TOML config
@@ -83,6 +87,7 @@ export function checkBoundaries(sources: Source[]): string[] {
         // plugin folders, and only the composition root (main.ts) imports the registry.
         const dir = posix.dirname(path);
         ok = target === null || target.startsWith('core/')
+          || (/^plugins\/[a-z][a-z0-9-]*\/index\.ts$/.test(path) && target === 'official-plugin-host.ts')
           || (path === 'plugins/index.ts' && target.startsWith('plugins/'))
           || (dir !== 'plugins' && (target === dir || target.startsWith(`${dir}/`)));
       } else ok = false;
@@ -94,7 +99,7 @@ export function checkBoundaries(sources: Source[]): string[] {
 
 function srcFiles(dir: string): Source[] {
   return readdirSync(dir, { recursive: true, encoding: 'utf8' })
-    .filter((f) => f.endsWith('.ts') || /^(?:web[\\/]public|plugins[\\/][^\\/]+[\\/]package[\\/]web)[\\/].*\.js$/.test(f))
+    .filter((f) => /\.(?:ts|mts)$/.test(f) || /^(?:web[\\/]public|plugins[\\/][^\\/]+[\\/]package[\\/]web)[\\/].*\.js$/.test(f))
     .map((f) => ({ path: relative(dir, join(dir, f)).replaceAll('\\', '/'), code: readFileSync(join(dir, f), 'utf8') }));
 }
 
@@ -102,7 +107,11 @@ test('10: src/ follows the dependency rules', () => {
   const files = srcFiles(join(REPO_ROOT, 'src'));
   assert.ok(files.length >= 8, 'found the source files');
   assert.ok(files.some((f) => f.path === 'web/public/app.js'), 'includes browser scripts');
-  assert.ok(files.some((f) => f.path === 'web/public/official-plugins/bookmarks.js'), 'includes browser plugin scripts');
+  assert.ok(files.some((f) => f.path === 'plugins/bookmarks/package/web/index.js'), 'includes browser plugin scripts');
+  assert.ok(files.some((f) => f.path === 'plugins/bookmarks/package/hub/index.mts'), 'includes bookmarks Hub package');
+  assert.ok(files.some((f) => f.path === 'plugins/coordinator/package/hub/index.mts'), 'includes coordinator Hub package');
+  assert.ok(files.some((f) => f.path === 'plugins/tasks/package/hub/index.mts'), 'includes tasks Hub package');
+  assert.ok(files.some((f) => f.path === 'plugins/tasks/package/hub/ship.mts'), 'includes tasks Hub ship module');
   assert.ok(files.some((f) => f.path === 'plugins/starmap/package/web/scene.js'), 'includes official package web modules');
   assert.deepEqual(checkBoundaries(files), []);
 });
@@ -130,7 +139,11 @@ test('browser dependency rules reject Node, backend, desktop and computed import
     { path: 'plugins/starmap/package/web/scene.js', code: "import { hub } from '../hub/index.mts';" },
     { path: 'plugins/starmap/package/web/scene.js', code: "import('https://cdn.example/three.js');" },
     { path: 'plugins/starmap/package/hub/index.mts', code: "import { TRANSCRIPT_MAX_ITEMS } from '../../../../core/native-transcript.ts';" },
+    { path: 'plugins/starmap/package/hub/index.mts', code: "import { OFFICIAL_PLUGIN_HOST } from '../../../../official-plugin-host.ts';" },
     { path: 'plugins/starmap/package/hub/index.mts', code: "import { z } from 'zod';" },
+    { path: 'official-plugin-host.ts', code: "import { handleWeb } from './web/server.ts';" },
+    { path: 'official-plugin-host.ts', code: "import { tasks } from './plugins/tasks/index.ts';" },
+    { path: 'plugins/tasks/package/hub/ship.mts', code: "import { gitSync } from '../../../../core/projects.ts';" },
   ];
   for (const source of bad) assert.equal(checkBoundaries([source]).length, 1, source.code);
   assert.deepEqual(checkBoundaries([
@@ -171,12 +184,12 @@ test('10: the checker catches deliberate violations', () => {
     { path: 'plugins/bookmarks/index.ts', code: "import { handleWeb } from '../../web/server.ts';" },
     { path: 'plugins/bookmarks/index.ts', code: "import { tasks } from '../tasks/index.ts';" },
     { path: 'plugins/bookmarks/index.ts', code: "import { officialPlugins } from '../index.ts';" },
-    { path: 'core/hub.ts', code: "import { TasksService } from '../plugins/tasks/service.ts';" },
-    { path: 'mcp/server.ts', code: "import { taskTools } from '../plugins/tasks/tools.ts';" },
-    { path: 'web/server.ts', code: "import { taskRoutes } from '../plugins/tasks/routes.ts';" },
-    { path: 'plugins/tasks/ship.ts', code: "import { handleBridge } from '../../mcp/bridge.ts';" },
-    { path: 'plugins/tasks/actions.ts', code: "import { coordinatorSnapshot } from '../coordinator/store.ts';" },
-    { path: 'plugins/tasks/service.ts', code: "import { coordinator } from '../coordinator/index.ts';" },
+    { path: 'core/hub.ts', code: "import { TasksService } from '../plugins/tasks/package/hub/service.mts';" },
+    { path: 'mcp/server.ts', code: "import { taskTools } from '../plugins/tasks/package/hub/tools.mts';" },
+    { path: 'web/server.ts', code: "import { taskRoutes } from '../plugins/tasks/package/hub/routes.mts';" },
+    { path: 'plugins/tasks/package/hub/ship.mts', code: "import { handleBridge } from '../../../../mcp/bridge.ts';" },
+    { path: 'plugins/tasks/package/hub/actions.mts', code: "import { coordinatorSnapshot } from '../../../coordinator/package/hub/store.mts';" },
+    { path: 'plugins/tasks/package/hub/service.mts', code: "import { coordinator } from '../../../coordinator/index.ts';" },
     { path: 'plugins/coordinator/actions.ts', code: "import { allTasks } from '../tasks/model.ts';" },
     { path: 'core/hub.ts', code: "import { coordinator } from '../plugins/coordinator/index.ts';" },
     { path: 'mcp/server.ts', code: "import { COORDINATOR_RULES } from '../plugins/coordinator/coordinator-rules.ts';" },
@@ -199,6 +212,8 @@ test('10: the checker catches deliberate violations', () => {
     { path: 'main.ts', code: "import { officialPlugins } from './plugins/index.ts';" },
     { path: 'plugins/index.ts', code: "import { bookmarks } from './bookmarks/index.ts';\nimport type { OfficialPlugin } from '../core/plugin.ts';" },
     { path: 'plugins/bookmarks/index.ts', code: "import { z } from 'zod';\nimport { helper } from './store.ts';\nimport type { Store } from '../../core/store.ts';" },
+    { path: 'plugins/starmap/index.ts', code: "import { OFFICIAL_PLUGIN_HOST } from '../../official-plugin-host.ts';" },
+    { path: 'official-plugin-host.ts', code: "import { resolve } from 'node:path';\nimport { z } from 'zod';\nimport { REPO_ROOT } from './config.ts';\nimport { toEvent } from './core/store.ts';" },
   ]), []);
 });
 

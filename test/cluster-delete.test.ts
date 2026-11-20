@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { NativeDeliverContext } from '../src/core/types.ts';
 import { startTestHub, waitFor } from './helpers.ts';
-import { collaborationLinks } from '../src/plugins/tasks/store.ts';
+import { collaborationLinks } from '../src/plugins/tasks/package/hub/store.mts';
 
 test('deletion retains history, cancels only queued deliveries and preserves a shared native session', async () => {
   const app = await startTestHub();

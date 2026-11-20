@@ -7,8 +7,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { setBranchLookup } from '../src/plugins/tasks/branch-link.ts';
-import { reportBatchShip } from '../src/plugins/tasks/ship.ts';
+import { setBranchLookup } from '../src/plugins/tasks/package/hub/branch-link.mts';
+import { reportBatchShip } from '../src/plugins/tasks/package/hub/ship.mts';
 import { bearer, holdScript, startTestHub, waitFor, turnsOf, memberHeaders, tempDir } from './helpers.ts';
 
 test('over MCP: create a batch, fill it, read its progress; the approving reviewer gets the batch ship command', async (t) => {

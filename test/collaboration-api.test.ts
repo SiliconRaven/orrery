@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { saveCollaborationTask } from '../src/plugins/tasks/store.ts';
+import { saveCollaborationTask } from '../src/plugins/tasks/package/hub/store.mts';
 import { bearer, holdScript, rawFetch, startTestHub, TEST_TOKEN, waitFor, turnsOf, memberHeaders } from './helpers.ts';
 
 test('the HTTP workbench pages 300 tasks newest first with a stable cursor and optional metadata', async () => {

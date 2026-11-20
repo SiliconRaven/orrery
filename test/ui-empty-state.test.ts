@@ -73,7 +73,7 @@ test('empty state: no page script builds its own empty markup; the roles page us
   uses('app.js', /emptyState\(t\('集群暂无成员，可以添加成员继续协作。'\)\)/);             // no members
   uses('workbench.js', /emptyState\(narrowed\(\) \? t\("没有符合筛选条件的任务。"\) : t\("还没有任务/);   // no tasks
   uses('trash.js', /emptyState\(t\("回收站为空。"\)\)/);                                   // empty trash
-  uses('official-plugins/bookmarks.js', /emptyState\(t\("没有符合条件的收藏。"\)\)/);      // empty library
+  assert.match(readFileSync(join(REPO_ROOT, 'src/plugins/bookmarks/package/web/index.js'), 'utf8'), /emptyState\(t\("没有符合条件的收藏。"\)\)/, 'bookmarks');      // empty library
   uses('plugins.js', /cards\.length \? cards : emptyState\(empty/);                   // no plugins
   uses('chat-search.js', /const empty = emptyState\(''\);/);                          // search without results
 });
