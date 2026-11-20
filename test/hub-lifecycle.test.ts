@@ -34,7 +34,11 @@ function rawStatus(url: string, method: string, path: string, headers: Record<st
 const postShutdown = (url: string, headers: Record<string, string> = { 'content-type': 'application/json' }, body = '{}') =>
   fetch(url + '/api/shutdown', { method: 'POST', headers, body });
 
-test('startup: a discovery write failure releases the Hub, database and port without masking the error', { timeout: 15_000 }, async () => {
+// The child's start is slow and grows with machine load (a TypeScript import of the whole Hub, two PowerShell ACL checks
+// of the registry, about 1.5 s of retried renames onto the directory): about 5 s idle, over 10 s in a loaded full run.
+// So the time limit is in two parts: a generous one for getting to the end of the script (it only catches a hang), and a
+// tight one from there to the exit, which takes no work and so does not depend on load: that one catches a leaked handle.
+test('startup: a discovery write failure releases the Hub, database and port without masking the error', { timeout: 120_000 }, async () => {
   const dir = tempDir();
   const port = await freePort();
   // A child contains any leaked handles if this regresses. The directory at hub.json makes the rename fail.
@@ -77,17 +81,23 @@ test('startup: a discovery write failure releases the Hub, database and port wit
     const server = createServer();
     await new Promise((resolve, reject) => server.once('error', reject).listen(Number(rawPort), '127.0.0.1', resolve));
     await new Promise((resolve) => server.close(resolve));
+    // What still keeps the process alive, if anything: named in the failure when it does not exit.
+    console.log('RELEASED ' + JSON.stringify(process.getActiveResourcesInfo()));
   `;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script, dir, String(port)], {
     cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
   });
   let output = '';
-  child.stdout.on('data', (c) => { output += c; });
+  let timer = setTimeout(() => child.kill(), 100_000);   // a hang before the end of the script
+  child.stdout.on('data', (c) => {
+    output += c;
+    // The script is done: with nothing left open the process exits at once, however busy the machine is.
+    if (output.includes('RELEASED ')) { clearTimeout(timer); timer = setTimeout(() => child.kill(), 10_000); }
+  });
   child.stderr.on('data', (c) => { output += c; });
-  const timer = setTimeout(() => child.kill(), 10_000);
   try {
     const [code, signal] = await once(child, 'exit');
-    assert.equal(code, 0, `child exited ${code ?? signal}: ${output}`);
+    assert.equal(code, 0, `child exited ${code ?? signal}${output.includes('RELEASED ') ? ' (did not exit on its own after releasing everything)' : ''}: ${output}`);
   } finally {
     clearTimeout(timer);
   }

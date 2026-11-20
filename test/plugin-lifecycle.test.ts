@@ -747,15 +747,24 @@ test('the Hub close caps every grace, also a long stop already under way, below 
 
 test('the automatic-restart count on the card goes down when a restart leaves the window (a frame says so)', async () => {
   const s = setup([{ id: 'one' }]);
-  const t = manager(s.home, ['one'], { backoffMs: [20], restartWindowMs: 400, switches: { autoRestart: ['one'], devReload: [] } });
-  const counts: number[] = [];
-  t.plugins.onState((frame) => counts.push(frame.lifecycle.autoRestarts));
+  // The window is measured on an injected clock that only moves when the test says: however slowly the plugin starts
+  // on a busy machine, the restart is still inside the window until the test moves the clock past it.
+  let now = Date.now();
+  const t = manager(s.home, ['one'], { backoffMs: [20], restartWindowMs: 400, now: () => now, switches: { autoRestart: ['one'], devReload: [] } });
+  const frames: { state: string; count: number }[] = [];
+  t.plugins.onState((frame) => frames.push({ state: frame.runtime.state, count: frame.lifecycle.autoRestarts }));
   try {
     await t.plugins.start();
     await assert.rejects(call(t.plugins, 'one', 'crash'));
     await waitFor(() => state(t.plugins, 'one') === 'ready', 'restarted');
     assert.equal((t.plugins.info('one') as any).lifecycle.autoRestarts, 1);
-    await waitFor(() => counts.at(-1) === 0, 'a frame with the aged count');
+    await sleep(500);   // the timer for the window has fired on the real clock: the restart is not aged yet on this one
+    assert.equal(frames.at(-1)!.count, 1, 'no frame with a count that did not go down');
+    const before = frames.length;
+    now += 401;
+    // Nothing else happens to the plugin now: the next frame is the timer's, with the aged count.
+    await waitFor(() => frames.length > before, 'a frame with the aged count');
+    assert.deepEqual(frames.slice(before), [{ state: 'ready', count: 0 }]);
   } finally { await t.close(); }
 });
 
@@ -836,16 +845,25 @@ test('a plugin that exits on shutdown stops at once and cleanly; one that crashe
 test('after giving up, a reload may start the plugin but its failures never restart it again, across several windows', async () => {
   const s = setup([{ id: 'down', behaviour: { afterReady: 'crash' } }]);
   const w = fakeWatch();
-  const t = manager(s.home, ['down'], { backoffMs: [20, 20, 20], restartWindowMs: 1500, debounceMs: 20, watch: w.watch,
+  // An injected clock: the three restarts fall inside the window however slowly each process starts, and the window
+  // passes only when the test moves the clock.
+  let now = Date.now();
+  const t = manager(s.home, ['down'], { backoffMs: [20, 20, 20], restartWindowMs: 1500, debounceMs: 20, watch: w.watch, now: () => now,
     switches: { autoRestart: ['down'], devReload: ['down'] } });
+  // Starts are counted as changes into 'starting': another frame while it starts (the count on the card going down
+  // as the clock passes the window) is no new start.
   let starts = 0;
-  t.plugins.onState((frame) => { if (frame.runtime.state === 'starting') starts++; });
+  let last = '';
+  t.plugins.onState((frame) => {
+    if (frame.runtime.state === 'starting' && last !== 'starting') starts++;
+    last = frame.runtime.state;
+  });
   try {
     await t.plugins.start();
     await waitFor(() => (t.plugins.info('down') as any).lifecycle.gaveUp && state(t.plugins, 'down') === 'failed', 'gave up', 10_000);
     assert.deepEqual(t.records.map((r) => r.kind), ['restart', 'restart', 'restart', 'gave-up']);
     for (let round = 1; round <= 3; round++) {
-      await sleep(1700);   // the restart window (1.5 s) has passed again
+      now += 1700;   // the restart window (1.5 s) has passed again
       const before = starts;
       w.fire('main.mjs');   // the developer saves: a reload starts it
       await waitFor(() => starts > before && state(t.plugins, 'down') === 'failed', `reload ${round} ran and failed`);

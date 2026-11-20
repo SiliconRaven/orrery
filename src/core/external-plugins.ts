@@ -1607,9 +1607,10 @@ export class ExternalPlugins {
       if (this.closed || slot.epoch !== epoch || !slot.wanted || !slot.autoRestart) { this.touch(slot); return; }
       const failure = slot.lastFailure?.errorCode ?? '未知错误';
       void this.launch(slot, false, () => {
-        slot.restarts.push(this.now());
+        const at = this.now();
+        slot.restarts.push(at);
         slot.autoRestartsTotal++;
-        this.ageOut(slot);
+        this.ageOut(slot, at);
         // Written as the new process starts: it says only what has happened (the failure) and what is happening now.
         this.record(slot, 'restart', `插件「${this.nameOf(slot)}」出错停止（${failure}），Hub 正在自动重启它：`
           + `${this.windowMinutes()} 分钟内第 ${slot.restarts.length} 次，最多 ${backoffs.length} 次。`);
@@ -1620,12 +1621,19 @@ export class ExternalPlugins {
   }
 
   /**
-   * When the restart just counted leaves the window, the count on the card goes down: a frame then, so the page does
-   * not keep showing it (the seq moves). The timer is unref'd and cleared at the Hub's close.
+   * When the restart counted at `at` leaves the window, the count on the card goes down: a frame then, so the page does
+   * not keep showing it (the seq moves). The window is measured on now(), the timer on the monotonic clock; they may
+   * disagree (the wall clock set back, an injected clock), so a timer that finds the restart still inside the window
+   * waits again for the rest of it. The timers are unref'd and cleared at the Hub's close.
    */
-  private ageOut(slot: Slot): void {
-    const timer = setTimeout(() => { slot.agers.delete(timer); if (!this.closed) this.touch(slot); },
-      (this.lifecycle.restartWindowMs ?? AUTO_RESTART_WINDOW_MS) + 10);
+  private ageOut(slot: Slot, at: number): void {
+    const window = this.lifecycle.restartWindowMs ?? AUTO_RESTART_WINDOW_MS;
+    const timer = setTimeout(() => {
+      slot.agers.delete(timer);
+      if (this.closed) return;
+      if (this.now() - at < window) this.ageOut(slot, at);
+      else this.touch(slot);
+    }, Math.max(0, at + window - this.now()) + 10);
     timer.unref?.();
     slot.agers.add(timer);
   }
