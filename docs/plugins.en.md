@@ -14,6 +14,14 @@ The orrery core only handles clusters, members, native chat delivery, message st
 | Full-trust third-party plugins | Registered by the user and confirmed in Settings; then they run inside the Hub like official plugins, use the same Hub-side slots and may bring a same-page web module | [Third-party plugins, "Full-trust plugins"](external-plugins.en.md#full-trust-plugins); table and route prefixes are enforced, `ORRERY_SAFE_MODE=1` skips them all |
 | Restricted third-party plugins | A separate Node process, stdio JSON-RPC, per-group grants | [Third-party plugins](external-plugins.en.md); reads, events, restricted posting, message checks, commands, member tools, sandboxed pages and marks |
 
+## Update Official Plugins
+
+Orrery Beta 0.10.0-beta.3 can update Star Map, Tasks, Bookmarks, and Coordinator individually. When an update is available, follow these steps.
+
+1. On the collaboration page, open **Settings → Plugins** and select **Check official plugin updates** under Official plugins.
+2. Select **Review update** on the plugin card. Check the version and migration details, then select **Confirm update**. The card shows the **version after restart** while the current version continues to run.
+3. Return to the collaboration page and select **Quit Orrery** in the sidebar. Confirm and wait for the Hub to stop. Close the desktop window and reopen **Orrery Beta** from its shortcut. The update takes effect when the Hub starts. Check the plugin card for the running version.
+
 ## Mechanism
 
 An official plugin with `defaultEnabled: false` starts disabled. Startup and the Settings preview use the same precedence: an environment disable, a user disable, a user enable, then the manifest default. Settings stores explicit switches in `disabled` and `enabled` in `plugins.json`. Removing the file restores each plugin's default.

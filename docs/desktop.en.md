@@ -55,6 +55,10 @@ npm start --prefix desktop
 - Accessibility is off by default; set `ORRERY_DESKTOP_ACCESSIBILITY=1` before launching `desktop/` if needed.
 - **Verified use**: Window docking, tab switching, and restoring managed windows on normal exit have passed real-desktop checks. Coverage of mixed-DPI monitors and combinations of app minimum window sizes is more limited.
 
+### Restart the Hub After an Official Plugin Update
+
+Open **Settings → Plugins** on the collaboration page to [manually check for and confirm an official plugin update](plugins.en.md#update-official-plugins). When the card shows the **version after restart**, return to the collaboration page and select **Quit Orrery** in the sidebar. Confirm and wait for the Hub to stop. Close the desktop window and reopen **Orrery Beta** from its shortcut. The pending plugin version takes effect on startup.
+
 ## Build the Installer
 
 On Windows x64, from a Git checkout:
