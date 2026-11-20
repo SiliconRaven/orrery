@@ -16,9 +16,10 @@ export function noticeBody(store: Store, clusterId: string, source: HubEvent, ac
     + (batch ? `任务已移出批次 B${batch.number}【${batch.title}】，此后按普通任务验收和合并。` : '');
   // An edit, assignment or hand-off that also moved self review on a taken-over task says to whom and on what basis.
   const t = (source.payload as Record<string, any>).takeover;
-  if (!t || action === 'task.takeover' || t.reviewTo?.kind !== 'self') return body;
+  if (!t || action === 'task.takeover' || (action === 'task.review' && payloadReject(source)) || t.reviewTo?.kind !== 'self') return body;
   return `${body}自查授权给 ${personName(store, clusterId, t.toMemberId)}（依据：${BASIS_LABELS[t.basis as keyof typeof BASIS_LABELS] ?? '未知'}）。此后不再有独立验收。`;
 }
+const payloadReject = (source: HubEvent) => (source.payload as Record<string, any>)?.verdict === 'reject';
 
 function actionBody(store: Store, clusterId: string, source: HubEvent, action: string, task: Task | undefined, shipWake: boolean): string {
   const payload = source.payload as Record<string, any>;
@@ -58,7 +59,9 @@ function actionBody(store: Store, clusterId: string, source: HubEvent, action: s
     }
     case 'task.review':
       return payload.verdict === 'reject'
-        ? `${who} 退回了${title}的结果${reason}，事件 ${seq}。`
+        ? (payload.takeover
+          ? `${who} 退回了${title}的结果并当场接手直接修改${reason}（已转为 ${personName(store, clusterId, payload.takeover.toMemberId)} 自查到合并，请勿再向该分支提交新改动），事件 ${seq}。`
+          : `${who} 退回了${title}的结果${reason}，事件 ${seq}。`)
         : `${who} 验收通过了${title}，任务已完成，事件 ${seq}。${shipWake ? '执行者请用 get_task 取 ship 命令并运行。' : ''}`;
     case 'task.merge': case 'task.shipped': return `${title}已合并（提交 ${String(payload.commitSha).slice(0, 7)}），事件 ${seq}。`;
     case 'task.mark_completed': return `用户手动标记${title}为已完成${reason}，事件 ${seq}。`;
@@ -69,7 +72,13 @@ function actionBody(store: Store, clusterId: string, source: HubEvent, action: s
     case 'task.ship_failed': {
       const category = typeof payload.reason === 'string' ? payload.reason.split(':', 1)[0] : '';
       const label = category === 'checks' ? '：合并前检查未通过' : category === 'conflict' ? '：文件有合并冲突' : '';
-      return `${title}合并失败${label}，已退回执行者，事件 ${seq}。`;
+      return `${title}合并失败${label}，保留已通过状态（可原样重跑、ship_fix 或 reopen），事件 ${seq}。`;
+    }
+    case 'task.ship_fix': {
+      const nextSha = typeof payload.commitSha === 'string' ? payload.commitSha.slice(0, 7) : '';
+      const baseSha = typeof payload.baseCommitSha === 'string' ? payload.baseCommitSha.slice(0, 7) : '';
+      const refEvent = payload.failureEventId ?? '-';
+      return `${who} 为${title}提交了前向修复 commit ${nextSha}（基于 ${baseSha}，对应失败事件 ${refEvent}），已刷新 ship 票据，事件 ${seq}。`;
     }
     case 'task.release': return `${title}的派工已释放${reason}，事件 ${seq}。`;
     case 'task.cancel': {
@@ -80,7 +89,16 @@ function actionBody(store: Store, clusterId: string, source: HubEvent, action: s
       const why = label ? `（${label}${related ? `，见任务${related.number ? ` #${related.number}` : ''}【${related.title}】` : ''}）` : '';
       return `${title}已取消${why}${reason}，事件 ${seq}。${stopNotice}`;
     }
-    case 'task.reopen': return `${title}已重新打开${reason}，事件 ${seq}。`;
+    case 'task.reopen': {
+      if (typeof payload.returnedToMemberId === 'string') {
+        return `${title}已重新打开，退回给原执行者 ${personName(store, clusterId, payload.returnedToMemberId)}${reason}，事件 ${seq}。`;
+      }
+      const unavailable = payload.previousExecutorUnavailable as { memberId?: string; reason?: string; reassignHint?: string } | undefined;
+      if (unavailable && typeof unavailable.memberId === 'string' && typeof unavailable.reason === 'string' && typeof unavailable.reassignHint === 'string') {
+        return `${title}已重新打开${reason}。原执行者 ${personName(store, clusterId, unavailable.memberId)} 当前不可接手（${unavailable.reason}），任务保持未分配，${unavailable.reassignHint}，事件 ${seq}。`;
+      }
+      return `${title}已重新打开${reason}，事件 ${seq}。`;
+    }
     case 'task.handoff': return `${title}已转交给 ${personName(store, clusterId, payload.memberId)}${reason}，事件 ${seq}。${stopNotice}`;
     case 'task.takeover': {
       const t = payload.takeover ?? {};

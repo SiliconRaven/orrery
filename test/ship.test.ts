@@ -14,8 +14,10 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { acquireLock, docsOnly, parseCommandLine, redactPaths, redactSecrets, ship, ShipRefused as ScriptRefused, type ShipOptions, type ShipReport, type Verified } from '../scripts/ship.ts';
 import type { CollaborationActor, CollaborationCommand, Task, TaskResult } from '../src/core/collaboration-types.ts';
 import { Hub } from '../src/core/hub.ts';
+import { gitRead } from '../src/core/projects.ts';
 import { Store } from '../src/core/store.ts';
 import { shipState } from '../src/plugins/tasks/model.ts';
+import { setBranchLookup } from '../src/plugins/tasks/branch-link.ts';
 import { readShipTicket, reportShip, SHIP_SCRIPT, shipCommand, shipFor, shipForRunner, ShipRefused, shipTicket, verifyShip } from '../src/plugins/tasks/ship.ts';
 import { ticketFor } from '../src/mcp/wait-core.ts';
 import { ZCODE_WAIT } from '../src/core/types.ts';
@@ -131,7 +133,7 @@ test('a merge conflict is reported, not resolved, and leaves main alone', async 
   assert.ok(!out.merged);
   assert.equal(out.kind, 'conflict');
   assert.match(out.detail, /README\.md/);
-  assert.deepEqual(hub.reports, [{ failed: { kind: 'conflict', detail: out.detail } }]);
+  assert.deepEqual(hub.reports, [{ failed: { kind: 'conflict', conflictFiles: ['README.md'], detail: out.detail } }]);
   assert.equal(r.g('rev-parse', 'main'), before);
   assert.equal(r.runs(), 0, 'no checks on a conflict');
   noLeftovers(r);
@@ -158,7 +160,7 @@ test('a check that fails twice goes back to the executor; main\'s check list is 
   assert.ok(!out.merged);
   assert.equal(out.kind, 'checks');
   assert.equal(r.runs(), 2, 'one automatic rerun, then stop');
-  assert.deepEqual(hub.reports, [{ failed: { kind: 'checks', detail: out.detail } }]);
+  assert.deepEqual(hub.reports, [{ failed: { kind: 'checks', failedCheck: 'probe', detail: out.detail } }]);
   assert.equal(r.g('rev-parse', 'main'), before);
   noLeftovers(r);
 });
@@ -482,22 +484,37 @@ test('an executor recording the merge of its self-reviewed task leaves one recor
   assert.deepEqual(f.store.withDeliveries([records[0]])[0].deliveries, []);
 });
 
-test('a failed ship goes back to the executor, who is told, and the ticket dies', async (t) => {
-  const f = hubFixture(t), { task, ticket } = f.approved('abcdef0');
+test('a failed ship preserves completed state, records structured shipFailure, notifies infoOnly and leaves the ticket reusable', async (t) => {
+  const f = hubFixture(t), { task, submission, ticket } = f.approved('abcdef0');
   await assert.rejects(reportShip(f.hub, SECRET, { ticket, failed: { kind: 'other', detail: 'x' } }), status(400));
-  assert.deepEqual(await reportShip(f.hub, SECRET, { ticket, failed: { kind: 'conflict', detail: 'conflicting files:\nREADME.md' } }), { status: 'returned' });
+  assert.deepEqual(await reportShip(f.hub, SECRET, { ticket, failed: { kind: 'conflict', conflictFiles: ['README.md'], detail: 'conflicting files:\nREADME.md' } }), { status: 'failed' });
   const now = f.read(task.id).task;
-  assert.equal(now.status, 'pending');
-  assert.equal(now.assignedMemberId, 'a', 'back with its executor, who can start again');
-  assert.equal(now.approvedSubmissionId, null);
+  assert.equal(now.status, 'completed');
+  assert.equal(now.assignedMemberId, null, 'completed task stays completed without reverting to pending');
+  assert.equal(now.approvedSubmissionId, submission.id);
   const notice = f.store.listMessages('c', 100).at(-1)!;
   assert.deepEqual(notice.mentions.sort(), ['a', 'b']);
-  assert.equal(notice.body, `任务 #1【work】合并失败：文件有合并冲突，已退回执行者，事件 ${notice.collabEventId}。`);
-  assert.deepEqual(f.store.getEvent(notice.collabEventId!)?.payload, {
-    action: 'task.ship_failed', taskId: task.id, reason: 'conflict: conflicting files:\nREADME.md', eventId: notice.collabEventId,
+  assert.deepEqual(f.store.withDeliveries([notice])[0].deliveries, [], 'ship_failed sends infoOnly with zero wakes');
+  assert.equal(notice.body, `任务 #1【work】合并失败：文件有合并冲突，保留已通过状态（可原样重跑、ship_fix 或 reopen），事件 ${notice.collabEventId}。`);
+  assert.deepEqual(now.shipFailure, {
+    kind: 'conflict',
+    reason: 'conflict: conflicting files:\nREADME.md',
+    detail: 'conflicting files:\nREADME.md',
+    conflictFiles: ['README.md'],
+    at: now.shipFailure!.at,
+    eventId: notice.collabEventId!,
+    approvedSubmissionId: submission.id,
+    approvedCommitSha: 'abcdef0',
+    runnerId: 'b',
   });
-  assert.equal(f.act(a, task, { action: 'task.start' }).task!.status, 'working', 'the executor starts it without claiming');
-  assert.throws(() => verifyShip(f.hub, SECRET, ticket), status(409), 'the old ticket no longer works');
+  assert.deepEqual(f.store.getEvent(notice.collabEventId!)?.payload, {
+    action: 'task.ship_failed',
+    taskId: task.id,
+    reason: 'conflict: conflicting files:\nREADME.md',
+    failure: { kind: 'conflict', conflictFiles: ['README.md'] },
+    eventId: notice.collabEventId,
+  });
+  assert.deepEqual(verifyShip(f.hub, SECRET, ticket).commitSha, 'abcdef0', 'the existing ticket remains valid for a verbatim rerun');
 });
 
 test('ship check notices are short and save the full normal output tail or the bounded end of oversized output', async (t) => {
@@ -506,12 +523,13 @@ test('ship check notices are short and save the full normal output tail or the b
   const detail = 'npm test failed twice:\n' + tail;
   for (const diagnostic of [detail, 'earliest output\n' + 'x'.repeat(5000) + '\n' + detail]) {
     const { ticket } = f.approved('abcdef0');
-    assert.deepEqual(await reportShip(f.hub, SECRET, { ticket, failed: { kind: 'checks', detail: diagnostic } }), { status: 'returned' });
+    assert.deepEqual(await reportShip(f.hub, SECRET, { ticket, failed: { kind: 'checks', failedCheck: 'probe', detail: diagnostic } }), { status: 'failed' });
     const notice = f.store.listMessages('c', 100).at(-1)!;
-    assert.equal(notice.body, `任务 #${diagnostic === detail ? 1 : 2}【work】合并失败：合并前检查未通过，已退回执行者，事件 ${notice.collabEventId}。`);
-    const payload = f.store.getEvent(notice.collabEventId!)?.payload as { reason: string };
+    assert.equal(notice.body, `任务 #${diagnostic === detail ? 1 : 2}【work】合并失败：合并前检查未通过，保留已通过状态（可原样重跑、ship_fix 或 reopen），事件 ${notice.collabEventId}。`);
+    const payload = f.store.getEvent(notice.collabEventId!)?.payload as { reason: string; failure?: { kind: string; failedCheck?: string } };
     const expected = diagnostic === detail ? detail : '…（仅保留末尾）\n' + diagnostic.slice(-4600);
     assert.equal(payload.reason, 'checks: ' + expected);
+    assert.equal(payload.failure?.failedCheck, 'probe');
     assert.match(payload.reason, /last assertion failed\.\n$/);
   }
 });
@@ -863,4 +881,448 @@ test('ship failure diagnostics: EPERM while deleting attempt-1 staging still rem
   noLeftovers(rPass);
   assert.ok(passLogs.some((line) => line.includes('could not remove attempt-1 staging') && line.includes('EPERM')));
   assert.equal(leaked.length, 2);
+});
+
+function realGitHubClient(hub: Hub, secret: string, ticket: string) {
+  return {
+    verify: async () => verifyShip(hub, secret, ticket) as Verified,
+    report: async (r: ShipReport) => { await reportShip(hub, secret, { ticket, ...r }); },
+  };
+}
+
+test('single-task ship_fix: independent reviewer fixes forward, refreshes ticket, guards diffs/replay/rebase, and lands with Reviewed-by marker', async (t) => {
+  setBranchLookup({ budgetMs: 60_000 });
+  t.after(() => setBranchLookup());
+  const r = repo(t);
+  // Executor creates branch with src.txt + README edit.
+  r.g('checkout', '-q', '-b', 'agent/work');
+  r.write('src.txt', 'v1\n');
+  r.write('README.md', 'feature readme\n');
+  const sha0 = r.commit('feature work');
+  r.g('checkout', '-q', 'main');
+  // Main modifies README.md to trigger a merge conflict when ship runs.
+  r.write('README.md', 'main updated readme\n');
+  r.commit('main conflict update');
+
+  const f = hubFixture(t, r.root);
+  f.hub.collaboration.prepareTimeoutMs = 60_000;
+  const { task, submission: sub0, ticket: ticket0 } = f.approved(sha0);
+  const shipOut0 = await ship(options(r.root, realGitHubClient(f.hub, SECRET, ticket0)));
+  assert.equal(shipOut0.merged, false);
+  const failedDetail0 = f.read(task.id).task;
+  assert.equal(failedDetail0.status, 'completed');
+  assert.equal(failedDetail0.approvedSubmissionId, sub0.id);
+  const failEvent1 = failedDetail0.shipFailure!.eventId;
+  assert.deepEqual(failedDetail0.shipFailure?.conflictFiles, ['README.md']);
+
+  const readAs = (actor: CollaborationActor) => f.hub.collaboration.query(actor, 'c', { kind: 'task', taskId: task.id }) as any;
+  assert.equal(readAs(b).shipRunnerId, 'b');
+  assert.equal(readAs(b).shipFixAllowed, true);
+  assert.equal(readAs(a).shipFixAllowed, false);
+
+  const shipFix = (actor: CollaborationActor, cmd: Record<string, unknown>) =>
+    f.hub.collaboration.commandAsync(actor, 'c', {
+      action: 'task.ship_fix', taskId: task.id, expectedRevision: f.read(task.id).task.revision,
+      operationId: crypto.randomUUID(), ...cmd,
+    } as any);
+
+  // Sync command() refused with PREPARE_REQUIRED.
+  assert.throws(() => f.act(b, task, { action: 'task.ship_fix', failureEventId: failEvent1, commitSha: sha0, summary: 'fix' } as any),
+    (e: any) => e.code === 'PREPARE_REQUIRED');
+
+  // Executor a cannot ship_fix an independent member-reviewed task; wrong failureEventId / baseCommitSha / sameCommit / non-ancestor are refused.
+  await assert.rejects(() => shipFix(a, { failureEventId: failEvent1, commitSha: sha0, summary: 'x' }), (e: any) => e.code === 'FORBIDDEN');
+  await assert.rejects(() => shipFix(b, { failureEventId: failEvent1 + 99, commitSha: sha0, summary: 'x' }), (e: any) => e.code === 'INVALID_STATE');
+  await assert.rejects(() => shipFix(b, { failureEventId: failEvent1, commitSha: sha0, summary: 'same' }), (e: any) => e.code === 'INVALID_REQUEST');
+  await assert.rejects(() => shipFix(b, { failureEventId: failEvent1, baseCommitSha: '0000000', commitSha: sha0, summary: 'bad base' }), (e: any) => e.code === 'INVALID_STATE');
+
+  // Rewritten / amended non-ancestor commit is refused 409.
+  const amended = r.branch('agent/amended', { 'src.txt': 'amended\n' });
+  await assert.rejects(() => shipFix(b, { failureEventId: failEvent1, commitSha: amended, summary: 'rebased' }),
+    (e: any) => e.code === 'INVALID_STATE' && /reopen/.test(e.message));
+
+  // Reviewer b merges main into agent/work resolving only README.md conflict + adds a test file (no product-code notice should be sent).
+  r.g('checkout', '-q', 'agent/work');
+  const tryMerge = spawnSync('git', ['merge', '--no-commit', 'main'], { cwd: r.root, encoding: 'utf8', windowsHide: true });
+  assert.notEqual(tryMerge.status, 0);
+  r.write('README.md', 'merged readme\n');
+  r.write('test/extra.test.ts', 'import test from "node:test";\n');
+  r.g('add', '-A');
+  r.g('commit', '-qm', 'resolve README conflict and add test');
+  const fixSha1 = r.g('rev-parse', 'HEAD');
+  r.g('checkout', '-q', 'main');
+
+  const msgBeforeFix1 = f.store.listMessages('c', 200).length;
+  const res1 = await shipFix(b, { failureEventId: failEvent1, baseCommitSha: sha0.slice(0, 7), commitSha: fixSha1.slice(0, 10), summary: 'resolved README conflict' });
+  assert.equal(res1.task!.status, 'completed');
+  assert.equal(res1.task!.shipFailure, null, 'single-task shipFailure cleared after ship_fix');
+  assert.equal(res1.task!.approvedSubmissionId, res1.submission!.id);
+  assert.equal(res1.submission!.commitSha, fixSha1);
+  assert.deepEqual(res1.submission!.shipFix, {
+    runnerId: 'b', baseSubmissionId: sub0.id, baseCommitSha: sha0, originSubmissionId: sub0.id, failureEventId: failEvent1,
+  });
+  const afterMsgs1 = f.store.listMessages('c', 200).slice(msgBeforeFix1);
+  assert.equal(afterMsgs1.some((m) => /涉及产品代码|未能只读核对/.test(m.body)), false, 'pure conflict resolution + test files skip product-code diff notice');
+  // Second ship_fix without a new failure fails 409; old s1 ticket fails 409.
+  await assert.rejects(() => shipFix(b, { failureEventId: failEvent1, commitSha: fixSha1, summary: 'again' }), (e: any) => e.code === 'INVALID_STATE');
+  assert.throws(() => verifyShip(f.hub, SECRET, ticket0), status(409), 'old ticket invalidated after ship_fix');
+
+  // Force a checks failure on the refreshed ticket to exercise chained ship_fix + product-code diff notice + final landing.
+  const ticket1 = /--ticket (\S+)/.exec((shipForRunner(f.hub, SECRET, 'http://127.0.0.1:9', 'c', task.id, 'b').ship as { command: string }).command)![1];
+  assert.equal(verifyShip(f.hub, SECRET, ticket1).shipFix, true);
+  r.write('.premerge/checks.json', r.checks('process.exit(1)', r.log));
+  r.commit('temporarily fail checks');
+  const shipOut1 = await ship(options(r.root, realGitHubClient(f.hub, SECRET, ticket1)));
+  assert.equal(shipOut1.merged, false);
+  const failEvent2 = f.read(task.id).task.shipFailure!.eventId;
+  assert.equal(f.read(task.id).task.shipFailure!.failedCheck, 'probe');
+
+  r.write('.premerge/checks.json', r.checks('require("fs").appendFileSync(process.argv[1], "x")', r.log));
+  r.commit('restore passing checks');
+  r.g('checkout', '-q', 'agent/work');
+  r.write('src/prod.ts', 'export const fixed = true;\n');
+  const fixSha2 = r.commit('fix regression in product code');
+  r.g('checkout', '-q', 'main');
+
+  const msgBeforeFix2 = f.store.listMessages('c', 200).length;
+  const res2 = await shipFix(b, { failureEventId: failEvent2, commitSha: fixSha2, summary: 'fixed product code regression' });
+  assert.equal(res2.submission!.shipFix!.originSubmissionId, sub0.id, 'chained ship_fix preserves original originSubmissionId');
+  const diffNotice = f.store.listMessages('c', 200).slice(msgBeforeFix2).find((m) => m.body.includes('涉及产品代码'));
+  assert.ok(diffNotice, 'modifying product code notifies original executor a');
+  assert.deepEqual(diffNotice.mentions, ['a']);
+  assert.deepEqual(f.store.withDeliveries([diffNotice])[0].deliveries, [], 'product-code diff notice is infoOnly');
+
+  const ticket2 = /--ticket (\S+)/.exec((shipForRunner(f.hub, SECRET, 'http://127.0.0.1:9', 'c', task.id, 'b').ship as { command: string }).command)![1];
+  const shipOut2 = await ship(options(r.root, realGitHubClient(f.hub, SECRET, ticket2)));
+  assert.equal(shipOut2.merged, true);
+  assert.equal(f.read(task.id).task.status, 'merged');
+  assert.equal(f.read(task.id).task.shipFailure, null);
+  assert.equal(r.g('log', '-1', '--format=%B', 'main'),
+    `[claude-code] fix: Fix the thing\n\nReviewed-by: name-b (task ${task.id.slice(0, 8)}, r1, pass, ${fixSha2.slice(0, 7)}, ship fix)\nCo-Authored-By: Someone <someone@example.invalid>`);
+});
+
+test('ship_fix works for both ordinary self-review (null holder) and taken-over self-review, and refuses wrong executors', async (t) => {
+  setBranchLookup({ budgetMs: 60_000 });
+  t.after(() => setBranchLookup());
+  const r = repo(t);
+  r.g('checkout', '-q', '-b', 'agent/self');
+  r.write('README.md', 'self readme\n');
+  const sSelf0 = r.commit('self work');
+  r.g('checkout', '-q', '-b', 'agent/taken', 'main');
+  r.write('README.md', 'taken readme\n');
+  const sTakenOrig = r.commit('orig before takeover');
+  r.g('checkout', '-q', 'main');
+  r.write('README.md', 'main readme\n');
+  r.commit('main advances');
+
+  const f = hubFixture(t, r.root);
+  f.hub.collaboration.prepareTimeoutMs = 60_000;
+
+  // (1) Ordinary self-review task (never taken over; selfReviewHolder === null).
+  const { task: selfTask } = f.submitted(sSelf0, { kind: 'self' });
+  const tSelf0 = /--ticket (\S+)/.exec((shipForRunner(f.hub, SECRET, 'http://127.0.0.1:9', 'c', selfTask.id, 'a').ship as { command: string }).command)![1];
+  assert.equal((await ship(options(r.root, realGitHubClient(f.hub, SECRET, tSelf0)))).merged, false);
+  const selfFailEv = f.read(selfTask.id).task.shipFailure!.eventId;
+  assert.equal((f.hub.collaboration.query(a, 'c', { kind: 'task', taskId: selfTask.id }) as any).shipFixAllowed, true);
+  assert.equal((f.hub.collaboration.query(b, 'c', { kind: 'task', taskId: selfTask.id }) as any).shipFixAllowed, false);
+  await assert.rejects(() => f.hub.collaboration.commandAsync(b, 'c', {
+    action: 'task.ship_fix', taskId: selfTask.id, expectedRevision: f.read(selfTask.id).task.revision,
+    operationId: 'self-wrong', failureEventId: selfFailEv, commitSha: sSelf0, summary: 'no',
+  } as any), (e: any) => e.code === 'FORBIDDEN');
+
+  r.g('checkout', '-q', 'agent/self');
+  spawnSync('git', ['merge', '--no-commit', 'main'], { cwd: r.root, encoding: 'utf8', windowsHide: true });
+  r.write('README.md', 'self resolved\n');
+  r.g('add', '-A');
+  r.g('commit', '-qm', 'self fix conflict');
+  const sSelfFix = r.g('rev-parse', 'HEAD');
+  r.g('checkout', '-q', 'main');
+
+  await f.hub.collaboration.commandAsync(a, 'c', {
+    action: 'task.ship_fix', taskId: selfTask.id, expectedRevision: f.read(selfTask.id).task.revision,
+    operationId: 'self-ok', failureEventId: selfFailEv, commitSha: sSelfFix, summary: 'resolved conflict myself',
+  } as any);
+  const tSelf1 = /--ticket (\S+)/.exec((shipForRunner(f.hub, SECRET, 'http://127.0.0.1:9', 'c', selfTask.id, 'a').ship as { command: string }).command)![1];
+  assert.deepEqual(verifyShip(f.hub, SECRET, tSelf1), {
+    taskId: selfTask.id, shortId: selfTask.id.slice(0, 8), commitSha: sSelfFix, reviewer: 'name-a', round: 1, verdict: 'self', shipFix: true,
+  });
+  assert.equal((await ship(options(r.root, realGitHubClient(f.hub, SECRET, tSelf1)))).merged, true);
+  assert.match(r.g('log', '-1', '--format=%B', 'main'), /Reviewed-by: name-a \(task .+, r1, self, [0-9a-f]{7}, ship fix\)/);
+
+  // (2) Taken-over self-review task: reviewer b takes over and submits, then ship fails, then b runs ship_fix.
+  const { task: takenTask } = f.submitted(sTakenOrig, b);
+  f.act(b, takenTask, { action: 'task.takeover' });
+  r.g('checkout', '-q', 'agent/taken');
+  r.write('src.txt', 'taker commit\n');
+  const sTaken1 = r.commit('taker commit');
+  r.g('checkout', '-q', 'main');
+  f.act(b, takenTask, { action: 'task.submit', assignmentId: f.read(takenTask.id).task.currentAssignmentId!, summary: 'taken over', commitSha: sTaken1 });
+  const tTaken0 = /--ticket (\S+)/.exec((shipForRunner(f.hub, SECRET, 'http://127.0.0.1:9', 'c', takenTask.id, 'b').ship as { command: string }).command)![1];
+  assert.equal((await ship(options(r.root, realGitHubClient(f.hub, SECRET, tTaken0)))).merged, false);
+  const takenFailEv = f.read(takenTask.id).task.shipFailure!.eventId;
+  await assert.rejects(() => f.hub.collaboration.commandAsync(a, 'c', {
+    action: 'task.ship_fix', taskId: takenTask.id, expectedRevision: f.read(takenTask.id).task.revision,
+    operationId: 'taken-wrong', failureEventId: takenFailEv, commitSha: sTaken1, summary: 'no',
+  } as any), (e: any) => e.code === 'FORBIDDEN');
+
+  r.g('checkout', '-q', 'agent/taken');
+  spawnSync('git', ['merge', '--no-commit', 'main'], { cwd: r.root, encoding: 'utf8', windowsHide: true });
+  r.write('README.md', 'taken resolved\n');
+  r.g('add', '-A');
+  r.g('commit', '-qm', 'taken fix conflict');
+  const sTakenFix = r.g('rev-parse', 'HEAD');
+  r.g('checkout', '-q', 'main');
+
+  await f.hub.collaboration.commandAsync(b, 'c', {
+    action: 'task.ship_fix', taskId: takenTask.id, expectedRevision: f.read(takenTask.id).task.revision,
+    operationId: 'taken-ok', failureEventId: takenFailEv, commitSha: sTakenFix, summary: 'taken resolved conflict',
+  } as any);
+  const tTaken1 = /--ticket (\S+)/.exec((shipForRunner(f.hub, SECRET, 'http://127.0.0.1:9', 'c', takenTask.id, 'b').ship as { command: string }).command)![1];
+  assert.deepEqual(verifyShip(f.hub, SECRET, tTaken1), {
+    taskId: takenTask.id, shortId: takenTask.id.slice(0, 8), commitSha: sTakenFix, reviewer: 'name-b', round: 1, verdict: 'self', takeover: true, shipFix: true,
+  });
+  assert.equal((await ship(options(r.root, realGitHubClient(f.hub, SECRET, tTaken1)))).merged, true);
+  assert.match(r.g('log', '-1', '--format=%B', 'main'), /Reviewed-by: name-b \(task .+, r1, self, [0-9a-f]{7}, reviewer takeover, ship fix\)/);
+});
+
+test('ship_fix refuses user-reviewed / user-approved / HTTP user callers and fails closed on missing repo, unknown commit, timeout and busy; reopen recovers cleanly', async (t) => {
+  setBranchLookup({ budgetMs: 60_000 });
+  t.after(() => setBranchLookup());
+  const r = repo(t);
+  const sha = r.branch('agent/u', { 'src.txt': 'code\n' });
+  const nextSha = r.branch('agent/u-fix', { 'src.txt': 'code\n' }); // make u-fix a descendant of sha below:
+  r.g('checkout', '-q', 'agent/u');
+  r.write('src.txt', 'code2\n');
+  const descSha = r.commit('forward');
+  r.g('checkout', '-q', 'main');
+  assert.ok(nextSha);
+
+  const app = await startTestHub();
+  t.after(async () => { await app.close(); rmSync(app.dir, { recursive: true, force: true, maxRetries: 5 }); });
+  app.hub.collaboration.prepareTimeoutMs = 60_000;
+  const clusterId = 'c-http';
+  app.hub.store.insertCluster({ id: clusterId, name: 'c', category: '', createdAt: '2026-01-01' }, ['a', 'b'].map((id) => ({
+    id, clusterId, name: `name-${id}`, avatar: null, harness: 'mock', model: null, effort: null,
+    workerSessionId: 'session-' + id, cwd: r.root, origin: 'attached' as const, removedAt: null,
+  })));
+  const secret = JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8')).secret as string;
+  let seq = 0;
+  const cmd = (actor: CollaborationActor, body: Record<string, unknown>) =>
+    app.hub.collaboration.commandAsync(actor, clusterId, { operationId: `op-${++seq}`, ...body } as any);
+  const readTask = (taskId: string, actor: CollaborationActor = user) =>
+    app.hub.collaboration.query(actor, clusterId, { kind: 'task', taskId }) as any;
+
+  // (1) User-reviewed task & user-substituted approval both refuse ship_fix 403 and allow reopen.
+  const uTask = (await cmd(user, { action: 'task.create', title: 'u', scope: 's', acceptance: 'a', reviewer: user, memberId: 'a' })).task!;
+  const uStart = await cmd(a, { action: 'task.start', taskId: uTask.id, expectedRevision: uTask.revision });
+  const uSub = await cmd(a, { action: 'task.submit', taskId: uTask.id, expectedRevision: uStart.task!.revision, assignmentId: uStart.assignment!.id, summary: 'ok', commitSha: sha });
+  await cmd(user, { action: 'task.review', taskId: uTask.id, expectedRevision: uSub.task!.revision, submissionId: uSub.submission!.id, verdict: 'approve' });
+  assert.equal(readTask(uTask.id, a).shipRunnerId, 'a');
+  assert.equal(readTask(uTask.id, a).shipFixAllowed, false);
+  assert.equal(readTask(uTask.id, user).shipFixAllowed, false);
+  const uTicket = /--ticket (\S+)/.exec((shipFor(app.hub, secret, app.url, clusterId, uTask.id).ship as { command: string }).command)![1];
+  await reportShip(app.hub, secret, { ticket: uTicket, failed: { kind: 'checks', failedCheck: 'probe', detail: 'fail' } });
+  const uFailEv = readTask(uTask.id).task.shipFailure.eventId;
+  await assert.rejects(() => cmd(a, { action: 'task.ship_fix', taskId: uTask.id, expectedRevision: readTask(uTask.id).task.revision, failureEventId: uFailEv, commitSha: descSha, summary: 'fix' }),
+    (e: any) => e.code === 'FORBIDDEN');
+  // HTTP { kind: 'user' } refused FORBIDDEN on task.ship_fix & batch.attribute_failure (HTTP 400 with code FORBIDDEN).
+  const httpShipFix = await fetch(`${app.url}/api/clusters/${clusterId}/collaboration`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'task.ship_fix', operationId: 'web-sf', taskId: uTask.id, expectedRevision: readTask(uTask.id).task.revision, failureEventId: uFailEv, commitSha: descSha, summary: 'web' }),
+  });
+  assert.equal(httpShipFix.status, 400);
+  assert.equal((await httpShipFix.json() as { code?: string }).code, 'FORBIDDEN');
+  const webBatch = ((await cmd(user, { action: 'batch.create', title: 'web-b', reviewer: b })) as any).batch!;
+  const httpAttr = await fetch(`${app.url}/api/clusters/${clusterId}/collaboration`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'batch.attribute_failure', operationId: 'web-attr', batchId: webBatch.id, failureEventId: 1, taskIds: [uTask.id], reason: 'web' }),
+  });
+  assert.equal(httpAttr.status, 400);
+  assert.equal((await httpAttr.json() as { code?: string }).code, 'FORBIDDEN');
+  // Verbatim rerun still permitted, and executor a can reopen from shipFailure clearing shipFailure.
+  assert.equal(verifyShip(app.hub, secret, uTicket).commitSha, sha);
+  const reopened = await cmd(a, { action: 'task.reopen', taskId: uTask.id, expectedRevision: readTask(uTask.id).task.revision, reason: 'need code change' });
+  assert.equal(reopened.task!.status, 'pending');
+  assert.equal(reopened.task!.shipFailure, null);
+
+  // (2) User approves in place of member reviewer b: neither a nor b may ship_fix.
+  const mTask = (await cmd(user, { action: 'task.create', title: 'm', scope: 's', acceptance: 'a', reviewer: b, memberId: 'a' })).task!;
+  const mStart = await cmd(a, { action: 'task.start', taskId: mTask.id, expectedRevision: mTask.revision });
+  const mSub = await cmd(a, { action: 'task.submit', taskId: mTask.id, expectedRevision: mStart.task!.revision, assignmentId: mStart.assignment!.id, summary: 'ok', commitSha: sha });
+  await cmd(user, { action: 'task.review', taskId: mTask.id, expectedRevision: mSub.task!.revision, submissionId: mSub.submission!.id, verdict: 'approve' });
+  const mTicket = /--ticket (\S+)/.exec((shipFor(app.hub, secret, app.url, clusterId, mTask.id).ship as { command: string }).command)![1];
+  await reportShip(app.hub, secret, { ticket: mTicket, failed: { kind: 'conflict', conflictFiles: ['src.txt'], detail: 'conflict' } });
+  const mFailEv = readTask(mTask.id).task.shipFailure.eventId;
+  assert.equal(readTask(mTask.id, a).shipFixAllowed, false);
+  for (const actor of [a, b]) {
+    await assert.rejects(() => cmd(actor, { action: 'task.ship_fix', taskId: mTask.id, expectedRevision: readTask(mTask.id).task.revision, failureEventId: mFailEv, commitSha: descSha, summary: 'fix' }),
+      (e: any) => e.code === 'FORBIDDEN');
+  }
+
+  // (3) Fail-closed git conditions on an independent member-approved task: unknown_commit, timeout, no_repository, busy.
+  const okTask = (await cmd(user, { action: 'task.create', title: 'ok', scope: 's', acceptance: 'a', reviewer: b, memberId: 'a' })).task!;
+  const okStart = await cmd(a, { action: 'task.start', taskId: okTask.id, expectedRevision: okTask.revision });
+  const okSub = await cmd(a, { action: 'task.submit', taskId: okTask.id, expectedRevision: okStart.task!.revision, assignmentId: okStart.assignment!.id, summary: 'ok', commitSha: sha });
+  await cmd(b, { action: 'task.review', taskId: okTask.id, expectedRevision: okSub.task!.revision, submissionId: okSub.submission!.id, verdict: 'approve', reason: 'ok' });
+  const okTicket = /--ticket (\S+)/.exec((shipFor(app.hub, secret, app.url, clusterId, okTask.id).ship as { command: string }).command)![1];
+  await reportShip(app.hub, secret, { ticket: okTicket, failed: { kind: 'checks', detail: 'fail' } });
+  const okFailEv = readTask(okTask.id).task.shipFailure.eventId;
+
+  await assert.rejects(() => cmd(b, { action: 'task.ship_fix', taskId: okTask.id, expectedRevision: readTask(okTask.id).task.revision, failureEventId: okFailEv, commitSha: 'deadbeefdead', summary: 'missing' }),
+    (e: any) => e.code === 'INVALID_STATE' && /unknown_commit/.test(e.message));
+  setBranchLookup({
+    budgetMs: 25,
+    runner: (_cwd, _args, sig) => new Promise((_res, rej) => sig.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true })),
+  });
+  await assert.rejects(() => cmd(b, { action: 'task.ship_fix', taskId: okTask.id, expectedRevision: readTask(okTask.id).task.revision, failureEventId: okFailEv, commitSha: descSha, summary: 'timeout' }),
+    (e: any) => e.code === 'INVALID_STATE' && /timeout/.test(e.message));
+  setBranchLookup({ budgetMs: 60_000, runner: async () => '' });
+  await assert.rejects(() => cmd(b, { action: 'task.ship_fix', taskId: okTask.id, expectedRevision: readTask(okTask.id).task.revision, failureEventId: okFailEv, commitSha: descSha, summary: 'norepo' }),
+    (e: any) => e.code === 'INVALID_STATE' && /no_repository/.test(e.message));
+
+  const gate = Promise.withResolvers<void>();
+  let running = 0;
+  setBranchLookup({
+    budgetMs: 10_000,
+    runner: async (cwd, args, sig) => {
+      if (args[0] === 'worktree') { running++; try { await gate.promise; } finally { running--; } }
+      return gitRead(cwd, args, sig);
+    },
+  });
+  const blockers: Promise<unknown>[] = [];
+  for (let i = 0; i < 4; i++) {
+    const ht = (await cmd(user, { action: 'task.create', title: `hold-${i}`, scope: 's', acceptance: 'a', reviewer: user, memberId: 'a' })).task!;
+    const hs = await cmd(a, { action: 'task.start', taskId: ht.id, expectedRevision: ht.revision });
+    blockers.push(cmd(a, { action: 'task.submit', taskId: ht.id, expectedRevision: hs.task!.revision, assignmentId: hs.assignment!.id, summary: 'hold', commitSha: sha }));
+  }
+  await waitFor(() => running === 4, 'four lookups holding all slots');
+  setBranchLookup({ budgetMs: 80, runner: async (cwd, args, sig) => gitRead(cwd, args, sig) });
+  await assert.rejects(() => cmd(b, { action: 'task.ship_fix', taskId: okTask.id, expectedRevision: readTask(okTask.id).task.revision, failureEventId: okFailEv, commitSha: descSha, summary: 'busy' }),
+    (e: any) => e.code === 'INVALID_STATE' && /busy/.test(e.message));
+  gate.resolve();
+  await Promise.all(blockers);
+  assert.equal(readTask(okTask.id).task.status, 'completed');
+  assert.equal(readTask(okTask.id).task.shipFailure.eventId, okFailEv);
+});
+
+test('reopen after ship_failed restores and wakes eligible approved executor, and explains when unavailable', (t) => {
+  const f = hubFixture(t);
+  const { store, send, act, read } = f;
+  const user: CollaborationActor = { kind: 'user' };
+  const a: CollaborationActor = { kind: 'member', memberId: 'a' };
+  const b: CollaborationActor = { kind: 'member', memberId: 'b' };
+  const addRole = (name: string) => send(user, { action: 'role.create', name } as any).role!.id;
+  const woke = (eventId: number) => {
+    const msg = store.listMessages('c', 200).find((m) => m.collabEventId === eventId);
+    if (!msg) return [];
+    return store.withDeliveries([msg])[0].deliveries.map((d) => d.memberId).sort();
+  };
+  const reopenNotice = (eventId: number) => store.listMessages('c', 200).find((m) => m.collabEventId === eventId);
+
+  // (1) Member reviewer reopens ship_failed independent-review task -> assignedMemberId = 'a', 'a' woken, 'b' infoOnly
+  const tMember = send(user, { action: 'task.create', title: 'm-reopen', scope: 's', acceptance: 'a', reviewer: b, memberId: 'a' }).task!;
+  const st1 = act(a, tMember, { action: 'task.start' });
+  const sub1 = act(a, tMember, { action: 'task.submit', assignmentId: st1.assignment!.id, commitSha: 'abcdef0', summary: 'v1' });
+  act(b, tMember, { action: 'task.review', submissionId: sub1.submission!.id, verdict: 'approve', reason: 'ok' });
+  const ticket1 = /--ticket (\S+)/.exec((shipForRunner(f.hub, SECRET, 'http://127.0.0.1:9', 'c', tMember.id, 'b').ship as { command: string }).command)![1];
+  send({ kind: 'system' }, { action: 'task.ship_failed', taskId: tMember.id, expectedRevision: read(tMember.id).task.revision,
+    submissionId: read(tMember.id).task.approvedSubmissionId!, reason: 'checks: failed twice' });
+  const revReopen1 = act(b, tMember, { action: 'task.reopen', reason: 'fix check' });
+  assert.equal(revReopen1.task!.status, 'pending');
+  assert.equal(revReopen1.task!.assignedMemberId, 'a');
+  assert.deepEqual(woke(revReopen1.eventId), ['a']);
+  assert.match(reopenNotice(revReopen1.eventId)!.body, /退回给原执行者 name-a/);
+
+  // (2) User reopens ship_failed independent-review task -> 'a' woken, 'b' infoOnly
+  const st2 = act(a, tMember, { action: 'task.start' });
+  const sub2 = act(a, tMember, { action: 'task.submit', assignmentId: st2.assignment!.id, commitSha: 'abcdef1', summary: 'v2' });
+  act(b, tMember, { action: 'task.review', submissionId: sub2.submission!.id, verdict: 'approve', reason: 'ok2' });
+  send({ kind: 'system' }, { action: 'task.ship_failed', taskId: tMember.id, expectedRevision: read(tMember.id).task.revision,
+    submissionId: read(tMember.id).task.approvedSubmissionId!, reason: 'conflict: file' });
+  const userReopen = act(user, tMember, { action: 'task.reopen', reason: 'rebase needed' });
+  assert.equal(userReopen.task!.assignedMemberId, 'a');
+  assert.deepEqual(woke(userReopen.eventId), ['a']);
+  assert.ok(reopenNotice(userReopen.eventId)!.mentions.includes('b'));
+  assert.ok(ticket1);
+
+  // (3) User-reviewed task: user reopen wakes 'a'; executor 'a' reopen keeps assignedMemberId = 'a' without self-wake
+  const tUser = send(user, { action: 'task.create', title: 'u-reopen', scope: 's', acceptance: 'a', reviewer: user, memberId: 'a' }).task!;
+  const stU1 = act(a, tUser, { action: 'task.start' });
+  const subU1 = act(a, tUser, { action: 'task.submit', assignmentId: stU1.assignment!.id, commitSha: 'abcdef2', summary: 'u1' });
+  act(user, tUser, { action: 'task.review', submissionId: subU1.submission!.id, verdict: 'approve' });
+  send({ kind: 'system' }, { action: 'task.ship_failed', taskId: tUser.id, expectedRevision: read(tUser.id).task.revision,
+    submissionId: read(tUser.id).task.approvedSubmissionId!, reason: 'checks: fail' });
+  const uReopenByUser = act(user, tUser, { action: 'task.reopen', reason: 'user reopen' });
+  assert.equal(uReopenByUser.task!.assignedMemberId, 'a');
+  assert.deepEqual(woke(uReopenByUser.eventId), ['a']);
+
+  const stU2 = act(a, tUser, { action: 'task.start' });
+  const subU2 = act(a, tUser, { action: 'task.submit', assignmentId: stU2.assignment!.id, commitSha: 'abcdef3', summary: 'u2' });
+  act(user, tUser, { action: 'task.review', submissionId: subU2.submission!.id, verdict: 'approve' });
+  send({ kind: 'system' }, { action: 'task.ship_failed', taskId: tUser.id, expectedRevision: read(tUser.id).task.revision,
+    submissionId: read(tUser.id).task.approvedSubmissionId!, reason: 'checks: fail 2' });
+  const uReopenBySelf = act(a, tUser, { action: 'task.reopen', reason: 'self reopen' });
+  assert.equal(uReopenBySelf.task!.assignedMemberId, 'a');
+  assert.deepEqual(woke(uReopenBySelf.eventId), []);
+
+  // (4) Unavailable prior executor: hidden (never leaks '隐身' to shared chat), coordinator, missing role, removed
+  store.insertMembers([{ id: 'extra', clusterId: 'c', name: 'Extra', avatar: null, harness: 'mock', model: null, effort: null,
+    workerSessionId: 'session-extra', cwd: '/tmp', origin: 'attached', removedAt: null }]);
+
+  const makeShipFailed = (title: string, extraFields: Record<string, unknown> = {}) => {
+    const tk = send(user, { action: 'task.create', title, scope: 's', acceptance: 'a', reviewer: b, memberId: 'extra', ...extraFields }).task!;
+    const st = act({ kind: 'member', memberId: 'extra' }, tk, { action: 'task.start' });
+    const sb = act({ kind: 'member', memberId: 'extra' }, tk, { action: 'task.submit', assignmentId: st.assignment!.id, commitSha: 'abcdef4', summary: 'done' });
+    act(b, tk, { action: 'task.review', submissionId: sb.submission!.id, verdict: 'approve', reason: 'ok' });
+    send({ kind: 'system' }, { action: 'task.ship_failed', taskId: tk.id, expectedRevision: read(tk.id).task.revision,
+      submissionId: read(tk.id).task.approvedSubmissionId!, reason: 'checks: failed' });
+    return tk;
+  };
+
+  // (4a) Hidden executor: neither member reopen nor user reopen leaks '隐身' into shared group chat
+  const tkHidden1 = makeShipFailed('hidden-by-member');
+  const tkHidden2 = makeShipFailed('hidden-by-user');
+  f.hub.setMemberHidden('extra', true);
+  const hidByMember = act(b, tkHidden1, { action: 'task.reopen', reason: 'reopen hidden 1' });
+  assert.equal(hidByMember.task!.assignedMemberId, null);
+  assert.deepEqual(woke(hidByMember.eventId), []);
+  const hidNoticeM = reopenNotice(hidByMember.eventId)!;
+  assert.match(hidNoticeM.body, /不可接受派工/);
+  assert.doesNotMatch(hidNoticeM.body, /隐身/, 'member reopen must not leak hidden state to group chat');
+  assert.match(hidNoticeM.body, /task_action assign/);
+
+  const hidByUser = act(user, tkHidden2, { action: 'task.reopen', reason: 'reopen hidden 2' });
+  assert.equal(hidByUser.task!.assignedMemberId, null);
+  const hidNoticeU = reopenNotice(hidByUser.eventId)!;
+  assert.match(hidNoticeU.body, /不可接受派工/);
+  assert.doesNotMatch(hidNoticeU.body, /隐身/, 'user reopen must not leak hidden state into shared group chat');
+  assert.match(hidNoticeU.body, /task_action assign/);
+  f.hub.setMemberHidden('extra', false);
+
+  // (4b) Coordinator cannot execute (left unassigned; woken only as enabled coordinator to reassign)
+  const tkCoord = makeShipFailed('became-coord');
+  send(user, { action: 'coordinator.set', memberId: 'extra', enabled: true, mode: 'suggest' });
+  const coordReopen = act(b, tkCoord, { action: 'task.reopen', reason: 'now coordinator' });
+  assert.equal(coordReopen.task!.assignedMemberId, null);
+  assert.deepEqual(woke(coordReopen.eventId), ['extra']);
+  assert.match(reopenNotice(coordReopen.eventId)!.body, /协调员.*task_action assign/);
+  send(user, { action: 'coordinator.set', memberId: 'a', enabled: false, mode: 'suggest' });
+
+  // (4c) Missing execute role
+  const devRole = addRole('dev');
+  store.setCollaborationMemberRoles('extra', [devRole]);
+  const tkRole = makeShipFailed('lost-role', { executeRoleIds: [devRole] });
+  store.setCollaborationMemberRoles('extra', []);
+  const roleReopen = act(b, tkRole, { action: 'task.reopen', reason: 'role missing' });
+  assert.equal(roleReopen.task!.assignedMemberId, null);
+  assert.deepEqual(woke(roleReopen.eventId), []);
+  assert.match(reopenNotice(roleReopen.eventId)!.body, /缺少任务所需执行角色.*task_action assign/);
+
+  // (4d) Removed from cluster
+  const tkRemoved = makeShipFailed('removed-member');
+  f.hub.removeMember('c', 'extra');
+  const remReopen = act(b, tkRemoved, { action: 'task.reopen', reason: 'member left' });
+  assert.equal(remReopen.task!.assignedMemberId, null);
+  assert.deepEqual(woke(remReopen.eventId), []);
+  assert.match(reopenNotice(remReopen.eventId)!.body, /成员已不在本群.*task_action assign/);
 });

@@ -7,8 +7,10 @@ import type { Assignment, BranchLinkOutcome, Submission, Task, TaskGitBranch } f
 import type { PluginPrepare } from '../../core/plugin.ts';
 import { gitRead, representativeWorktree, sameRepositoryPath, worktreeList } from '../../core/projects.ts';
 import type { Store } from '../../core/store.ts';
-import { completionValid, resolveTaskRef } from './model.ts';
-import { collaborationRecords, collaborationTask } from './store.ts';
+import { batchShipFixAffectedTasks, batchShipState, canBatchShipFix } from './batches.ts';
+import { approvedResult, canShipFixTask, completionValid, resolveTaskRef } from './model.ts';
+import { collaborationRecords, collaborationTask, taskBatch } from './store.ts';
+import { takeoverRecords } from './takeover.ts';
 
 /** The whole lookup's time, waiting for a slot included: past it the submit goes on without a link and git is killed. */
 export const BRANCH_LOOKUP_BUDGET_MS = 1500;
@@ -47,8 +49,15 @@ function release(): void {
   queue.shift()?.();
 }
 
+/** What the takeover / ship_fix diff inspection found between two commits. */
+export interface ProductCodeDiff {
+  changed: boolean;
+  files: string[];
+  unverified?: boolean;
+}
+
 /** What the lookup read, and for which submit; the decision checks the first five against what it reads in the transaction. */
-interface BranchFacts {
+export interface BranchFacts {
   kind: 'branch-facts';
   taskId: string; memberId: string; commitSha: string;
   /** The executor's saved project folder and the task's link, as the lookup read them. */
@@ -61,7 +70,28 @@ interface BranchFacts {
   /** Whether `link`'s branch contains the commit; left out when not checked. */
   linkContains?: boolean;
   error?: Reason;
+  /** When submitting a taken-over self-review task by another member: whether product files outside tests/docs changed. */
+  takeoverBaseSha?: string | null;
+  productCodeDiff?: ProductCodeDiff;
 }
+
+/** Read-only git verification before `task.ship_fix` opens its transaction. */
+export type ShipFixFacts =
+  | { kind: 'ship-fix-precheck-skip' }
+  | {
+      kind: 'ship-fix-facts';
+      taskId: string;
+      memberId: string;
+      baseSubmissionId: string;
+      baseCommitSha: string;
+      fixInputSha: string;
+      failureEventId: number;
+      fullApprovedSha?: string;
+      fullFixSha?: string;
+      branchFacts?: BranchFacts;
+      productCodeDiff?: ProductCodeDiff;
+      error?: 'same_commit' | 'not_ancestor' | 'no_repository' | 'unknown_commit' | 'timeout' | 'busy' | 'git_error';
+    };
 
 const SHA = /^[0-9a-f]{7,40}$/i;
 /** A name that can be shown: not overlong, no control characters. */
@@ -81,44 +111,211 @@ async function isDirectory(path: string): Promise<boolean> {
   try { return (await stat(path)).isDirectory(); } catch { return false; }
 }
 
+const normRepoRelPath = (file: string) => file.replaceAll('\\', '/').replace(/^\.\//, '').trim();
+export function isDocOrTestPath(file: string): boolean {
+  const norm = normRepoRelPath(file);
+  if (!norm) return true;
+  return /\.md$/i.test(norm) || /(?:^|\/)docs\//i.test(norm) || /(?:^|\/)test\//i.test(norm)
+    || /(?:^|\/)__tests__\//i.test(norm) || /[^/]+\.(?:test|spec)\.[^/]+$/i.test(norm);
+}
+
+/**
+ * Inspects `baseSha..newSha` for non-doc/non-test product code changes (excluding pure conflict resolutions in
+ * `conflictFiles` for merge commits). Fails safe to `{ changed: true, files: [], unverified: true }` when history
+ * cannot be verified (timeout, missing commit, non-ancestor base).
+ */
+export async function detectProductCodeChanges(
+  gitFn: (cwd: string, ...args: string[]) => Promise<string>,
+  cwd: string,
+  baseSha: string,
+  newSha: string,
+  signal: AbortSignal,
+  conflictFiles?: string[],
+): Promise<ProductCodeDiff> {
+  const notFound = (error: unknown) => !signal.aborted && exitCode(error) === 1;
+  try {
+    const parseCommit = async (sha: string) => {
+      const out = (await gitFn(cwd, 'rev-parse', '--verify', '--quiet', `${sha}^{commit}`)).trim().toLowerCase();
+      return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(out) ? out : null;
+    };
+    const [fullBase, fullNew] = await Promise.all([parseCommit(baseSha), parseCommit(newSha)]);
+    if (!fullBase || !fullNew) return { changed: true, files: [], unverified: true };
+    if (fullBase === fullNew) return { changed: false, files: [] };
+    try { await gitFn(cwd, 'merge-base', '--is-ancestor', fullBase, fullNew); }
+    catch { return { changed: true, files: [], unverified: true }; }
+
+    let shipBranch = 'main';
+    try {
+      shipBranch = (await gitFn(cwd, 'config', '--get', 'orrery.shipBranch')).trim() || 'main';
+    } catch (error) {
+      if (!notFound(error)) throw error;
+    }
+    let shipRefExists = true;
+    try { await gitFn(cwd, 'rev-parse', '--verify', '--quiet', `refs/heads/${shipBranch}`); }
+    catch (error) { if (notFound(error)) shipRefExists = false; else throw error; }
+    const exclude = shipRefExists ? [`^refs/heads/${shipBranch}`] : [];
+    const range = `${fullBase}..${fullNew}`;
+
+    const nonMergeRaw = await gitFn(cwd, 'log', '--no-merges', '--no-ext-diff', '--no-textconv', '--name-only', '-z', '--pretty=format:', ...exclude, range);
+    const productFiles = new Set<string>();
+    for (const entry of nonMergeRaw.split('\0')) {
+      const file = normRepoRelPath(entry);
+      if (file && !isDocOrTestPath(file)) productFiles.add(file);
+    }
+
+    const diffTree = async (aSha: string, bSha: string): Promise<Set<string>> => {
+      const raw = await gitFn(cwd, 'diff-tree', '-r', '--no-commit-id', '--name-only', '-z', '--no-ext-diff', '--no-textconv', aSha, bSha);
+      const out = new Set<string>();
+      for (const entry of raw.split('\0')) {
+        const file = normRepoRelPath(entry);
+        if (file) out.add(file);
+      }
+      return out;
+    };
+
+    // Inspect merge commits via pure read-only object/tree comparisons (never invoke any merge engine or merge drivers).
+    const mergesRaw = await gitFn(cwd, 'rev-list', '--merges', '--parents', ...exclude, range);
+    const conflictSet = new Set((conflictFiles ?? []).map((f) => normRepoRelPath(f).toLowerCase()).filter(Boolean));
+    let unverified = false;
+    for (const line of mergesRaw.split(/\r?\n/)) {
+      const parts = line.trim().split(/\s+/).filter(Boolean);
+      if (!parts.length) continue;
+      const [mergeSha, ...parents] = parts;
+      if (parents.length !== 2) {
+        unverified = true;
+        continue;
+      }
+      const [p1, p2] = parents;
+      let mergeBases: string[] = [];
+      try {
+        const mbRaw = await gitFn(cwd, 'merge-base', '--all', p1, p2);
+        mergeBases = mbRaw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      } catch (error) {
+        if (!notFound(error)) throw error;
+      }
+      if (mergeBases.length !== 1) {
+        unverified = true;
+        continue;
+      }
+      const mb = mergeBases[0];
+      const [d1, d2, t1, t2] = await Promise.all([
+        diffTree(p1, mergeSha),
+        diffTree(p2, mergeSha),
+        diffTree(mb, p1),
+        diffTree(mb, p2),
+      ]);
+      for (const file of new Set([...d1, ...d2])) {
+        if (isDocOrTestPath(file) || conflictSet.has(file.toLowerCase())) continue;
+        const inD1 = d1.has(file);
+        const inD2 = d2.has(file);
+        const inT1 = t1.has(file);
+        const inT2 = t2.has(file);
+        if (inD1 && inD2) {
+          if (inT1 && inT2) unverified = true;
+          else productFiles.add(file);
+        } else if (inD1 && !inD2 && inT1) {
+          productFiles.add(file);
+        } else if (!inD1 && inD2 && inT2) {
+          productFiles.add(file);
+        }
+      }
+    }
+    const files = [...productFiles].sort();
+    return { changed: files.length > 0 || unverified, files, ...(unverified ? { unverified: true } : {}) };
+  } catch {
+    return { changed: true, files: [], unverified: true };
+  }
+}
+
+const isNotFound = (error: unknown, signal: AbortSignal) =>
+  !signal.aborted && exitCode(error) === 1 && !String((error as { stdout?: unknown }).stdout ?? '').trim();
+
+type GitCall = (cwd: string, ...args: string[]) => Promise<string>;
+
+async function resolveCommitObject(gitFn: GitCall, signal: AbortSignal, cwd: string, shaInput: string): Promise<string | null> {
+  try {
+    const full = (await gitFn(cwd, 'rev-parse', '--verify', '--quiet', `${shaInput}^{commit}`)).trim().toLowerCase();
+    return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(full) && full.startsWith(shaInput.toLowerCase()) ? full : null;
+  } catch (error) {
+    if (isNotFound(error, signal)) return null;
+    throw error;
+  }
+}
+
+async function branchContainsCommit(gitFn: GitCall, signal: AbortSignal, cwd: string, full: string | null, branch: string): Promise<boolean> {
+  if (!full || !usableBranch(branch)) return false;
+  try { await gitFn(cwd, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`); }
+  catch (error) { if (isNotFound(error, signal)) return false; throw error; }
+  // Both sides exist now, so only exit 1 means "not an ancestor"; 128 and the rest are failures.
+  try { await gitFn(cwd, 'merge-base', '--is-ancestor', full, `refs/heads/${branch}`); return true; }
+  catch (error) { if (!signal.aborted && exitCode(error) === 1) return false; throw error; }
+}
+
+/**
+ * The repository git finds from `path` (its representative worktree, as links store it); null when git finds none.
+ * shortcut: any exit code reads as "no repository" (128 is both "not a repository" and a damaged one): for a linked task
+ * either way the link cannot be verified and stays; with no link none is made. Read stderr if the two ever need different answers.
+ */
+async function repositoryAtPath(gitFn: GitCall, path: string): Promise<string | null> {
+  try { return representativeWorktree(await gitFn(path, ...worktreeList)); }
+  catch (error) { if (typeof exitCode(error) === 'number' || error instanceof Error && error.message === 'no working tree') return null; throw error; }
+}
+
+async function tipsForCommit(
+  gitFn: GitCall,
+  signal: AbortSignal,
+  base: BranchFacts,
+  cwd: string,
+  repositoryPath: string,
+  full: string | null,
+): Promise<BranchFacts> {
+  if (!full) return { ...base, repositoryPath, names: [], unknownCommit: true };
+  // --points-at keeps the listing to the branches at this commit, however many the repository has.
+  const listed = await gitFn(cwd, 'for-each-ref', `--points-at=${full}`, `--count=${MAX_BRANCH_CANDIDATES + 1}`, '--format=%(refname)', 'refs/heads/');
+  const names = listed.split('\n').map((line) => line.replace(/\r$/, '')).filter((line) => line.startsWith('refs/heads/'))
+    .map((line) => line.slice('refs/heads/'.length));
+  const facts: BranchFacts = { ...base, repositoryPath, names };
+  if (base.link?.automatic && !(names.length === 1 && usableBranch(names[0]))) facts.linkContains = await branchContainsCommit(gitFn, signal, cwd, full, base.link.branch);
+  if (base.takeoverBaseSha) {
+    facts.productCodeDiff = await detectProductCodeChanges(gitFn, cwd, base.takeoverBaseSha, full, signal);
+  }
+  return facts;
+}
+
+async function runWithLookupBudget<T>(
+  outerSignal: AbortSignal,
+  fn: (signal: AbortSignal, gitFn: GitCall) => Promise<T>,
+  onTimeout: (heldSlot: boolean) => T,
+): Promise<T> {
+  const controller = new AbortController();
+  const slot = { held: false };
+  let timer: NodeJS.Timeout | undefined;
+  const onOuterAbort = () => controller.abort();
+  outerSignal.addEventListener('abort', onOuterAbort, { once: true });
+  const gitFn: GitCall = (cwd, ...args) => {
+    if (controller.signal.aborted) throw new Stop('timeout');
+    return run(cwd, args, controller.signal);
+  };
+  const work = (async (): Promise<T> => {
+    if (!(await acquire(controller.signal, slot))) return onTimeout(false);
+    return fn(controller.signal, gitFn);
+  })();
+  // The budget covers waiting for a slot and git; a git that ignores the abort cannot hold the request either.
+  const late = new Promise<T>((resolve) => {
+    timer = setTimeout(() => { resolve(onTimeout(slot.held)); controller.abort(); }, budget);
+  });
+  try { return await Promise.race([work, late]); }
+  finally {
+    clearTimeout(timer);
+    outerSignal.removeEventListener('abort', onOuterAbort);
+    if (slot.held) { slot.held = false; release(); }
+  }
+}
+
 async function readFacts(base: BranchFacts, signal: AbortSignal): Promise<BranchFacts> {
-  const git = (cwd: string, ...args: string[]) => {
+  const git: GitCall = (cwd, ...args) => {
     if (signal.aborted) throw new Stop('timeout');
     return run(cwd, args, signal);
-  };
-  /**
-   * `rev-parse --verify --quiet` answered "no such object": exit 1 and nothing printed. It says so for an unknown,
-   * ambiguous or non-commit sha, a missing ref, and an object missing from a partial clone (lazy fetch is off). Any other
-   * end (128 outside a repository, a signal, a spawn error) is a failed query, not an answer.
-   */
-  const notFound = (error: unknown) => !signal.aborted && exitCode(error) === 1 && !String((error as { stdout?: unknown }).stdout ?? '').trim();
-  /** The full commit for the submitted (maybe abbreviated) sha; null when git says there is none (or a ref of that name answered). */
-  const commit = async (cwd: string): Promise<string | null> => {
-    try {
-      const full = (await git(cwd, 'rev-parse', '--verify', '--quiet', `${base.commitSha}^{commit}`)).trim().toLowerCase();
-      return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(full) && full.startsWith(base.commitSha) ? full : null;
-    } catch (error) {
-      if (notFound(error)) return null;
-      throw error;
-    }
-  };
-  /** Whether the branch (refs/heads/ only, never a tag of that name) exists and contains the commit. */
-  const contains = async (cwd: string, full: string | null, branch: string): Promise<boolean> => {
-    if (!full || !usableBranch(branch)) return false;
-    try { await git(cwd, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`); }
-    catch (error) { if (notFound(error)) return false; throw error; }
-    // Both sides exist now, so only exit 1 means "not an ancestor"; 128 and the rest are failures.
-    try { await git(cwd, 'merge-base', '--is-ancestor', full, `refs/heads/${branch}`); return true; }
-    catch (error) { if (!signal.aborted && exitCode(error) === 1) return false; throw error; }
-  };
-  /**
-   * The repository git finds from `path` (its representative worktree, as links store it); null when git finds none.
-   * shortcut: any exit code reads as "no repository" (128 is both "not a repository" and a damaged one): for a linked task
-   * either way the link cannot be verified and stays; with no link none is made. Read stderr if the two ever need different answers.
-   */
-  const repositoryAt = async (path: string): Promise<string | null> => {
-    try { return representativeWorktree(await git(path, ...worktreeList)); }
-    catch (error) { if (typeof exitCode(error) === 'number' || error instanceof Error && error.message === 'no working tree') return null; throw error; }
   };
   // The repository: the task's linked one when it has a link (set_git_branch's order), else the executor's folder.
   const repositoryPath = base.link?.repositoryPath;
@@ -127,32 +324,26 @@ async function readFacts(base: BranchFacts, signal: AbortSignal): Promise<Branch
       // The stored path must still be that repository: git also finds a repository upward from a plain directory, and
       // what it would answer from a parent repository is not about the link.
       if (!(await isDirectory(base.link.repositoryPath))) return { ...base, repositoryPath, error: 'no_repository' };
-      const found = await repositoryAt(base.link.repositoryPath);
+      const found = await repositoryAtPath(git, base.link.repositoryPath);
       if (!found || !sameRepositoryPath(found, base.link.repositoryPath)) return { ...base, repositoryPath, error: 'no_repository' };
-      const full = await commit(base.link.repositoryPath);
+      const full = await resolveCommitObject(git, signal, base.link.repositoryPath, base.commitSha);
       // A manual link is never changed: only whether its branch has the commit.
-      if (!base.link.automatic) return { ...base, repositoryPath, linkContains: await contains(base.link.repositoryPath, full, base.link.branch) };
-      return await tipsAndLink(base.link.repositoryPath, base.link.repositoryPath, full);
+      if (!base.link.automatic) {
+        const linkContains = await branchContainsCommit(git, signal, base.link.repositoryPath, full, base.link.branch);
+        const productCodeDiff = full && base.takeoverBaseSha
+          ? await detectProductCodeChanges(git, base.link.repositoryPath, base.takeoverBaseSha, full, signal)
+          : undefined;
+        return { ...base, repositoryPath, linkContains, ...(productCodeDiff ? { productCodeDiff } : {}) };
+      }
+      return await tipsForCommit(git, signal, base, base.link.repositoryPath, base.link.repositoryPath, full);
     }
     // No link: whatever repository git finds from the executor's folder (a subdirectory or a linked worktree included).
     if (!base.cwd || !(await isDirectory(base.cwd))) return { ...base, error: 'no_repository' };
-    const folderRepository = await repositoryAt(base.cwd);
+    const folderRepository = await repositoryAtPath(git, base.cwd);
     if (!folderRepository) return { ...base, error: 'no_repository' };
-    return await tipsAndLink(base.cwd, folderRepository, await commit(base.cwd));
+    return await tipsForCommit(git, signal, base, base.cwd, folderRepository, await resolveCommitObject(git, signal, base.cwd, base.commitSha));
   } catch (error) {
     return { ...base, repositoryPath, error: reasonOf(error, signal) };
-  }
-
-  /** The branches at the commit in `cwd` (its repository is `path`), and whether an automatic link there still holds it. */
-  async function tipsAndLink(cwd: string, path: string, full: string | null): Promise<BranchFacts> {
-    if (!full) return { ...base, repositoryPath: path, names: [], unknownCommit: true };
-    // --points-at keeps the listing to the branches at this commit, however many the repository has.
-    const listed = await git(cwd, 'for-each-ref', `--points-at=${full}`, `--count=${MAX_BRANCH_CANDIDATES + 1}`, '--format=%(refname)', 'refs/heads/');
-    const names = listed.split('\n').map((line) => line.replace(/\r$/, '')).filter((line) => line.startsWith('refs/heads/'))
-      .map((line) => line.slice('refs/heads/'.length));
-    const facts: BranchFacts = { ...base, repositoryPath: path, names };
-    if (base.link?.automatic && !(names.length === 1 && usableBranch(names[0]))) facts.linkContains = await contains(cwd, full, base.link.branch);
-    return facts;
   }
 }
 
@@ -178,31 +369,136 @@ function couldSubmit(store: Store, task: Task, actorId: string, assignmentId: un
  * task.submit's `prepare`: what git says about the submitted commit, read before the transaction under one time budget.
  * Nothing for a submit without a valid commitSha, by someone who could not submit it, or for a task it cannot find.
  */
-export const prepareSubmit: PluginPrepare = async ({ store, actor, actorId, clusterId, command }) => {
+export const prepareSubmit: PluginPrepare = async ({ store, actor, actorId, clusterId, command, signal }) => {
   if (actor.kind !== 'member' || typeof command.commitSha !== 'string' || !SHA.test(command.commitSha)) return undefined;
   const task = collaborationTask(store, clusterId, resolveTaskRef(store, clusterId, command.taskId as string));
   if (!task || !couldSubmit(store, task, actorId, command.assignmentId)) return undefined;
+  const latestTakeover = task.reviewer.kind === 'self' ? takeoverRecords(store, task.id).at(-1) : undefined;
+  const takeoverBaseSha = latestTakeover?.fromMemberId && latestTakeover.fromMemberId !== actorId ? (latestTakeover.baseCommitSha ?? null) : null;
   const base: BranchFacts = { kind: 'branch-facts', taskId: task.id, memberId: actorId, commitSha: command.commitSha.toLowerCase(),
     cwd: store.getMember(actorId)?.cwd ?? null, link: task.gitBranch ? { ...task.gitBranch } : null,
+    ...(takeoverBaseSha ? { takeoverBaseSha } : {}),
     // A linked task is looked up in its linked repository, so even a lookup that times out or waits in vain names it.
     ...(task.gitBranch ? { repositoryPath: task.gitBranch.repositoryPath } : {}) };
-  const controller = new AbortController();
-  const slot = { held: false };
-  let timer: NodeJS.Timeout | undefined;
-  const work = (async (): Promise<BranchFacts> => {
-    if (!(await acquire(controller.signal, slot))) return { ...base, error: 'busy' };
-    return readFacts(base, controller.signal);
-  })();
-  // The budget covers waiting for a slot and git; a git that ignores the abort cannot hold the submit either.
-  const late = new Promise<BranchFacts>((resolve) => {
-    timer = setTimeout(() => { resolve({ ...base, error: slot.held ? 'timeout' : 'busy' }); controller.abort(); }, budget);
-  });
-  try { return await Promise.race([work, late]); }
-  finally {
-    // The timer's abort (the only one) already took a still-waiting request out of the queue; work that won holds its slot.
-    clearTimeout(timer);
-    if (slot.held) { slot.held = false; release(); }
+  return runWithLookupBudget<BranchFacts>(
+    signal,
+    (lookupSignal) => readFacts(base, lookupSignal),
+    (heldSlot) => ({ ...base, error: heldSlot ? 'timeout' : 'busy' }),
+  );
+};
+
+/**
+ * task.ship_fix's `prepare` (fail-closed in actions.ts): pre-checks eligibility before touching git, then resolves canonical
+ * SHAs, verifies `git merge-base --is-ancestor <approved> <fix>`, inspects branch tips and checks product code diff.
+ */
+export const prepareShipFix: PluginPrepare = async ({ store, actor, actorId, clusterId, command, signal }): Promise<ShipFixFacts> => {
+  const skip: ShipFixFacts = { kind: 'ship-fix-precheck-skip' };
+  if (actor.kind !== 'member') return skip;
+  if (typeof command.commitSha !== 'string' || !SHA.test(command.commitSha.trim())) return skip;
+  const failureEventId = command.failureEventId;
+  if (typeof failureEventId !== 'number' || !Number.isSafeInteger(failureEventId) || failureEventId <= 0) return skip;
+  if (command.baseCommitSha !== undefined && (typeof command.baseCommitSha !== 'string' || !SHA.test(command.baseCommitSha.trim()))) return skip;
+  let resolvedTaskId: string;
+  try {
+    resolvedTaskId = resolveTaskRef(store, clusterId, command.taskId as string);
+  } catch {
+    return skip;
   }
+  const task = collaborationTask(store, clusterId, resolvedTaskId);
+  if (!task || task.status !== 'completed' || !task.mergeRequired) return skip;
+  const batch = task.batchId ? taskBatch(store, clusterId, task.batchId) : null;
+  if (task.batchId) {
+    const state = batch ? batchShipState(store, clusterId, batch.id) : null;
+    if (!state || !canBatchShipFix(state, actorId) || !batch?.shipFailure || batch.shipFailure.eventId !== failureEventId) return skip;
+    if ((batch.shipFailure.fixes ?? []).some((fix) => fix.taskId === task.id)) return skip;
+    if (!batchShipFixAffectedTasks(state, batch.shipFailure).has(task.id)) return skip;
+  } else {
+    if (!canShipFixTask(store, task, actorId) || !task.shipFailure || task.shipFailure.eventId !== failureEventId) return skip;
+  }
+  const approved = approvedResult(store, task);
+  if (!approved) return skip;
+  const baseCommitSha = approved.commitSha.toLowerCase();
+  if (typeof command.baseCommitSha === 'string') {
+    const inputBase = command.baseCommitSha.trim().toLowerCase();
+    if (!baseCommitSha.startsWith(inputBase) && !inputBase.startsWith(baseCommitSha)) return skip;
+  }
+  const fixInputSha = command.commitSha.trim().toLowerCase();
+  const base: Extract<ShipFixFacts, { kind: 'ship-fix-facts' }> = {
+    kind: 'ship-fix-facts',
+    taskId: task.id,
+    memberId: actorId,
+    baseSubmissionId: approved.submission.id,
+    baseCommitSha,
+    fixInputSha,
+    failureEventId,
+  };
+  const conflictFiles = task.shipFailure?.conflictFiles ?? batch?.shipFailure?.conflictFiles;
+  const actorCwd = store.getMember(actorId)?.cwd ?? null;
+  return runWithLookupBudget<ShipFixFacts>(
+    signal,
+    async (lookupSignal, git) => {
+      try {
+        let cwd: string;
+        let repositoryPath: string;
+        if (task.gitBranch) {
+          if (!(await isDirectory(task.gitBranch.repositoryPath))) return { ...base, error: 'no_repository' };
+          const found = await repositoryAtPath(git, task.gitBranch.repositoryPath);
+          if (!found || !sameRepositoryPath(found, task.gitBranch.repositoryPath)) return { ...base, error: 'no_repository' };
+          cwd = task.gitBranch.repositoryPath;
+          repositoryPath = task.gitBranch.repositoryPath;
+        } else {
+          if (!actorCwd || !(await isDirectory(actorCwd))) return { ...base, error: 'no_repository' };
+          const found = await repositoryAtPath(git, actorCwd);
+          if (!found) return { ...base, error: 'no_repository' };
+          cwd = actorCwd;
+          repositoryPath = found;
+        }
+        const [fullApprovedSha, fullFixSha] = await Promise.all([
+          resolveCommitObject(git, lookupSignal, cwd, baseCommitSha),
+          resolveCommitObject(git, lookupSignal, cwd, fixInputSha),
+        ]);
+        if (!fullApprovedSha || !fullFixSha) return { ...base, error: 'unknown_commit' };
+        if (fullApprovedSha === fullFixSha) return { ...base, fullApprovedSha, fullFixSha, error: 'same_commit' };
+        try {
+          await git(cwd, 'merge-base', '--is-ancestor', fullApprovedSha, fullFixSha);
+        } catch (error) {
+          if (!lookupSignal.aborted && exitCode(error) === 1) {
+            return { ...base, fullApprovedSha, fullFixSha, error: 'not_ancestor' };
+          }
+          throw error;
+        }
+        const branchBase: BranchFacts = {
+          kind: 'branch-facts',
+          taskId: task.id,
+          memberId: actorId,
+          commitSha: fullFixSha,
+          cwd: actorCwd,
+          link: task.gitBranch ? { ...task.gitBranch } : null,
+          ...(task.gitBranch ? { repositoryPath } : {}),
+        };
+        const branchFacts = task.gitBranch && !task.gitBranch.automatic
+          ? {
+              ...branchBase,
+              repositoryPath,
+              linkContains: await branchContainsCommit(git, lookupSignal, cwd, fullFixSha, task.gitBranch.branch),
+            }
+          : await tipsForCommit(git, lookupSignal, branchBase, cwd, repositoryPath, fullFixSha);
+        const productCodeDiff = actorId !== approved.executorId
+          ? await detectProductCodeChanges(git, cwd, fullApprovedSha, fullFixSha, lookupSignal, conflictFiles)
+          : undefined;
+        return {
+          ...base,
+          fullApprovedSha,
+          fullFixSha,
+          branchFacts,
+          ...(productCodeDiff ? { productCodeDiff } : {}),
+        };
+      } catch (error) {
+        return { ...base, error: reasonOf(error, lookupSignal) === 'timeout' ? 'timeout' : 'git_error' };
+      }
+    },
+    (heldSlot) => ({ ...base, error: heldSlot ? 'timeout' : 'busy' }),
+  );
 };
 
 const isFacts = (value: unknown): value is BranchFacts => !!value && typeof value === 'object' && (value as BranchFacts).kind === 'branch-facts';

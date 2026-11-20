@@ -8,9 +8,10 @@ import { dirname, join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { parseCommandLine, shipBatch, ShipRefused as ScriptRefused, type BatchShipOptions, type BatchVerified } from '../scripts/ship.ts';
 import { batchShipState } from '../src/plugins/tasks/batches.ts';
+import { setBranchLookup } from '../src/plugins/tasks/branch-link.ts';
 import { batchMergedOnTarget, batchShipFor, batchShipTicket, reportBatchShip, shipFor, shipTicket, ShipRefused, verifyBatchShip, verifyShip } from '../src/plugins/tasks/ship.ts';
 import { collaborationRecords } from '../src/plugins/tasks/store.ts';
-import { a, b, c, chain, r, user } from './batch-fixture.ts';
+import { a, b, batchFixture, c, chain, r, user } from './batch-fixture.ts';
 import { tempDir } from './helpers.ts';
 
 const SECRET = 'a'.repeat(64);
@@ -121,7 +122,7 @@ test('independent branches become one merge commit with every branch as a parent
   assert.equal(f.read(f.one.id).task.status, 'merged');
 });
 
-test('a conflict names its task: only it goes back, the target is untouched, the other approvals stay', async (t) => {
+test('a conflict keeps all batch tasks completed, records conflictFiles and taskId, leaves target untouched, and informs without waking', async (t) => {
   const f = approvedChain(t);
   // main changes two.txt after the branches were cut, so task two's branch no longer merges.
   f.git.write('two.txt', 'main\n');
@@ -130,29 +131,59 @@ test('a conflict names its task: only it goes back, the target is untouched, the
   const out = await shipBatch(f.options());
   assert.equal(out.merged, false);
   assert.ok(!out.merged && out.kind === 'conflict' && out.taskId === f.two.id && /task #2 .*two\.txt/s.test(out.detail));
+  assert.deepEqual(out.conflictFiles, ['two.txt']);
   assert.equal(f.git.g('rev-parse', 'main'), before);
   assert.equal(f.git.runs(), 0, 'no checks ran');
-  assert.equal(f.read(f.two.id).task.status, 'pending');
-  assert.equal(f.read(f.two.id).task.assignedMemberId, 'b', 'back with its executor');
-  assert.equal(f.read(f.one.id).task.status, 'completed');
-  assert.equal(f.read(f.one.id).task.completionValid, true, 'upstream approval stays');
-  assert.equal(f.read(f.three.id).task.completionValid, false, 'downstream of the returned task must be redone');
+  for (const task of [f.one, f.two, f.three]) {
+    assert.equal(f.read(task.id).task.status, 'completed', 'all tasks stay completed');
+    assert.equal(f.read(task.id).task.completionValid, true);
+  }
   const notice = f.messages().find((m) => m.systemKind === 'ship_failed')!;
-  assert.match(notice.body, /任务 #2 的分支有合并冲突，已退回它的执行者/);
-  assert.deepEqual(f.woke(notice.id), ['b']);
-  assert.equal(f.view(f.batchId).shipFailure.kind, 'conflict');
+  assert.match(notice.body, /任务 #2 的分支有合并冲突（保持已通过状态/);
+  assert.deepEqual(f.woke(notice.id), [], 'batch ship_failed notifies infoOnly without waking');
+  const failure = f.view(f.batchId).shipFailure;
+  assert.equal(failure.kind, 'conflict');
+  assert.deepEqual(failure.taskIds, [f.two.id]);
+  assert.deepEqual(failure.conflictFiles, ['two.txt']);
+  assert.ok(Number.isSafeInteger(failure.eventId) && failure.eventId > 0);
+  assert.ok(notice.body.includes(`事件 ${failure.eventId}。`));
+  assert.equal(failure.attribution, null);
+  assert.deepEqual(failure.fixes, []);
 });
 
-test('a check that fails twice sends back the task that ends the chain; the target is untouched', async (t) => {
+test('a check that fails twice keeps all tasks completed with empty taskIds (no batchEnds) and allows verbatim rerun', async (t) => {
   const f = approvedChain(t);
   f.git.failChecks();
   const before = f.git.g('rev-parse', 'main');
   const out = await shipBatch(f.options());
   assert.ok(!out.merged && out.kind === 'checks');
+  assert.equal(out.failedCheck, 'probe');
   assert.equal(f.git.runs(), 2, 'one run and its retry');
   assert.equal(f.git.g('rev-parse', 'main'), before);
-  assert.deepEqual([f.one, f.two, f.three].map((task) => f.read(task.id).task.status), ['completed', 'completed', 'pending']);
-  assert.match(f.messages().find((m) => m.systemKind === 'ship_failed')!.body, /合并前检查未通过，无法归到单个任务，已退回批次末端的任务 #3/);
+  assert.deepEqual([f.one, f.two, f.three].map((task) => f.read(task.id).task.status), ['completed', 'completed', 'completed']);
+  const notice = f.messages().find((m) => m.systemKind === 'ship_failed')!;
+  assert.match(notice.body, /合并前检查未通过（probe）（尚未归因，保持已通过状态/);
+  assert.deepEqual(f.woke(notice.id), [], 'checks ship_failed wakes nobody');
+  const view = f.view(f.batchId);
+  assert.deepEqual(view.shipFailure.taskIds, [], 'checks failures never pre-populate batchEnds');
+  assert.equal(view.shipFailure.failedCheck, 'probe');
+  assert.equal(view.shipFailure.attribution, null);
+  assert.equal(view.shipFixAllowed, true);
+  // Before attribution, ship_fix on any task is refused 409.
+  setBranchLookup({ budgetMs: 60_000 });
+  t.after(() => setBranchLookup());
+  f.hub.collaboration.prepareTimeoutMs = 60_000;
+  for (const task of [f.one, f.two, f.three]) {
+    await assert.rejects(() => f.hub.collaboration.commandAsync(r, 'k', {
+      action: 'task.ship_fix', taskId: task.id, expectedRevision: f.read(task.id).task.revision,
+      operationId: `unattr-${task.id}`, failureEventId: view.shipFailure.eventId, commitSha: f.shas[0], summary: 'no attr',
+    } as any), (e: any) => e.code === 'INVALID_STATE');
+  }
+  // Removing the transient failure allows r to rerun the exact same b1 ticket verbatim.
+  rmSync(join(f.git.dir, 'fail'));
+  const rerun = await shipBatch(f.options());
+  assert.equal(rerun.merged, true);
+  assert.equal(f.view(f.batchId).shipFailure, null, 'shipFailure cleared upon batch merge');
 });
 
 test('a batched task cannot be shipped alone, and the Hub records a batch merge only when git shows every commit in it', async (t) => {
@@ -200,4 +231,204 @@ test('the command line takes --batch in place of --ticket, never both', () => {
   assert.equal(parseCommandLine(['--batch', 'b1.x.y', ...base]).mode, 'batch');
   assert.equal(parseCommandLine(['--ticket', 's1.x.y', ...base]).mode, 'ship');
   assert.throws(() => parseCommandLine(['--batch', 'b1.x.y', '--ticket', 's1.x.y', ...base]), ScriptRefused);
+});
+
+test('batch attribute_failure + ship_fix on A -> B + unrelated C preserves same-batch lineage across completed and merged, and reopen/cancel breaks it', async (t) => {
+  setBranchLookup({ budgetMs: 60_000 });
+  t.after(() => setBranchLookup());
+  const g = repo(t);
+  const sA0 = g.branch('agent/a', 'main', { 'a.txt': 'a0\n' });
+  const sB0 = g.branch('agent/b', 'agent/a', { 'b.txt': 'b0\n' });
+  const sC0 = g.branch('agent/c', 'main', { 'c.txt': 'c0\n' });
+
+  const f = batchFixture(t, g.root);
+  f.hub.collaboration.prepareTimeoutMs = 60_000;
+  const batch = f.batch('attr-lineage', r, user);
+  const tA = f.create('A', batch.id, { memberId: 'a' });
+  const tB = f.create('B', batch.id, { memberId: 'b', dependencyIds: [tA.id] });
+  const tC = f.create('C', batch.id, { memberId: 'c' });
+  const tD = f.create('D-outside', undefined, { memberId: 'c', dependencyIds: [tB.id] });
+
+  f.start(a, tA); const subA0 = f.submit(a, tA, sA0).submission!;
+  f.start(b, tB); f.submit(b, tB, sB0);
+  f.start(c, tC); f.submit(c, tC, sC0);
+  for (const task of [tA, tB, tC]) f.review(r, task);
+
+  g.failChecks();
+  const state0 = batchShipState(f.store, 'k', batch.id)!;
+  const ticket0 = batchShipTicket(SECRET, { clusterId: 'k', batchId: batch.id, digest: state0.digest });
+  const failOut = await shipBatch({
+    agent: 'claude-code', type: 'feat', summary: 'Land B1', trailers: [], cwd: g.root, lockWaitMs: 5000,
+    hub: { verify: async () => verifyBatchShip(f.hub, SECRET, ticket0) as BatchVerified, report: async (res) => { await reportBatchShip(f.hub, SECRET, { ticket: ticket0, ...res }); } },
+  });
+  assert.equal(failOut.merged, false);
+  const failEv = f.view(batch.id).shipFailure.eventId;
+
+  // Attribution access checks: only independent batch reviewer r may attribute, and out-of-batch tasks are refused.
+  assert.throws(() => f.send(a, { action: 'batch.attribute_failure', batchId: batch.id, failureEventId: failEv, taskIds: [tA.id], reason: 'a' } as any),
+    (e: any) => e.code === 'FORBIDDEN');
+  assert.throws(() => f.send(user, { action: 'batch.attribute_failure', batchId: batch.id, failureEventId: failEv, taskIds: [tA.id], reason: 'user' } as any),
+    (e: any) => e.code === 'FORBIDDEN');
+  assert.throws(() => f.send(r, { action: 'batch.attribute_failure', batchId: batch.id, failureEventId: failEv, taskIds: [tD.id], reason: 'outside' } as any),
+    (e: any) => e.code === 'INVALID_REQUEST');
+
+  // Reviewer r attributes checks failure to tA once; infoOnly to a, write-once lock rejects second attribution.
+  const msgCountBeforeAttr = f.messages().length;
+  const attrRes = f.send(r, { action: 'batch.attribute_failure', batchId: batch.id, failureEventId: failEv, taskIds: ['#1'], reason: 'A broke probe' } as any);
+  assert.deepEqual((attrRes.batch as any).shipFailure.attribution.taskIds, [tA.id]);
+  const attrMsg = f.messages().slice(msgCountBeforeAttr).find((m) => /归因于 #1/.test(m.body))!;
+  assert.ok(attrMsg.mentions.includes('a'));
+  assert.deepEqual(f.woke(attrMsg.id), [], 'attribution wakes nobody');
+  assert.throws(() => f.send(r, { action: 'batch.attribute_failure', batchId: batch.id, failureEventId: failEv, taskIds: [tC.id], reason: 'expand' } as any),
+    (e: any) => e.code === 'INVALID_STATE');
+
+  // Before tA is fixed, both tB and unrelated tC refuse ship_fix 409.
+  const callShipFix = (task: typeof tA, commitSha: string, op: string, actor = r) =>
+    f.hub.collaboration.commandAsync(actor, 'k', {
+      action: 'task.ship_fix', taskId: task.id, expectedRevision: f.read(task.id).task.revision,
+      operationId: op, failureEventId: failEv, commitSha, summary: 'batch fix',
+    } as any);
+  await assert.rejects(() => callShipFix(tB, sB0, 'b-early'), (e: any) => e.code === 'INVALID_STATE');
+  await assert.rejects(() => callShipFix(tC, sC0, 'c-unrel'), (e: any) => e.code === 'INVALID_STATE');
+
+  // Fix tA forward; verify tB stays valid, tC stays blocked 409, second fix on tA is 409, and old ticket0 is invalidated 409.
+  rmSync(join(g.dir, 'fail'));
+  g.g('checkout', '-q', 'agent/a');
+  g.write('a.txt', 'a-fixed\n');
+  const sAFix = g.commit('forward fix A');
+  g.g('checkout', '-q', 'main');
+
+  const fixA = await callShipFix(tA, sAFix, 'fix-a');
+  assert.equal(fixA.task!.status, 'completed');
+  assert.equal(fixA.task!.batchId, batch.id);
+  assert.equal(fixA.submission!.shipFix!.originSubmissionId, subA0.id);
+  assert.equal(f.read(tB.id).task.completionValid, true, 'downstream B stays completionValid while completed');
+  assert.equal(f.read(tB.id).task.dependenciesChanged, false);
+  const midView = f.view(batch.id);
+  assert.notEqual(midView.shipFailure.digest, midView.currentDigest, 'digest differs once partially fixed');
+  await assert.rejects(() => callShipFix(tA, sAFix, 'fix-a-twice'), (e: any) => e.code === 'INVALID_STATE');
+  await assert.rejects(() => callShipFix(tC, sC0, 'c-still-blocked'), (e: any) => e.code === 'INVALID_STATE');
+  assert.throws(() => verifyBatchShip(f.hub, SECRET, ticket0), status(409), 'old b1 ticket invalidated after ship_fix');
+
+  // Also test that downstream B IS now unlocked for a ship_fix if needed (while leaving original C unfixed!).
+  g.g('checkout', '-q', 'agent/b');
+  g.g('merge', '-q', '--no-ff', '-m', 'pull A fix into B', sAFix);
+  g.write('b.txt', 'b-fixed\n');
+  const sBFix = g.commit('forward fix B');
+  g.g('checkout', '-q', 'main');
+  const fixB = await callShipFix(tB, sBFix, 'fix-b');
+  assert.equal(fixB.task!.status, 'completed');
+
+  const state1 = batchShipState(f.store, 'k', batch.id)!;
+  const ticket1 = batchShipTicket(SECRET, { clusterId: 'k', batchId: batch.id, digest: state1.digest });
+  const verified1 = verifyBatchShip(f.hub, SECRET, ticket1);
+  assert.deepEqual(verified1.tasks.map((x) => [x.number, x.shipFix ?? false]), [[1, true], [2, true], [3, false]], 'only fixed tasks carry shipFix flag');
+  const landed = await shipBatch({
+    agent: 'claude-code', type: 'feat', summary: 'Land fixed batch', trailers: [], cwd: g.root, lockWaitMs: 5000,
+    hub: { verify: async () => verifyBatchShip(f.hub, SECRET, ticket1) as BatchVerified, report: async (res) => { await reportBatchShip(f.hub, SECRET, { ticket: ticket1, ...res }); } },
+  });
+  assert.equal(landed.merged, true);
+  assert.equal(f.view(batch.id).shipFailure, null);
+  const logMsg = g.g('log', '-1', '--format=%B', 'main');
+  assert.match(logMsg, new RegExp(`Reviewed-by: name-r \\(task ${tA.id.slice(0, 8)}, r1, pass, ${sAFix.slice(0, 7)}, ship fix\\)`));
+  assert.match(logMsg, new RegExp(`Reviewed-by: name-r \\(task ${tC.id.slice(0, 8)}, r1, pass, ${sC0.slice(0, 7)}\\)`));
+
+  // After merging the batch (all tasks status: 'merged'), check same-batch lineage on a fixed upstream -> untouched downstream B2 -> out-of-batch D2!
+  const g2 = repo(t);
+  const u0 = g2.branch('agent/u', 'main', { 'u.txt': 'u0\n' });
+  const d0 = g2.branch('agent/d', 'agent/u', { 'd.txt': 'd0\n' });
+  const f2 = batchFixture(t, g2.root);
+  f2.hub.collaboration.prepareTimeoutMs = 60_000;
+  const b2 = f2.batch('merged-lineage', r, user);
+  const up2 = f2.create('up2', b2.id, { memberId: 'a' });
+  const mid2 = f2.create('mid2', b2.id, { memberId: 'b', dependencyIds: [up2.id] });
+  const out2 = f2.create('out2', undefined, { memberId: 'c', dependencyIds: [mid2.id] });
+  f2.start(a, up2); f2.submit(a, up2, u0);
+  f2.start(b, mid2); f2.submit(b, mid2, d0);
+  f2.review(r, up2); f2.review(r, mid2);
+  g2.failChecks();
+  const st2 = batchShipState(f2.store, 'k', b2.id)!;
+  const tk2 = batchShipTicket(SECRET, { clusterId: 'k', batchId: b2.id, digest: st2.digest });
+  await shipBatch({ agent: 'claude-code', type: 'feat', summary: 'Fail b2', trailers: [], cwd: g2.root, lockWaitMs: 5000,
+    hub: { verify: async () => verifyBatchShip(f2.hub, SECRET, tk2) as BatchVerified, report: async (res) => { await reportBatchShip(f2.hub, SECRET, { ticket: tk2, ...res }); } } });
+  const ev2 = f2.view(b2.id).shipFailure.eventId;
+  f2.send(r, { action: 'batch.attribute_failure', batchId: b2.id, failureEventId: ev2, taskIds: [up2.id], reason: 'u' } as any);
+  rmSync(join(g2.dir, 'fail'));
+  g2.g('checkout', '-q', 'agent/u');
+  g2.write('u.txt', 'u1\n');
+  const u1 = g2.commit('fix u');
+  g2.g('checkout', '-q', 'main');
+  await f2.hub.collaboration.commandAsync(r, 'k', {
+    action: 'task.ship_fix', taskId: up2.id, expectedRevision: f2.read(up2.id).task.revision,
+    operationId: 'fix-u2', failureEventId: ev2, commitSha: u1, summary: 'fix u',
+  } as any);
+  // Only up2 was fixed; mid2 still records original u0! Verify mid2 merges, stays completionValid in 'merged' state, and unlocks out2!
+  const st2Fixed = batchShipState(f2.store, 'k', b2.id)!;
+  const tk2Fixed = batchShipTicket(SECRET, { clusterId: 'k', batchId: b2.id, digest: st2Fixed.digest });
+  const b2Landed = await shipBatch({ agent: 'claude-code', type: 'feat', summary: 'Land b2', trailers: [], cwd: g2.root, lockWaitMs: 5000,
+    hub: { verify: async () => verifyBatchShip(f2.hub, SECRET, tk2Fixed) as BatchVerified, report: async (res) => { await reportBatchShip(f2.hub, SECRET, { ticket: tk2Fixed, ...res }); } } });
+  assert.equal(b2Landed.merged, true);
+  assert.equal(f2.read(mid2.id).task.status, 'merged');
+  assert.equal(f2.read(mid2.id).task.completionValid, true, 'downstream citing original submission remains completionValid after batch transitions to merged');
+  assert.equal(f2.read(mid2.id).task.dependenciesChanged, false);
+  assert.equal(f2.read(out2.id).task.dependenciesReady, true, 'out-of-batch dependent becomes ready once merged');
+
+  // Reopen / cancel breaks same-batch exemption immediately:
+  const b3 = f2.batch('break-reopen', r, user);
+  const up3 = f2.create('up3', b3.id, { memberId: 'a', mergeRequired: true });
+  const mid3 = f2.create('mid3', b3.id, { memberId: 'b', dependencyIds: [up3.id], mergeRequired: true });
+  f2.start(a, up3); f2.submit(a, up3, u0);
+  f2.start(b, mid3); f2.submit(b, mid3, d0);
+  f2.review(r, up3); f2.review(r, mid3);
+  f2.act(r, up3, { action: 'task.reopen', reason: 'reopen breaks lineage' });
+  assert.equal(f2.read(up3.id).task.batchId, undefined, 'reopened task leaves batch');
+  assert.equal(f2.read(mid3.id).task.completionValid, false, 'reopen breaks downstream completionValid immediately');
+  assert.equal(f2.read(mid3.id).task.dependenciesChanged, true);
+
+  // User-substituted approval inside member batch refuses attribute_failure & ship_fix 403 while fallback runner can still rerun verbatim.
+  const bUser = f.batch('user-sub', r, user);
+  const uOne = f.create('uone', bUser.id, { memberId: 'a' });
+  f.start(a, uOne); f.submit(a, uOne, sA0);
+  f.review(user, uOne); // user substituted in member batch -> fallback runner is 'a'
+  const uSt = batchShipState(f.store, 'k', bUser.id)!;
+  assert.equal(uSt.runner, 'a');
+  assert.equal(f.view(bUser.id).shipFixAllowed, false);
+  const uTk = batchShipTicket(SECRET, { clusterId: 'k', batchId: bUser.id, digest: uSt.digest });
+  await reportBatchShip(f.hub, SECRET, { ticket: uTk, failed: { kind: 'checks', failedCheck: 'probe', detail: 'fail' } });
+  const uFailEv = f.view(bUser.id).shipFailure.eventId;
+  for (const actor of [r, a, user]) {
+    assert.throws(() => f.send(actor, { action: 'batch.attribute_failure', batchId: bUser.id, failureEventId: uFailEv, taskIds: [uOne.id], reason: 'no' } as any),
+      (e: any) => e.code === 'FORBIDDEN');
+    await assert.rejects(() => callShipFix(uOne as any, sAFix, `usub-${actor.kind}`, actor), (e: any) => e.code === 'FORBIDDEN');
+  }
+  f.send(user, { action: 'batch.cancel', batchId: bUser.id, reason: 'cancel fallback' });
+  assert.equal(f.view(bUser.id).shipFailure, null);
+
+  // Batch reopen from batch.shipFailure restores prior approved executor (woken if ready, infoOnly if still waiting on unmerged dependency).
+  const bReopen = f.batch('reopen-restore', r, user);
+  const rt1 = f.create('rt1', bReopen.id, { memberId: 'a' });
+  const rt2 = f.create('rt2', bReopen.id, { memberId: 'b', dependencyIds: [rt1.id] });
+  f.start(a, rt1); f.submit(a, rt1, sA0);
+  f.start(b, rt2); f.submit(b, rt2, sB0);
+  f.review(r, rt1); f.review(r, rt2);
+  const rSt = batchShipState(f.store, 'k', bReopen.id)!;
+  const rTk = batchShipTicket(SECRET, { clusterId: 'k', batchId: bReopen.id, digest: rSt.digest });
+  await reportBatchShip(f.hub, SECRET, { ticket: rTk, failed: { kind: 'checks', failedCheck: 'probe', detail: 'batch check fail' } });
+
+  // Reopening rt2 (whose upstream rt1 is not merged yet) restores 'b' as assignedMemberId without waking while blocked on rt1
+  const r2Res = f.act(r, rt2, { action: 'task.reopen', reason: 'rt2 needs rework' });
+  assert.equal(r2Res.task!.status, 'pending');
+  assert.equal(r2Res.task!.assignedMemberId, 'b');
+  assert.equal(r2Res.task!.batchId, undefined);
+  assert.equal(f.view(bReopen.id).shipFailure, null);
+  assert.deepEqual(f.woke(f.messages().find((m) => m.collabEventId === r2Res.eventId)!.id), []);
+  assert.match(f.messages().find((m) => m.collabEventId === r2Res.eventId)!.body, /退回给原执行者 name-b/);
+
+  // Reopening root rt1 after another batch failure wakes 'a' (restored executor) alongside downstream owner 'b'
+  await reportBatchShip(f.hub, SECRET, { ticket: batchShipTicket(SECRET, { clusterId: 'k', batchId: bReopen.id, digest: batchShipState(f.store, 'k', bReopen.id)!.digest }),
+    failed: { kind: 'conflict', conflictFiles: ['a.txt'], detail: 'conflict in a.txt', taskId: rt1.id } });
+  const r1Res = f.act(r, rt1, { action: 'task.reopen', reason: 'rt1 conflict rework' });
+  assert.equal(r1Res.task!.status, 'pending');
+  assert.equal(r1Res.task!.assignedMemberId, 'a');
+  assert.deepEqual(f.woke(f.messages().find((m) => m.collabEventId === r1Res.eventId)!.id), ['a', 'b']);
 });

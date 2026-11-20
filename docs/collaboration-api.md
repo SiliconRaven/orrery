@@ -28,7 +28,7 @@
 | 方法与路径 | 说明 |
 |---|---|
 | `GET /api/clusters/:id/workspace` | 读取本群任务（支持 `?holder=`、`?sort=`、`?pageOnly=1`）、业务角色、策略与标签库选择状态 |
-| `POST /api/clusters/:id/collaboration` | 提交协作命令：覆盖完整 `task.*`（如 `task.create`、`task.assign`、`task.start`、`task.submit`、`task.review`、`task.merge`、`task.release`、`task.cancel`、`task.reopen`、`task.handoff`、`task.takeover`、`task.set_git_branch`、`batch.create`、`batch.add`、`batch.remove`、`batch.cancel`、`batch.merge`）、`role.*`、`label.*`、`coordinator.*`、`cluster.pause`、`tasks.settings`，以及**用户专属**的 `task.delete`、`task.mark_completed`、`task.mark_merged`、`task.approve` |
+| `POST /api/clusters/:id/collaboration` | 提交协作命令：覆盖完整 `task.*`（如 `task.create`、`task.assign`、`task.start`、`task.submit`、`task.review`、`task.ship_fix`、`task.merge`、`task.release`、`task.cancel`、`task.reopen`、`task.handoff`、`task.takeover`、`task.set_git_branch`、`batch.create`、`batch.add`、`batch.remove`、`batch.attribute_failure`、`batch.cancel`、`batch.merge`）、`role.*`、`label.*`、`coordinator.*`、`cluster.pause`，以及**用户专属**的 `task.delete`、`task.mark_completed`、`task.mark_merged`、`task.approve`（原 `tasks.settings` 已移除；网页 `{ kind: "user" }` 调 `task.ship_fix` 与 `batch.attribute_failure` 返回 `FORBIDDEN`） |
 | `GET /api/clusters/:id/tasks/:taskId` | 任务详情、派工、提交、验收、历史与依赖（`:taskId` 支持 `#编号`、UUID 或唯一 8+ 位前缀） |
 | `GET /api/clusters/:id/tasks/:taskId/context` | 读取任务完整上下文、关联资料及事件 |
 | `GET /api/clusters/:id/tasks/:taskId/events/:eventId` | 读取单条协作事件详情与改动字段 |
@@ -50,9 +50,9 @@
 ## Bridge 协作端点
 
 - **`POST /bridge/ship-verify` 与 `POST /bridge/ship-result`**：由 `scripts/ship.ts` 调用，**通过请求体中的签名 `body.ticket` 自行鉴权**（不要 `x-orrery-bridge`；票据不对返 `403`，状态冲突返 `409`）：
-  - `ship-verify` `{ ticket }`：只读**查询**当前获准合并的目标任务详情（`{ taskId, shortId, commitSha, reviewer, round, verdict: "pass" | "self" }`），不提交预合并检查状态。
-  - `ship-result` `{ ticket, mergeCommit, pushed, retried? }` 或 `{ ticket, failed: { kind: "conflict" | "checks", detail } }`：上报合并落盘成功或失败诊断，供 Hub 只读核对 Git 祖先并推动进入 `merged` 或退回执行者。
-  - **批次票据**（`b1.` 开头，`scripts/ship.ts --batch`）走同样两个路由：`ship-verify` 返回批次和按依赖顺序的任务；`ship-result` 成功时一次记录全部任务为已合并，失败时 `{ failed: { kind, detail, taskId? } }`（冲突必须带 `taskId`，只退回那个任务）。批次里任务的单任务票据返回 `409`。
+  - `ship-verify` `{ ticket }`：只读**查询**当前获准合并的目标任务详情（`{ taskId, shortId, commitSha, reviewer, round, verdict: "pass" | "self", takeover?, shipFix? }`），不提交预合并检查状态。
+  - `ship-result` `{ ticket, mergeCommit, pushed, retried? }` 或 `{ ticket, failed: { kind: "conflict" | "checks", detail, conflictFiles?, failedCheck? } }`：上报合并落盘成功或失败诊断；失败时返回 `{ status: "failed" }`、保留任务 `completed` 与 `approvedSubmissionId` 并写入结构化 `shipFailure`（`infoOnly` 未读）。
+  - **批次票据**（`b1.` 开头，`scripts/ship.ts --batch`）走同样两个路由：`ship-verify` 返回批次和按依赖顺序的任务；`ship-result` 成功时一次记录全部任务为已合并，失败时 `{ failed: { kind, detail, taskId?, conflictFiles?, failedCheck? } }` 返回 `{ status: "failed" }` 并保留全批 `completed`（冲突带 `taskId`，检查留空 `taskIds: []`）。批次里任务的单任务票据返回 `409`。
 - **`POST /bridge/unread-hint`**：由插件或未读钩子发送 `{ harness, session }`，请求带签名 `x-orrery-sig`（不发密钥原文；明文 `x-orrery-bridge` 只用于兼容）；仍有未读且分项计数相对上次提示有变化时返回 `{ hint }`（4 桶：`mention`、`user`、`broadcast`、`task_notice`，含 `fyi`/`offline`/`failed_or_unknown`/`blocked` 标注），否则返回 `{}`。
 
 ## 群员 MCP 工具清单（标准 23 项 / 后台等待 24 项）
@@ -81,8 +81,8 @@
 | `list_tasks` | 按状态、标签或负责人列出群内任务（含 `coordinator.generation`） |
 | `get_task` | 读取任务完整字段、派工/提交/验收记录、`watchers`、`gitBranch` 与 `ship` 提示 |
 | `get_task_context` | 按需聚合关联任务及其上游已获批产出摘要 |
-| `task_action` | 执行短动作：`edit`、`assign`、`start`、`submit`（**必填 `assignmentId` 与 `summary`**，需要合并时带 `commitSha`）、`review`（**必填 `submissionId`、`verdict: "approve" | "reject"` 与 `reason`**）、`merge`、`release`、`cancel`、`reopen`、`handoff`、`takeover`、`nominate`、`claim`、`set_git_branch`、`watch`、`unwatch`。注：`task_action` 不提供 `block`/`unblock`/`mark_completed`/`mark_merged`（后者仅属于 HTTP `POST /api/clusters/:id/collaboration` 的 `task.*` 命令） |
-| `get_batch` / `manage_batch` | 读取验收批次（`batchId` 可写 `B3`、完整 ID 或唯一 8+ 位前缀；不带时列出未取消的批次），结果带进度、还差什么、按依赖顺序的任务，运行批次 ship 的成员另得 `ship.command`；`manage_batch` 的 `action` 为 `create`、`add`、`remove`、`cancel`、`merge`（ship 已合并但没能上报时补记），对应协作动作 `batch.*` |
+| `task_action` | 执行短动作：`edit`、`assign`、`start`、`submit`（**必填 `assignmentId` 与 `summary`**，需要合并时带 `commitSha`）、`review`（**必填 `submissionId`、`verdict: "approve" | "reject"` 与 `reason`**；退回成员验收任务时可加 `takeover: true` 原子接手）、`ship_fix`（ship 失败后由有授权成员原地前向修复：`failureEventId`、`commitSha`、`summary`、`baseCommitSha?`）、`merge`、`release`、`cancel`、`reopen`、`handoff`、`takeover`、`nominate`、`claim`、`set_git_branch`、`watch`、`unwatch`。注：`task_action` 不提供 `block`/`unblock`/`mark_completed`/`mark_merged`（后者仅属于 HTTP `POST /api/clusters/:id/collaboration` 的 `task.*` 命令） |
+| `get_batch` / `manage_batch` | 读取验收批次（`batchId` 可写 `B3`、完整 ID 或唯一 8+ 位前缀；不带时列出未取消的批次），结果带进度、`shipFailure`、`shipRunnerId`、`currentDigest`、`shipFixAllowed`、还差什么、按依赖顺序的任务，运行批次 ship 的成员另得 `ship.command`；`manage_batch` 的 `action` 为 `create`、`add`、`remove`、`attribute_failure`（checks 失败后独立批验收者归因 `failureEventId` 与 `taskIds`）、`cancel`、`merge`（ship 已合并但没能上报时补记），对应协作动作 `batch.*` |
 | `set_task_summary` | 更新任务结构化交付摘要 |
 | `raise_attention` / `resolve_attention` | 发起或消除阻塞/需求疑问求助提示 |
 | `link_message_tasks` | 将关键聊天消息显式挂载至任务 ID |

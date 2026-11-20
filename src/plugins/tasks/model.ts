@@ -1,9 +1,10 @@
 // What a task is worth right now: dependency versions, whether a result is still valid, the display projection.
 // Shared by the actions, the queries, the ship ticket and the background checks.
-import { actorKey, canonical, CollaborationError, MIN_ID_PREFIX } from '../../core/collaboration.ts';
+import { actorKey, CollaborationError, MIN_ID_PREFIX } from '../../core/collaboration.ts';
 import type { Store } from '../../core/store.ts';
 import type { Assignment, Review, Submission, Task } from '../../core/collaboration-types.ts';
 import { collaborationRecord, collaborationRecords, collaborationTask, collaborationTaskIdByNumber, collaborationTasks } from './store.ts';
+import { selfReviewBound } from './takeover.ts';
 
 /** The next step for refusals whose fix depends only on the code; other refusals say it where they are raised. */
 const NEXT_STEP: Record<string, string> = {
@@ -72,7 +73,68 @@ export function eligible(store: Store, clusterId: string, memberId: string, role
 
 type DependencyTask = Pick<Task, 'id' | 'clusterId' | 'dependencyIds'> & { batchId?: string | null };
 type Versions = Record<string, string>;
-type EvaluationEntry = { task?: Task | null; latestSubmission?: Submission | null; versions?: Versions | null; completionValid?: boolean };
+type EvaluationEntry = { task?: Task | null; latestSubmission?: Submission | null; versions?: Versions | null; completionValid?: boolean; sameOriginIds?: Set<string> | null };
+
+interface ApprovedChain {
+  target: Submission;
+  origin: Submission;
+  originReview: Review;
+  originReviewIndex: number;
+  originAssignment: Assignment;
+  hops: NonNullable<Submission['shipFix']>[];
+  chainIds: Set<string>;
+  shipFix: boolean;
+  takenOver: boolean;
+}
+
+/**
+ * Resolves the approved (or merged) submission back along any forward `shipFix` chain to the original reviewed submission,
+ * checking review identity, independence and self-review binding at every hop. Returns null on any missing or tampered link.
+ */
+function resolveApprovedChain(store: Store, task: Task, targetSubmissionId: string | null | undefined): ApprovedChain | null {
+  if (!targetSubmissionId) return null;
+  const submissions = collaborationRecords<Submission>(store, task.id, 'submission');
+  const target = submissions.find((s) => s.id === targetSubmissionId);
+  if (!target) return null;
+  const hops: NonNullable<Submission['shipFix']>[] = [];
+  const chainIds = new Set<string>([target.id]);
+  const visited = new Set<string>([target.id]);
+  let cursor = target;
+  while (cursor.shipFix) {
+    hops.push(cursor.shipFix);
+    const base = submissions.find((s) => s.id === cursor.shipFix!.baseSubmissionId);
+    if (!base || visited.has(base.id)) return null;
+    visited.add(base.id);
+    chainIds.add(base.id);
+    cursor = base;
+  }
+  const origin = cursor;
+  const reviews = collaborationRecords<Review>(store, task.id, 'review');
+  const assignments = collaborationRecords<Assignment>(store, task.id, 'assignment');
+  const originReviewIndex = reviews.findLastIndex((r) => r.submissionId === origin.id && r.verdict === 'approve');
+  const originAssignment = assignments.find((a) => a.id === origin.assignmentId);
+  if (originReviewIndex < 0 || !originAssignment) return null;
+  const originReview = reviews[originReviewIndex];
+  const takenOver = collaborationRecords(store, task.id, 'takeover').length > 0;
+  if (hops.length > 0) {
+    if (originReview.reviewer.kind === 'user') return null;
+    for (const hop of hops) {
+      if (hop.originSubmissionId !== origin.id) return null;
+      if (originReview.self === true) {
+        if (task.reviewer.kind !== 'self') return null;
+        if (originReview.reviewer.kind !== 'member' || originReview.reviewer.memberId !== originAssignment.memberId) return null;
+        if (hop.runnerId !== originAssignment.memberId) return null;
+        if (takenOver && selfReviewBound(store, task.id, hop.runnerId) !== true) return null;
+      } else {
+        if (originReview.reviewer.kind !== 'member' || task.reviewer.kind !== 'member' || task.reviewer.memberId !== originReview.reviewer.memberId) return null;
+        if (hop.runnerId !== originReview.reviewer.memberId) return null;
+        const reviewerMember = store.getMember(originReview.reviewer.memberId, { includeRemoved: true });
+        if (!reviewerMember || reviewerMember.id === originAssignment.memberId || origin.contributorKeys.includes(actorKey(reviewerMember))) return null;
+      }
+    }
+  }
+  return { target, origin, originReview, originReviewIndex, originAssignment, hops, chainIds, shipFix: hops.length > 0, takenOver };
+}
 
 /** Share work within one cluster read. Discard the evaluator before any task or submission changes. */
 export function taskDependencyEvaluation(store: Store, clusterId: string) {
@@ -81,6 +143,34 @@ export function taskDependencyEvaluation(store: Store, clusterId: string) {
     let entry = entries.get(taskId);
     if (!entry) entries.set(taskId, entry = {});
     return entry;
+  }
+
+  function sameOriginIds(depTask: Task): Set<string> | null {
+    const entry = entryFor(depTask.id);
+    if (entry.sameOriginIds !== undefined) return entry.sameOriginIds;
+    entry.task = depTask;
+    const targetSubmissionId = depTask.status === 'merged'
+      ? (depTask.mergedSubmissionId ?? depTask.approvedSubmissionId)
+      : depTask.approvedSubmissionId;
+    const chain = resolveApprovedChain(store, depTask, targetSubmissionId);
+    entry.sameOriginIds = chain ? chain.chainIds : null;
+    return entry.sameOriginIds;
+  }
+
+  function versionsMatch(task: Pick<Task, 'status' | 'batchId'>, recorded: Versions, current: Versions): boolean {
+    const curEntries = Object.entries(current);
+    if (Object.keys(recorded).length !== curEntries.length) return false;
+    for (const [depId, curVer] of curEntries) {
+      if (recorded[depId] === curVer) continue;
+      if (!task.batchId || (task.status !== 'completed' && task.status !== 'merged')) return false;
+      const entry = entryFor(depId);
+      if (entry.task === undefined) entry.task = collaborationTask(store, clusterId, depId);
+      const depTask = entry.task;
+      if (!depTask || depTask.batchId !== task.batchId || (depTask.status !== 'completed' && depTask.status !== 'merged')) return false;
+      const allowed = sameOriginIds(depTask);
+      if (!allowed || !allowed.has(recorded[depId]) || !allowed.has(curVer)) return false;
+    }
+    return true;
   }
 
   function versions(task: DependencyTask): Versions | null {
@@ -105,7 +195,7 @@ export function taskDependencyEvaluation(store: Store, clusterId: string) {
         }
         const submitted = dependency.latestSubmission;
         if (!submitted || submitted.definitionVersion !== upstream.definitionVersion
-          || canonical(submitted.dependencyVersions) !== canonical(current)) return null;
+          || !versionsMatch(upstream, submitted.dependencyVersions, current)) return null;
         result[id] = upstream.latestSubmissionId;
         continue;
       }
@@ -125,14 +215,19 @@ export function taskDependencyEvaluation(store: Store, clusterId: string) {
       entry.completionValid = false;
       return false;
     }
-    const submission = collaborationRecord<Submission>(store, task.id, 'submission', task.approvedSubmissionId);
+    const targetSubmissionId = task.status === 'merged' ? (task.mergedSubmissionId ?? task.approvedSubmissionId) : task.approvedSubmissionId;
+    const submission = collaborationRecord<Submission>(store, task.id, 'submission', targetSubmissionId);
+    if (submission?.shipFix && !resolveApprovedChain(store, task, targetSubmissionId)) {
+      entry.completionValid = false;
+      return false;
+    }
     const current = versions(task);
     entry.completionValid = !!submission && submission.definitionVersion === task.definitionVersion && current !== null
-      && canonical(current) === canonical(submission.dependencyVersions);
+      && versionsMatch(task, submission.dependencyVersions, current);
     return entry.completionValid;
   }
 
-  return { versions, completionValid };
+  return { versions, completionValid, versionsMatch };
 }
 
 export function versions(store: Store, task: Task): Versions | null {
@@ -163,7 +258,7 @@ export function displayTask(store: Store, task: Task, evaluation = taskDependenc
     : undefined;
   const consumed = submission?.dependencyVersions ?? (assignment?.startedAt ? assignment.dependencyVersions : null);
   return { ...task, priority: task.priority ?? 'normal', dependenciesReady: current !== null,
-    dependenciesChanged: !!consumed && (!current || canonical(current) !== canonical(consumed)),
+    dependenciesChanged: !!consumed && (!current || !evaluation.versionsMatch(task, consumed, current)),
     completionValid: evaluation.completionValid(task),
     ...(submission?.manual && submission.id === task.approvedSubmissionId ? { manualCompletion: true } : {}),
     executeRoles: task.executeRoleIds.map((id) => roleRef(store, task.clusterId, id)),
@@ -183,19 +278,34 @@ export function shipState(store: Store, clusterId: string, taskId: string) {
 /** shipState without the batch rule: the approved result of one task, or null unless it still awaits its merge. */
 export function approvedResult(store: Store, task: Task) {
   if (task.status !== 'completed' || !task.mergeRequired || !completionValid(store, task)) return null;
-  const reviews = collaborationRecords<Review>(store, task.id, 'review');
-  const index = reviews.findLastIndex((r) => r.submissionId === task.approvedSubmissionId && r.verdict === 'approve');
-  const submission = collaborationRecord<Submission>(store, task.id, 'submission', task.approvedSubmissionId);
-  const assignment = submission && collaborationRecords<Assignment>(store, task.id, 'assignment').find((a) => a.id === submission.assignmentId);
-  if (index < 0 || !submission?.commitSha || !assignment) return null;
-  const review = reviews[index];
-  const executor = store.getMember(assignment.memberId, { includeRemoved: true });
-  const reviewerMember = review.reviewer.kind === 'member' ? store.getMember(review.reviewer.memberId, { includeRemoved: true }) : null;
-  return { task, submission, commitSha: submission.commitSha, round: index + 1, self: review.self === true, takeover: review.takeover === true,
-    executorId: assignment.memberId, reviewer: review.reviewer.kind === 'member' ? review.reviewer.memberId : 'user',
-    reviewerName: review.reviewer.kind === 'member' ? memberName(store, review.reviewer.memberId) : 'user',
+  const chain = resolveApprovedChain(store, task, task.approvedSubmissionId);
+  const commitSha = chain?.target.commitSha;
+  if (!chain || !commitSha) return null;
+  const { target, origin, originReview, originReviewIndex, originAssignment, hops, shipFix, takenOver } = chain;
+  const executor = store.getMember(originAssignment.memberId, { includeRemoved: true });
+  const reviewerMember = originReview.reviewer.kind === 'member' ? store.getMember(originReview.reviewer.memberId, { includeRemoved: true }) : null;
+  const fixerCwds = hops.map((hop) => store.getMember(hop.runnerId, { includeRemoved: true })?.cwd);
+  const cwds = [...new Set([executor?.cwd, reviewerMember?.cwd, ...fixerCwds].filter((cwd): cwd is string => !!cwd))];
+  return { task, submission: target, commitSha, round: originReviewIndex + 1, self: originReview.self === true, takeover: originReview.takeover === true, shipFix,
+    executorId: originAssignment.memberId, reviewer: originReview.reviewer.kind === 'member' ? originReview.reviewer.memberId : 'user',
+    reviewerName: originReview.reviewer.kind === 'member' ? memberName(store, originReview.reviewer.memberId) : 'user',
     // A self review on a task that was ever taken over is shippable only if the takeover rule bound it (review.takeover).
-    takenOver: collaborationRecords(store, task.id, 'takeover').length > 0,
-    independent: !reviewerMember || (reviewerMember.id !== assignment.memberId && !submission.contributorKeys.includes(actorKey(reviewerMember))),
-    cwds: [executor?.cwd, reviewerMember?.cwd].filter((cwd): cwd is string => !!cwd) };
+    takenOver,
+    independent: !reviewerMember || (reviewerMember.id !== originAssignment.memberId && !origin.contributorKeys.includes(actorKey(reviewerMember))),
+    cwds };
+}
+
+/** Whether `actorId` holds single-task `ship_fix` authority (strictly excluding user-reviewed/user-approved tasks and unbound executors). */
+export function canShipFixTask(store: Store, task: Task, actorId: string): boolean {
+  if (task.status !== 'completed' || !task.mergeRequired || task.batchId) return false;
+  const approved = approvedResult(store, task);
+  if (!approved || approved.reviewer === 'user') return false;
+  if (task.reviewer.kind === 'member') {
+    return task.reviewer.memberId === actorId && approved.reviewer === actorId && !approved.self && approved.independent;
+  }
+  if (task.reviewer.kind === 'self') {
+    return approved.self === true && approved.reviewer === actorId && approved.executorId === actorId
+      && (!approved.takenOver || selfReviewBound(store, task.id, actorId) === true);
+  }
+  return false;
 }

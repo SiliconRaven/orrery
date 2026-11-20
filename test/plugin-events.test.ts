@@ -168,9 +168,9 @@ test('batch actions preserve each affected task lifecycle event and subscriber s
     const submissions = () => tasks.map((task) => ({ taskId: task.id, submissionId: f.read(task.id).task.latestSubmissionId! }));
     approve();
     for (const task of tasks) f.review(r, task);
-    f.send({ kind: 'system' }, { action: 'batch.ship_failed', batchId: batch.id, batchSubmissions: submissions(), failure: { kind: 'checks' }, reason: 'checks failed' });
-    approve();
-    for (const task of tasks) f.review(r, task);
+    const conflictFail = f.send({ kind: 'system' }, { action: 'batch.ship_failed', batchId: batch.id, batchSubmissions: submissions(),
+      failure: { kind: 'conflict', taskId: tasks[0].id }, reason: 'conflict failed' });
+    assert.ok(conflictFail.eventId > 0);
     const mergedCommitSha = 'f'.repeat(40);
     f.send({ kind: 'system' }, { action: 'batch.shipped', batchId: batch.id, batchSubmissions: submissions(), commitSha: mergedCommitSha });
     for (const id of Object.keys(folders)) await manager.invoke(id, { command: 'test' });
@@ -178,7 +178,7 @@ test('batch actions preserve each affected task lifecycle event and subscriber s
     assert.deepEqual(merged.map((e) => [e.type, e.clusterId, e.data.taskId, e.data.status, e.data.mergedCommitSha]),
       tasks.map((task) => ['task.merged', 'k', task.id, 'merged', mergedCommitSha]));
     const changed = received(folders.prefix).filter((e) => e.type === 'task.changed');
-    for (const [action, affected] of [['batch.add', [loose]], ['batch.remove', [loose]], ['batch.cancel', released], ['batch.ship_failed', tasks]] as const) {
+    for (const [action, affected] of [['batch.add', [loose]], ['batch.remove', [loose]], ['batch.cancel', released], ['batch.ship_failed', [tasks[0]]]] as const) {
       assert.deepEqual(changed.filter((e) => e.data.action === action).map((e) => e.data.taskId), affected.map((task) => task.id), action);
     }
     assert.equal(received(folders.prefix).filter((e) => e.type === 'task.merged').length, tasks.length);

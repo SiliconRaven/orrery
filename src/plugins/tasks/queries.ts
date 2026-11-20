@@ -5,9 +5,9 @@ import type { PluginQuery } from '../../core/plugin.ts';
 import type { Store } from '../../core/store.ts';
 import { batchBase, batchSummary } from './batches.ts';
 import { libraryView } from './labels.ts';
-import { displayTask, fail, resolveTaskRef, taskDependencyEvaluation, taskOf } from './model.ts';
+import { displayTask, fail, resolveTaskRef, shipState, taskDependencyEvaluation, taskOf, canShipFixTask } from './model.ts';
 import { taskPermissions } from './permissions.ts';
-import { taskSettings } from './takeover.ts';
+import { shipRunner } from './ship.ts';
 import { taskWatches } from './watches.ts';
 import {
   collaborationEvents, collaborationEventsBefore, collaborationLabels, collaborationLinkCount, collaborationRecords,
@@ -28,9 +28,9 @@ export const workspace: PluginQuery = ({ store, clusterId, query, limit, collabo
   const memberRoles = store.collaborationMemberRoles(clusterId).filter((item) => seesHidden || !store.getMember(item.memberId)?.hiddenAt);
   return { ...result, roles: store.collaborationRoles(clusterId),
     // Review batches that are not cancelled, newest first, with their progress (batches.ts).
-    batches: taskBatches(store, clusterId).filter((batch) => !batch.cancelledAt).map((batch) => batchSummary(store, batch)),
+    batches: taskBatches(store, clusterId).filter((batch) => !batch.cancelledAt).map((batch) => batchSummary(store, batch, undefined, actor)),
     memberRoles, labels: collaborationLabels(store, clusterId),
-    labelLibrary: libraryView(store, clusterId), taskSettings: taskSettings(store, clusterId), taskPermissions: taskPermissions(store, clusterId),
+    labelLibrary: libraryView(store, clusterId), taskPermissions: taskPermissions(store, clusterId),
     coordinator: coordinator ? { ...coordinator, rules: view!.rules } : null, paused: pause.paused,
     generation: view?.generation(clusterId) ?? 0, pausedBy: pause.pausedBy };
 };
@@ -62,7 +62,7 @@ export const taskDetail: PluginQuery = ({ store, clusterId, query, limit, actor 
     return { ...displayTask(store, upstream, evaluation), ...(base ? { batchBase: base } : {}) };
   });
   const batch = task.batchId ? taskBatch(store, clusterId, task.batchId) : null;
-  const batchField = batch ? { batch: (({ tasks: _tasks, ...summary }) => summary)(batchSummary(store, batch)) } : {};
+  const batchField = batch ? { batch: (({ tasks: _tasks, ...summary }) => summary)(batchSummary(store, batch, undefined, actor)) } : {};
   const assignments = collaborationRecords<Assignment>(store, task.id, 'assignment');
   const submissions = collaborationRecords<Submission>(store, task.id, 'submission')
     .map((submission) => ({ ...submission, superseded: submission.id !== task.latestSubmissionId }));
@@ -92,6 +92,16 @@ export const taskDetail: PluginQuery = ({ store, clusterId, query, limit, actor 
     const watchers = taskWatches(store, task.id).filter((item) => seesHidden || !store.getMember(item.memberId)?.hiddenAt);
     const own = actor.kind === 'member' ? watchers.find((item) => item.memberId === actor.memberId) : undefined;
     const watch = { watchers, ...(actor.kind === 'member' ? { watching: own ? { note: own.note, createdAt: own.createdAt } : null } : {}) };
+    const singleShip = task.status === 'completed' && task.mergeRequired && !task.batchId ? shipState(store, clusterId, task.id) : null;
+    const singleShipRunner = singleShip ? shipRunner(singleShip) : null;
+    const singleShipField = singleShip && singleShipRunner
+      ? {
+          shipRunnerId: singleShipRunner,
+          shipFixAllowed: actor.kind === 'member'
+            ? canShipFixTask(store, task, actor.memberId)
+            : canShipFixTask(store, task, singleShipRunner),
+        }
+      : {};
     return { task: displayTask(store, task, evaluation), attachments: task.fileIds.map((id) => store.getFile(id)).filter((file) => file !== null),
       assignments: assignments.slice(offset, offset + limit),
       submissions: submissions.slice(offset, offset + limit), reviews: reviews.slice(offset, offset + limit),
@@ -99,7 +109,7 @@ export const taskDetail: PluginQuery = ({ store, clusterId, query, limit, actor 
       takeovers: takeovers.slice(offset, offset + limit),
       dependencies, attentions: attentions.slice(offset, offset + limit), events: eventsPage,
       linkedMessageCount: collaborationLinkCount(store, task.id), nextCursor,
-      eventsNextCursor: eventsNext, ...watch, ...batchField };
+      eventsNextCursor: eventsNext, ...watch, ...batchField, ...singleShipField };
   }
   const messagesLimit = Number.isSafeInteger(query.messagesLimit) && query.messagesLimit! > 0 ? Math.min(query.messagesLimit!, 100) : limit;
   const messages = store.collaborationCollection(clusterId, { limit: messagesLimit, where: [linkedClause(task.id)], cursor: query.messagesCursor,

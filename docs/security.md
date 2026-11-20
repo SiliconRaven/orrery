@@ -27,7 +27,7 @@
 3. **成员隐身由 Hub 强制执行（`hiddenAt`）**：隐身**不只是界面隐藏**。Hub 会拒绝向隐身成员投递新消息、拦截其一切 MCP 工具调用（含读取工具一律返回提示并空操作）、阻止向其派发新任务或 `@` 唤醒，且在除用户和启用中的协调员外对其他成员不可见；已有消息和任务记录保留。
 4. **发件箱防逃逸**：原生成员通过 `send_message` 的 `attachments` 附带发件箱副本时，禁止目录分隔符、UNC 路径、符号链接与多硬链接，且仅限复制（不改动或删除原件）。
 5. **回收站彻底清理**：`POST /api/clusters/:id/purge` 清除对应软删除集群的全部消息、任务与无主附件；依赖 SQLite 页机制，不保证物理盘底层扇区零擦除。没有运行清理钩子的插件可能留下数据，结果会如实说明。
-6. **只读 Git**：Hub 读成员项目里的 Git 仓库（分支候选、任务分支关联、提交时自动关联、ship 结果核对）时只用读引用和对象的子命令（`worktree list`、`rev-parse`、`for-each-ref`、`merge-base --is-ancestor`、`config --get`），不取远端、不改引用和配置；环境里关掉部分克隆的自动取对象和所有传输协议、交互提示和代理命令，超时时结束 git 及其子进程。
+6. **只读 Git**：Hub 读成员项目里的 Git 仓库（分支候选、任务分支关联、提交时自动关联、接手与 `ship_fix` 产品代码变更范围核对、ship 结果核对）时只用读引用、配置和对象的子命令（`worktree list`、`rev-parse`、`for-each-ref`、`merge-base --is-ancestor`、`merge-base --all`、`log --no-merges --no-ext-diff --no-textconv --name-only`、`rev-list --merges --parents`、`diff-tree -r --no-commit-id --name-only --no-ext-diff --no-textconv`、`config --get`），不取远端、不改引用和配置；**绝不运行 `--remerge-diff` 或任何会触发仓库 `merge.*.driver` / 外部 diff / textconv 的命令**，纯提交树对比无法安全判定时回落为 `unverified` 保守知会；环境里关掉部分克隆的自动取对象和所有传输协议、交互提示和代理命令，超时时结束 git 及其子进程。
 7. **技能与 MCP 页只读出必要字段**：读取各应用的 skill 和 MCP 配置时，只返回 skill 名字和描述，以及 MCP 服务器的名字、传输方式和目标（程序文件名或 URL 的协议和主机）；参数、环境变量、请求头和密钥从不读出。安装 skill 只写共享 skill 文件夹，拒绝链接，只有用户能调用（见[文件与 Skill](files.md)）。
 8. **第三方插件按两档承诺**，见下面两节。
 

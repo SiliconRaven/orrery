@@ -161,9 +161,9 @@ test('roles page at 375 px: a redraw keeps the current rail item in view and the
     assert.ok(before.left > 0 && before.visible, `the rail shows the last item: ${JSON.stringify(before)}`);
 
     // A user command: the switch posts, the workbench refreshes and draws a new rail.
-    const takeover = `document.querySelector('dialog[open] [aria-labelledby="wb-rp-takeover-title"]')`;
-    await tap(page, takeover, 'the takeover switch');
-    await page.waitFor(`${takeover}?.checked === true && ${RAIL} !== window.__rail`, 'the redraw after the command');
+    const delivery = `document.querySelector('dialog[open] [aria-labelledby="wb-rp-delivery-title"]')`;
+    await tap(page, delivery, 'the delivery switch');
+    await page.waitFor(`${delivery}?.checked === false && ${RAIL} !== window.__rail`, 'the redraw after the command');
     const afterCommand = await page.evaluate<any>(`(() => { const s = ${RAIL_STATE}; window.__rail = s.rail; delete s.rail; return s; })()`);
     assert.equal(afterCommand.current, '本群设置');
     assert.ok(afterCommand.visible, `the current item is still in the rail's view: ${JSON.stringify(afterCommand)}`);

@@ -71,9 +71,11 @@ async function seed(app: TestHub, name: string, marker: string) {
   app.hub.sendFromUser(cluster.id, `@A about the task ${marker}`, undefined, undefined, [t1.id]);
   app.hub.collaboration.command({ kind: 'member', memberId: a.id }, cluster.id, { action: 'bookmark.set', operationId: 'bookmark', messageId: first.id, labels: ['keep'] });
   app.hub.collaboration.command({ kind: 'member', memberId: a.id }, cluster.id, { action: 'task.watch', operationId: 'watch', taskId: t1.id, note: `after ${marker}` });
-  const role = command({ action: 'role.create', name: `role-${marker}` }).role!;
+  command({ action: 'role.create', name: `role-${marker}` }).role;
+  const role = command({ action: 'role.create', name: `role2-${marker}` }).role!;
   command({ action: 'member.roles', memberId: a.id, roleIds: [role.id] });
-  command({ action: 'tasks.settings', takeoverSelfReview: true });
+  // tasks.settings was retired in #25; keep inserting a legacy row to verify clusterPurging still deletes task_cluster_settings.
+  app.store.db.prepare('INSERT INTO task_cluster_settings (cluster_id, takeover_self_review) VALUES (?, 1)').run(cluster.id);
   command({ action: 'tasks.permissions', taskPermissions: { createRoleIds: [role.id], executeRoleIds: [role.id], reviewRoleIds: [] } });
   command({ action: 'cluster.pause', operationId: `pause-${marker}`, paused: true });
   command({ action: 'cluster.pause', operationId: `resume-${marker}`, paused: false });

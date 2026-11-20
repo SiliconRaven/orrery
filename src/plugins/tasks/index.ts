@@ -4,7 +4,7 @@ import type { OfficialPlugin, PluginRefContext } from '../../core/plugin.ts';
 import type { Store } from '../../core/store.ts';
 import { moveAssignments, refuseRebinding, resolveTaskRefs, runTaskAction } from './actions.ts';
 import { BATCH_ACTIONS, batchQuery, resolveBatchRefs, runBatchAction } from './batches.ts';
-import { prepareSubmit } from './branch-link.ts';
+import { prepareShipFix, prepareSubmit } from './branch-link.ts';
 import { taskEnvelope } from './envelope.ts';
 import { taskEventSource } from './events.ts';
 import { memberTasks } from './handover.ts';
@@ -19,12 +19,11 @@ import {
   collaborationActiveTaskLoads, collaborationLinks, collaborationRecords, collaborationTask, linkCollaborationMessage, linkedClause, MIGRATIONS,
   purgeClusterTasks,
 } from './store.ts';
-import { runSettingsAction } from './takeover.ts';
 import { taskTools } from './tools.ts';
 import { forgetMemberWatches } from './watches.ts';
 
 const ACTIONS = ['task.create', 'task.edit', 'task.assign', 'task.nominate', 'task.claim', 'task.start', 'task.submit', 'task.review', 'task.approve',
-  'task.merge', 'task.mark_completed', 'task.mark_merged', 'task.shipped', 'task.ship_failed', 'task.release', 'task.cancel', 'task.reopen', 'task.handoff', 'task.takeover', 'task.delete',
+  'task.merge', 'task.mark_completed', 'task.mark_merged', 'task.shipped', 'task.ship_failed', 'task.ship_fix', 'task.release', 'task.cancel', 'task.reopen', 'task.handoff', 'task.takeover', 'task.delete',
   'task.attention', 'task.resolve_attention', 'task.summary', 'task.set_git_branch', 'task.watch', 'task.unwatch', 'message.link'];
 
 const entries = <T>(value: T) => Object.fromEntries(ACTIONS.map((action) => [action, value]));
@@ -49,9 +48,10 @@ export const tasks: OfficialPlugin = {
 
 协调员插件依赖它：要先关闭协调员，才能关闭任务系统。`,
   migrations: MIGRATIONS,
-  actions: { ...entries(runTaskAction), ...labelActions, 'tasks.settings': runSettingsAction, 'tasks.permissions': setTaskPermissions,
+  actions: { ...entries(runTaskAction), ...labelActions, 'tasks.permissions': setTaskPermissions,
     ...batchEntries(runBatchAction) },
-  prepare: { 'task.submit': prepareSubmit },
+  prepare: { 'task.submit': prepareSubmit, 'task.ship_fix': prepareShipFix },
+  prepareRequired: ['task.ship_fix'],
   managementActions: ['task.create', 'task.edit', 'task.assign', 'task.nominate', 'task.merge', 'task.cancel', 'task.reopen', 'task.handoff', 'task.takeover',
     'task.attention', 'task.resolve_attention', 'task.summary', 'message.link', 'batch.create', 'batch.add', 'batch.remove', 'batch.cancel', 'batch.merge'],
   refs: { ...entries<(ctx: PluginRefContext) => CollaborationCommand>(resolveTaskRefs), ...batchEntries(resolveBatchRefs) },

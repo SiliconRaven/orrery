@@ -15,9 +15,10 @@ import { failureReport, logName } from './test-lib.ts';
 import { acquireTestQueue, TestQueueTimeoutError, type TestQueueWaitInfo } from './test-queue.ts';
 
 /** `takeover`: a self review by the member who took the task over from its review (docs/collaboration.md「验收者接手」). */
-export interface Verified { taskId: string; shortId: string; commitSha: string; reviewer: string; round: number; verdict: 'pass' | 'self'; takeover?: boolean }
+export interface Verified { taskId: string; shortId: string; commitSha: string; reviewer: string; round: number; verdict: 'pass' | 'self'; takeover?: boolean; shipFix?: boolean }
 /** A conflict in a batch names the task whose branch did not merge. */
-export type ShipReport = { mergeCommit: string; pushed: boolean; retried: string[] } | { failed: { kind: 'conflict' | 'checks'; detail: string; taskId?: string } };
+export type ShipReport = { mergeCommit: string; pushed: boolean; retried: string[] }
+  | { failed: { kind: 'conflict' | 'checks'; detail: string; taskId?: string; conflictFiles?: string[]; failedCheck?: string } };
 export interface HubClient<V = Verified> {
   verify(): Promise<V>;
   report(result: ShipReport): Promise<void>;
@@ -35,7 +36,8 @@ export interface ShipOptions {
   removeStaging?: (path: string) => void;
 }
 export interface BatchShipOptions extends Omit<ShipOptions, 'hub'> { hub: HubClient<BatchVerified> }
-export type ShipOutcome = { merged: true; mergeCommit: string; pushed: boolean; pushError?: string } | { merged: false; kind: 'conflict' | 'checks'; detail: string; taskId?: string };
+export type ShipOutcome = { merged: true; mergeCommit: string; pushed: boolean; pushError?: string }
+  | { merged: false; kind: 'conflict' | 'checks'; detail: string; taskId?: string; conflictFiles?: string[]; failedCheck?: string };
 
 /** A refusal: nothing changed, the Hub is not told, the ticket stays valid. */
 export class ShipRefused extends Error {}
@@ -117,7 +119,10 @@ export async function acquireLock(path: string, waitMs: number, log: (line: stri
   }
 }
 
-const reviewedBy = (v: Verified) => `Reviewed-by: ${v.reviewer.replace(/[\x00-\x1f\x7f]+/g, ' ')} (task ${v.shortId}, r${v.round}, ${v.verdict}, ${v.commitSha.slice(0, 7)}${v.takeover === true ? ', reviewer takeover' : ''})`;
+const reviewedBy = (v: Verified) => {
+  const flags = [v.takeover === true ? 'reviewer takeover' : null, v.shipFix === true ? 'ship fix' : null].filter(Boolean);
+  return `Reviewed-by: ${v.reviewer.replace(/[\x00-\x1f\x7f]+/g, ' ')} (task ${v.shortId}, r${v.round}, ${v.verdict}, ${v.commitSha.slice(0, 7)}${flags.length ? `, ${flags.join(', ')}` : ''})`;
+};
 
 export function buildMessage(o: Pick<ShipOptions, 'agent' | 'type' | 'summary' | 'trailers'>, v: Verified): string {
   return [`[${o.agent}] ${o.type}: ${o.summary}`, '', reviewedBy(v), ...o.trailers].join('\n');
@@ -466,7 +471,7 @@ function removeWorktree(root: string, path: string, log: (line: string) => void)
   } catch (e) { log(`could not remove the temporary worktree ${path}: ${e instanceof Error ? e.message : String(e)}`); }
 }
 
-type Failed = { kind: 'conflict' | 'checks'; detail: string; taskId?: string };
+type Failed = { kind: 'conflict' | 'checks'; detail: string; taskId?: string; conflictFiles?: string[]; failedCheck?: string };
 type Landed = { mergeCommit: string; retried: string[]; checksSkipped: boolean; target: string } | Failed;
 
 interface MergeSpec {
@@ -501,7 +506,8 @@ async function mergeChecked(s: MergeSpec): Promise<Landed> {
       if (!merge.ok) {
         const conflicts = git(temp, 'diff', '--name-only', '--diff-filter=U');
         if (!conflicts) throw new ShipRefused(`git merge failed: ${merge.err.slice(-1000)}`);
-        return { kind: 'conflict', detail: `conflicting files:\n${conflicts}` };
+        const conflictFiles = conflicts.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        return { kind: 'conflict', ...(conflictFiles.length ? { conflictFiles } : {}), detail: `conflicting files:\n${conflicts}` };
       }
     }
     const mergeCommit = git(temp, 'rev-parse', 'HEAD');
@@ -518,7 +524,7 @@ async function mergeChecked(s: MergeSpec): Promise<Landed> {
           cwd: s.cwd, temp, checkName: result.failed.check, tail: result.failed.tail,
           attempt1Dir: result.failed.attempt1Dir, attempt1Logs: result.failed.attempt1Logs, log,
         });
-        return { kind: 'checks', detail };
+        return { kind: 'checks', failedCheck: result.failed.check, detail };
       }
     }
     await s.beforeLand?.();
@@ -609,7 +615,9 @@ async function mergeBatchUnderLock(o: BatchShipOptions, v: BatchVerified, log: (
         if (!merge.ok) {
           const conflicts = git(temp, 'diff', '--name-only', '--diff-filter=U');
           if (!conflicts) throw new ShipRefused(`git merge of task #${task.number} failed: ${merge.err.slice(-1000)}`);
-          return { kind: 'conflict', taskId: task.taskId, detail: `task #${task.number} (${task.shortId}) does not merge; conflicting files:\n${conflicts}` };
+          const conflictFiles = conflicts.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+          return { kind: 'conflict', taskId: task.taskId, ...(conflictFiles.length ? { conflictFiles } : {}),
+            detail: `task #${task.number} (${task.shortId}) does not merge; conflicting files:\n${conflicts}` };
         }
       }
       const mergeCommit = git(temp, 'commit-tree', git(temp, 'rev-parse', 'HEAD^{tree}'), '-p', base, ...heads.flatMap((head) => ['-p', head]), '-m', message);
@@ -789,7 +797,7 @@ async function main(): Promise<number> {
     ? await shipBatch({ ...args, cwd: resolve('.'), hub: httpHub<BatchVerified>(args.hub, args.ticket), log })
     : await ship({ ...args, cwd: resolve('.'), hub: httpHub(args.hub, args.ticket), log });
   if (!outcome.merged) {
-    log(`not merged (${outcome.kind}); ${args.mode === 'batch' ? 'the tasks responsible went back to their executors' : 'the task went back to its executor'}:\n${outcome.detail}`);
+    log(`not merged (${outcome.kind}); kept completed on Hub (rerun ship, ship_fix, or reopen):\n${outcome.detail}`);
     return 1;
   }
   console.log(`merged ${outcome.mergeCommit}${outcome.pushed ? ' and pushed' : ''}`);

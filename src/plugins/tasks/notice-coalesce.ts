@@ -48,9 +48,9 @@ function replacement(payload: Payload): Replacement | null {
     case 'task.submit': return { type: 'status', value: 'review' };
     case 'task.review': return payload.verdict === 'approve' ? { type: 'status', value: 'completed' }
       : payload.verdict === 'reject' ? { type: 'status', value: 'working' } : null;
-    case 'task.mark_completed': return { type: 'status', value: 'completed' };
+    case 'task.mark_completed': case 'task.ship_failed': case 'task.ship_fix': return { type: 'status', value: 'completed' };
     case 'task.merge': case 'task.shipped': case 'task.mark_merged': return { type: 'status', value: 'merged' };
-    case 'task.release': case 'task.handoff': case 'task.reopen': case 'task.ship_failed': return { type: 'status', value: 'pending' };
+    case 'task.release': case 'task.handoff': case 'task.reopen': return { type: 'status', value: 'pending' };
     case 'task.cancel': return { type: 'status', value: 'cancelled' };
     // A takeover of a pending task changes its executor; of a started one, its status (back to working).
     case 'task.takeover': {

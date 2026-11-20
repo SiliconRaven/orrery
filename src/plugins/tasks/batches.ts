@@ -3,7 +3,7 @@
 // in-batch dependencies is model.ts's versions(), and the task actions call batchSnapshot / batchTransitions below.
 import { createHash, randomUUID } from 'node:crypto';
 import { actorKey, canonical, MIN_ID_PREFIX, personName, required } from '../../core/collaboration.ts';
-import type { Assignment, CollaborationActor, Merge, Review, Submission, Task, TaskChange } from '../../core/collaboration-types.ts';
+import type { Assignment, BatchShipFailure, CollaborationActor, Merge, Review, Submission, Task, TaskChange } from '../../core/collaboration-types.ts';
 import type { PluginActionContext, PluginQuery, PluginRefContext } from '../../core/plugin.ts';
 import type { Store } from '../../core/store.ts';
 import type { HubEvent } from '../../core/types.ts';
@@ -18,7 +18,7 @@ import { batchMergedOnTarget } from './ship.ts';
 import { takeWatches, taskEnd, watchNoticeBody } from './watches.ts';
 
 export type { TaskBatch };
-export const BATCH_ACTIONS = ['batch.create', 'batch.add', 'batch.remove', 'batch.cancel', 'batch.merge', 'batch.shipped', 'batch.ship_failed'];
+export const BATCH_ACTIONS = ['batch.create', 'batch.add', 'batch.remove', 'batch.cancel', 'batch.merge', 'batch.shipped', 'batch.ship_failed', 'batch.attribute_failure'];
 
 const BATCH_NUMBER = /^B([1-9]\d*)$/i;
 const BATCH_REF_FORMS = 'refer to a batch as B<number> (e.g. B3), its full ID, or a unique prefix of its ID of at least 8 characters; get_batch lists them';
@@ -122,6 +122,35 @@ export function batchShipState(store: Store, clusterId: string, batchId: string)
 }
 export type BatchShipState = NonNullable<ReturnType<typeof batchShipState>>;
 
+/** Whether `actorId` (or the batch's member reviewer when omitted) holds batch `ship_fix` / `attribute_failure` authority. */
+export function canBatchShipFix(state: BatchShipState, actorId?: string): boolean {
+  if (state.batch.reviewer.kind !== 'member') return false;
+  const reviewerId = state.batch.reviewer.memberId;
+  if (actorId !== undefined && actorId !== reviewerId) return false;
+  return state.tasks.every((item) => item.reviewer === reviewerId && !item.self);
+}
+
+/**
+ * Tasks eligible for `task_action ship_fix` under an active batch failure: `conflict` targets the conflicting task;
+ * `checks` requires explicit attribution and unlocks `attribution.taskIds` plus in-batch transitive dependents of tasks
+ * already fixed under `failure.fixes`. Returns empty when `checks` has not been attributed yet.
+ */
+export function batchShipFixAffectedTasks(state: BatchShipState, failure: BatchShipFailure): Set<string> {
+  const base = failure.kind === 'conflict' ? failure.taskIds : (failure.attribution?.taskIds ?? []);
+  if (!base.length) return new Set();
+  const allowed = new Set(base);
+  const fixed = new Set((failure.fixes ?? []).map((fix) => fix.taskId));
+  if (!fixed.size) return allowed;
+  const propagated = new Set(fixed);
+  for (const { task } of state.tasks) {
+    if (task.dependencyIds.some((depId) => propagated.has(depId))) {
+      propagated.add(task.id);
+      allowed.add(task.id);
+    }
+  }
+  return allowed;
+}
+
 /**
  * Called in the same transaction after a change to one of the batch's tasks (or to the batch): wakes the reviewer once when
  * the batch has just become complete with something to review, and the ship runner once when every task has just been
@@ -205,9 +234,9 @@ export function checkJoin(store: Store, batch: TaskBatch, task: Task): void {
   }
 }
 
-/** Who may change which tasks are in a batch: the user, the coordinator (taskPlanning), or the member who created the batch and the task. */
-const arrangerAllowed = (ctx: PluginActionContext, batch: TaskBatch, task?: Task) =>
-  ctx.actor.kind === 'member' && ctx.actorId === batch.createdBy && (!task || task.createdBy === ctx.actorId);
+/** Who may change which tasks are in a batch: the user, the coordinator (taskPlanning), or the member who created the batch. */
+const arrangerAllowed = (ctx: PluginActionContext, batch: TaskBatch) =>
+  ctx.actor.kind === 'member' && ctx.actorId === batch.createdBy;
 
 function batchReviewer(ctx: PluginActionContext, value: unknown): TaskBatch['reviewer'] {
   const { store, clusterId, actor, actorId, collaboration } = ctx;
@@ -227,13 +256,11 @@ export function resolveBatchRefs({ store, clusterId, command, collaboration }: P
   const out = { ...command };
   if (command.action !== 'batch.create') out.batchId = resolveBatchRef(store, clusterId, command.batchId);
   if (typeof command.taskId === 'string') out.taskId = resolveTaskRef(store, clusterId, command.taskId);
+  if (Array.isArray(command.taskIds)) {
+    out.taskIds = command.taskIds.map((ref) => typeof ref === 'string' ? resolveTaskRef(store, clusterId, ref) : ref);
+  }
   if (command.reviewer?.kind === 'member') out.reviewer = { kind: 'member', memberId: collaboration.memberRef(clusterId, command.reviewer.memberId) };
   return out;
-}
-
-/** The tasks a check failure sends back: those no other live task of the batch depends on (the ends of its chains). */
-function batchEnds(tasks: Task[]): Task[] {
-  return tasks.filter((task) => !tasks.some((other) => other.dependencyIds.includes(task.id)));
 }
 
 const sha = (value: unknown): string => {
@@ -285,9 +312,14 @@ export function runBatchAction(ctx: PluginActionContext): Record<string, unknown
   } else if (action === 'batch.add' && task) {
     const reviewerChanges = canonical(task.reviewer) !== canonical(batch.reviewer);
     const reviewed = collaborationRecords<Review>(store, task.id, 'review').length > 0;
-    management('taskPlanning', arrangerAllowed(ctx, batch, task));
+    management('taskPlanning', arrangerAllowed(ctx, batch));
     // Joining sets the task's reviewer, so the reviewer rule of task.edit applies too (docs/collaboration.md).
-    if (reviewerChanges) management('reviewerManagement', arrangerAllowed(ctx, batch, task) && !reviewed);
+    if (reviewerChanges) management('reviewerManagement', arrangerAllowed(ctx, batch) && !reviewed);
+    if (task.proposalState === 'proposed') return fail('APPROVAL_REQUIRED', 'task requires user approval before joining a batch');
+    if (actor.kind !== 'user' && task.requiresApproval) return fail('FORBIDDEN', 'only the user can add a task requiring approval to a batch');
+    if (actor.kind !== 'user' && task.reviewer.kind === 'user' && batch.reviewer.kind === 'member') {
+      return fail('FORBIDDEN', 'only the user can move a user-reviewed task into a member-reviewed batch');
+    }
     checkJoin(store, batch, task);
     batch.notified = null;   // the old ready notice did not include this task
     const previous = structuredClone(task.reviewer);
@@ -296,16 +328,18 @@ export function runBatchAction(ctx: PluginActionContext): Record<string, unknown
     if (reviewerChanges) changes.push({ field: 'reviewer', before: previous, after: task.reviewer });
     save(task);
     info(task.assignedMemberId); info(reviewerId);
+    if (task.createdBy !== actorId && store.getMember(task.createdBy)?.clusterId === clusterId) info(task.createdBy);
     if (previous.kind === 'member' && previous.memberId !== reviewerId) info(previous.memberId);
     const joined = task;
     body = (event) => `任务 ${taskLabel(joined)}加入了${batchLabel(batch)}${reviewerChanges ? `，验收者改为 ${reviewerId ? personName(store, clusterId, reviewerId) : '用户'}` : ''}，事件 ${event.seq}。`;
   } else if (action === 'batch.remove' && task) {
-    management('taskPlanning', arrangerAllowed(ctx, batch, task));
+    management('taskPlanning', arrangerAllowed(ctx, batch));
     if (task.batchId !== batch.id) return fail('INVALID_STATE', 'the task is not in this batch');
     if (task.status !== 'pending' && task.status !== 'cancelled') return fail('INVALID_STATE', 'a task leaves its batch only before its work starts (or once cancelled); cancel the batch to release started tasks');
     delete task.batchId;
     save(task);
     info(task.assignedMemberId); info(reviewerId);
+    if (task.createdBy !== actorId && store.getMember(task.createdBy)?.clusterId === clusterId) info(task.createdBy);
     const left = task;
     body = (event) => `任务 ${taskLabel(left)}移出了${batchLabel(batch)}，事件 ${event.seq}。`;
   } else if (action === 'batch.cancel') {
@@ -314,6 +348,7 @@ export function runBatchAction(ctx: PluginActionContext): Record<string, unknown
     if (batchView(store, batch).merged) return fail('INVALID_STATE', 'the batch is already merged; there is nothing to cancel');
     const reason = required(command.reason, 'reason');
     batch.cancelledAt = now;
+    batch.shipFailure = null;
     const released = batchTaskRows(store, clusterId, batch.id);
     for (const item of released) { delete item.batchId; save(item); info(item.assignedMemberId); }
     // A task waiting in review is an ordinary task from now on: its member reviewer must hear it, or it would sit unseen.
@@ -334,6 +369,7 @@ export function runBatchAction(ctx: PluginActionContext): Record<string, unknown
       return fail('MERGE_NOT_VERIFIED', `${commit} is not on the target branch with every reviewed commit of the batch merged by it`);
     }
     shipRunner = state.runner;
+    batch.shipFailure = null;
     for (const item of state.tasks) {
       const merge: Merge = { id: randomUUID(), taskId: item.task.id, commitSha: commit, submissionId: item.submission.id,
         reason: typeof command.reason === 'string' ? command.reason.slice(0, 50_000) : '', recordedBy: actor, createdAt: now };
@@ -351,26 +387,66 @@ export function runBatchAction(ctx: PluginActionContext): Record<string, unknown
     }
     const kind = command.failure?.kind;
     if (kind !== 'conflict' && kind !== 'checks') return fail('INVALID_REQUEST', 'failure.kind must be conflict or checks');
-    required(command.reason, 'reason');
-    // A conflict is the branch that did not merge; a failed check cannot be pinned on one task, so the tasks whose branches
-    // end the batch's chains go back: their branches hold the combined work the checks ran on.
-    const live = state.tasks.map((item) => item.task);
-    const returned = kind === 'conflict' ? live.filter((item) => item.id === command.failure?.taskId) : batchEnds(live);
-    if (!returned.length) return fail('INVALID_REQUEST', 'failure.taskId must name a task of the batch');
-    for (const item of returned) {
-      const approved = collaborationRecord<Submission>(store, item.id, 'submission', item.approvedSubmissionId);
-      const executor = approved && collaborationRecords<Assignment>(store, item.id, 'assignment').find((a) => a.id === approved.assignmentId)?.memberId;
-      item.approvedSubmissionId = null; item.status = 'pending';
-      item.assignedMemberId = executor && store.getMember(executor)?.clusterId === clusterId ? executor : null;
-      // The member who ran ship saw its output in that turn; the actor is the system, so "not the actor" does not cover them.
-      if (item.assignedMemberId === state.runner) info(item.assignedMemberId); else wake(item.assignedMemberId);
-      save(item);
-    }
+    const reason = required(command.reason, 'reason');
+    // Keep all live tasks completed inside the batch: record structured failure metadata for rerun, attribution or ship_fix.
+    const conflictTask = kind === 'conflict'
+      ? state.tasks.find((item) => item.task.id === command.failure?.taskId)?.task
+      : undefined;
+    if (kind === 'conflict' && !conflictTask) return fail('INVALID_REQUEST', 'failure.taskId must name a task of the batch');
+    const taskIds = conflictTask ? [conflictTask.id] : [];
+    const detail = typeof command.failure?.detail === 'string' && command.failure.detail.trim() ? command.failure.detail : reason;
+    const conflictFiles = Array.isArray(command.failure?.conflictFiles) && command.failure.conflictFiles.length
+      ? command.failure.conflictFiles : undefined;
+    const failedCheck = typeof command.failure?.failedCheck === 'string' && command.failure.failedCheck.trim()
+      ? command.failure.failedCheck.trim() : undefined;
+    batch.shipFailure = {
+      kind, taskIds, reason, detail,
+      ...(conflictFiles ? { conflictFiles } : {}),
+      ...(failedCheck ? { failedCheck } : {}),
+      digest: state.digest, runnerId: state.runner, at: now, eventId: 0, attribution: null, fixes: [],
+    };
+    info(state.runner);
     info(reviewerId);
-    batch.shipFailure = { kind, taskIds: returned.map((item) => item.id), at: now, eventId: 0 };
     systemKind = 'ship_failed';
-    const list = returned.map((item) => `#${item.number}`).join('、');
-    body = (event) => `${batchLabel(batch)}合并失败：${kind === 'conflict' ? `任务 ${list} 的分支有合并冲突，已退回它的执行者` : `合并前检查未通过，无法归到单个任务，已退回批次末端的任务 ${list}`}，其余任务保持通过，事件 ${event.seq}。`;
+    body = (event) => conflictTask
+      ? `${batchLabel(batch)}合并失败：任务 #${conflictTask.number} 的分支有合并冲突（保持已通过状态，可重跑或用 ship_fix/reopen 处理），事件 ${event.seq}。`
+      : `${batchLabel(batch)}合并失败：合并前检查未通过${failedCheck ? `（${failedCheck}）` : ''}（尚未归因，保持已通过状态，可重跑、由批验收者归因或 reopen/取消批次），事件 ${event.seq}。`;
+  } else if (action === 'batch.attribute_failure') {
+    if (actor.kind !== 'member' || batch.reviewer.kind !== 'member' || batch.reviewer.memberId !== actorId) {
+      return fail('FORBIDDEN', 'only the designated independent member reviewer of this batch can attribute a failure');
+    }
+    const state = batchShipState(store, clusterId, batch.id) ?? fail('INVALID_STATE', 'the batch has no fully approved result awaiting its merge');
+    if (!canBatchShipFix(state, actorId)) {
+      return fail('FORBIDDEN', 'only an independent member reviewer who approved every task in this batch can attribute a failure');
+    }
+    if (!batch.shipFailure || batch.shipFailure.kind !== 'checks') {
+      return fail('INVALID_STATE', 'failure attribution is only valid for an active checks failure on the batch');
+    }
+    if (!Number.isSafeInteger(command.failureEventId) || command.failureEventId !== batch.shipFailure.eventId) {
+      return fail('INVALID_STATE', 'failureEventId does not match the active batch ship failure');
+    }
+    if (batch.shipFailure.attribution != null) {
+      return fail('INVALID_STATE', 'this batch failure already has an attribution; rerun ship or reopen/cancel instead');
+    }
+    const attrReason = required(command.reason, 'reason');
+    if (!Array.isArray(command.taskIds) || !command.taskIds.length) {
+      return fail('INVALID_REQUEST', 'taskIds must be a non-empty array of tasks in this batch');
+    }
+    const uniqueIds = [...new Set(command.taskIds)];
+    if (uniqueIds.some((id) => typeof id !== 'string')) return fail('INVALID_REQUEST', 'taskIds must name tasks of this batch');
+    const batchTasksById = new Map(batchTaskRows(store, clusterId, batch.id).map((item) => [item.id, item]));
+    const approvedById = new Map(state.tasks.map((item) => [item.task.id, item]));
+    for (const id of uniqueIds) {
+      if (!batchTasksById.has(id)) return fail('INVALID_REQUEST', `task ${id} is not in this batch`);
+      if (!approvedById.has(id)) return fail('INVALID_STATE', `task #${batchTasksById.get(id)!.number} is not an active completed task awaiting merge in this batch`);
+    }
+    batch.shipFailure = {
+      ...batch.shipFailure,
+      attribution: { taskIds: uniqueIds, reason: attrReason, by: actorId, at: now, eventId: 0 },
+    };
+    for (const id of uniqueIds) info(approvedById.get(id)!.executorId);
+    const labels = uniqueIds.map((id) => `#${approvedById.get(id)!.task.number}`).join('、');
+    body = (event) => `${personName(store, clusterId, actorId)} 将${batchLabel(batch)}的检查失败归因于 ${labels}（${attrReason}），事件 ${event.seq}。`;
   } else {
     return fail('INVALID_REQUEST', 'unsupported batch action');
   }
@@ -388,13 +464,22 @@ export function runBatchAction(ctx: PluginActionContext): Record<string, unknown
     ...(changes.length ? { changes } : {}),
     ...(typeof command.reason === 'string' && command.reason.trim() ? { reason: command.reason } : {}),
     ...(command.commitSha && (action === 'batch.merge' || action === 'batch.shipped') ? { commitSha: String(command.commitSha).toLowerCase() } : {}),
-    ...(action === 'batch.ship_failed' ? { failure: { kind: command.failure!.kind, ...(command.failure!.taskId ? { taskId: command.failure!.taskId } : {}) } } : {}),
+    ...(action === 'batch.ship_failed' ? {
+      ...(batch.shipFailure?.taskIds.length ? { taskIds: batch.shipFailure.taskIds } : {}),
+      failure: { kind: command.failure!.kind,
+        ...(command.failure!.taskId ? { taskId: command.failure!.taskId } : {}),
+        ...(batch.shipFailure?.conflictFiles ? { conflictFiles: batch.shipFailure.conflictFiles } : {}),
+        ...(batch.shipFailure?.failedCheck ? { failedCheck: batch.shipFailure.failedCheck } : {}) },
+    } : {}),
+    ...(action === 'batch.attribute_failure' && batch.shipFailure?.attribution ? {
+      failureEventId: command.failureEventId, taskIds: batch.shipFailure.attribution.taskIds, by: actorId } : {}),
     ...(command.sourceEventId !== undefined ? { sourceEventId: command.sourceEventId } : {}),
     ...(suggested ? { suggested: true } : {}) });
 
   ctx.outcome.afterEvent = (event) => {
     if (suggest) return;
     if (batch.shipFailure && action === 'batch.ship_failed') { batch.shipFailure.eventId = event.seq; saveTaskBatch(store, batch); }
+    if (batch.shipFailure?.attribution && action === 'batch.attribute_failure') { batch.shipFailure.attribution.eventId = event.seq; saveTaskBatch(store, batch); }
     const policy = store.coordinator?.policy(clusterId);
     if (policy?.enabled) recipients.delete(policy.memberId);   // normal progress does not wake the coordinator
     recipients.delete(actorId);
@@ -434,12 +519,17 @@ function allClusterTasks(store: Store, clusterId: string): Task[] {
 }
 
 /** One batch as get_batch and the page read it. */
-export function batchSummary(store: Store, batch: TaskBatch, view = batchView(store, batch)) {
+export function batchSummary(store: Store, batch: TaskBatch, view = batchView(store, batch), actor?: CollaborationActor) {
   const evaluation = taskDependencyEvaluation(store, batch.clusterId);
   const count = (states: BatchItemState[]) => view.live.filter((item) => states.includes(item.state)).length;
+  const ship = view.approved && !view.merged ? batchShipState(store, batch.clusterId, batch.id) : null;
+  const shipFixAllowed = ship
+    ? (actor?.kind === 'member' ? canBatchShipFix(ship, actor.memberId) : canBatchShipFix(ship))
+    : undefined;
   return {
     id: batch.id, number: batch.number, title: batch.title, reviewer: batch.reviewer, createdBy: batch.createdBy, createdAt: batch.createdAt,
     cancelledAt: batch.cancelledAt, reviewedAt: batch.reviewedAt, shipFailure: batch.shipFailure,
+    ...(ship ? { shipRunnerId: ship.runner, currentDigest: ship.digest, shipFixAllowed } : {}),
     total: view.live.length, submitted: count(['submitted', 'approved', 'merged']), approved: count(['approved', 'merged']),
     complete: view.complete, allApproved: view.approved, merged: view.merged,
     missing: view.missing.map(missingText),
@@ -450,14 +540,14 @@ export function batchSummary(store: Store, batch: TaskBatch, view = batchView(st
 }
 
 /** The `batch` query: one batch (batchId) or every batch of the cluster, newest first (cancelled ones only with includeClosed). */
-export const batchQuery: PluginQuery = ({ store, clusterId, query }) => {
+export const batchQuery: PluginQuery = ({ store, actor, clusterId, query }) => {
   const q = query as typeof query & { batchId?: string };
   if (q.batchId !== undefined) {
     const batch = taskBatch(store, clusterId, resolveBatchRef(store, clusterId, q.batchId))!;
-    return { batch: batchSummary(store, batch) } as never;
+    return { batch: batchSummary(store, batch, undefined, actor) } as never;
   }
   const batches = taskBatches(store, clusterId).filter((batch) => query.includeClosed || !batch.cancelledAt);
-  return { batches: batches.map((batch) => batchSummary(store, batch)) } as never;
+  return { batches: batches.map((batch) => batchSummary(store, batch, undefined, actor)) } as never;
 };
 
 /**

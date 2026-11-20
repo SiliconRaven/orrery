@@ -43,7 +43,7 @@ test('versioned coordinator rules reach setup, workspace, MCP and current coordi
     ];
     for (const check of checks) assert.match(COORDINATOR_RULES.text, check);
     assert.doesNotMatch(COORDINATOR_RULES.text, /merge\.claim|合并窗口/, 'ship replaced the merge window');
-    assert.equal(COORDINATOR_RULES.version, 'v17');
+    assert.equal(COORDINATOR_RULES.version, 'v18');
     const set = (memberId: string, enabled: boolean, mode: 'execute' | 'suggest', operationId: string) =>
       app.hub.collaboration.command({ kind: 'user' }, cluster.id, { action: 'coordinator.set', operationId, memberId, enabled, mode });
     const initial = set(a.id, true, 'execute', 'coordinator-a');

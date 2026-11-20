@@ -93,7 +93,7 @@ function checked(hub: Hub, secret: string, ticket: unknown): { claims: Claims; s
 export function verifyShip(hub: Hub, secret: string, ticket: unknown) {
   const { claims, state } = checked(hub, secret, ticket);
   return { taskId: claims.taskId, shortId: claims.taskId.slice(0, 8), commitSha: claims.commitSha, reviewer: state.reviewerName, round: state.round,
-    verdict: state.self ? 'self' : 'pass', ...(state.takeover ? { takeover: true } : {}) };
+    verdict: state.self ? 'self' : 'pass', ...(state.takeover ? { takeover: true } : {}), ...(state.shipFix ? { shipFix: true } : {}) };
 }
 
 /** The script's rule (scripts/ship.ts): this setting names the branch, main when it is not set (git exits 1). */
@@ -204,22 +204,44 @@ export function verifyBatchShip(hub: Hub, secret: string, ticket: unknown) {
   const { claims, state } = checkedBatch(hub, secret, ticket);
   return { batchId: claims.batchId, number: state.batch.number, title: state.batch.title,
     tasks: state.tasks.map((task) => ({ taskId: task.task.id, number: task.task.number, shortId: task.task.id.slice(0, 8), commitSha: task.commitSha,
-      reviewer: task.reviewerName, round: task.round, verdict: task.self ? 'self' : 'pass', ...(task.takeover ? { takeover: true } : {}) })) };
+      reviewer: task.reviewerName, round: task.round, verdict: task.self ? 'self' : 'pass',
+      ...(task.takeover ? { takeover: true } : {}), ...(task.shipFix ? { shipFix: true } : {}) })) };
 }
 
-/** POST /bridge/ship-result with a batch ticket: one command records every merge, or sends back what failed. */
-export async function reportBatchShip(hub: Hub, secret: string, body: any): Promise<{ status: 'merged' | 'returned' }> {
+function normalizeFailureReport(bodyFailed: any, validBatchTaskIds?: Set<string>) {
+  const { kind, detail, taskId, conflictFiles: rawFiles, failedCheck: rawCheck } = bodyFailed;
+  if (!FAILURE_KINDS.has(kind) || typeof detail !== 'string') {
+    throw new ShipRefused(400, validBatchTaskIds
+      ? 'failed must be { kind: conflict|checks, detail: string, taskId? }'
+      : 'failed must be { kind: conflict|checks, detail: string }');
+  }
+  if (validBatchTaskIds && kind === 'conflict' && !validBatchTaskIds.has(taskId)) {
+    throw new ShipRefused(400, 'a conflict names the task whose branch conflicted (taskId)');
+  }
+  const diagnostic = detail.length > MAX_DETAIL ? `…（仅保留末尾）\n${detail.slice(-MAX_DETAIL).toWellFormed()}` : detail;
+  const conflictFiles = Array.isArray(rawFiles)
+    ? rawFiles.filter((f: unknown): f is string => typeof f === 'string' && f.trim().length > 0).slice(0, 200).map((f: string) => f.trim().slice(0, 500))
+    : [];
+  const failedCheck = typeof rawCheck === 'string' && rawCheck.trim() ? rawCheck.trim().slice(0, 200) : undefined;
+  return {
+    kind: kind as 'conflict' | 'checks',
+    detail: diagnostic || 'no detail',
+    ...(validBatchTaskIds && kind === 'conflict' ? { taskId: taskId as string } : {}),
+    ...(conflictFiles.length ? { conflictFiles } : {}),
+    ...(failedCheck ? { failedCheck } : {}),
+  };
+}
+
+/** POST /bridge/ship-result with a batch ticket: one command records every merge, or records the failure keeping completed state. */
+export async function reportBatchShip(hub: Hub, secret: string, body: any): Promise<{ status: 'merged' | 'failed' }> {
   const { claims, state } = checkedBatch(hub, secret, body?.ticket);
   const command = { batchId: claims.batchId, operationId: `ship-${randomUUID()}`,
     batchSubmissions: state.tasks.map((task) => ({ taskId: task.task.id, submissionId: task.submission.id })) };
   if (body.failed) {
-    const { kind, detail, taskId } = body.failed;
-    if (!FAILURE_KINDS.has(kind) || typeof detail !== 'string') throw new ShipRefused(400, 'failed must be { kind: conflict|checks, detail: string, taskId? }');
-    if (kind === 'conflict' && !state.tasks.some((task) => task.task.id === taskId)) throw new ShipRefused(400, 'a conflict names the task whose branch conflicted (taskId)');
-    const diagnostic = detail.length > MAX_DETAIL ? `…（仅保留末尾）\n${detail.slice(-MAX_DETAIL).toWellFormed()}` : detail;
+    const failure = normalizeFailureReport(body.failed, new Set(state.tasks.map((task) => task.task.id)));
     hub.collaboration.command({ kind: 'system' }, claims.clusterId, { ...command, action: 'batch.ship_failed',
-      failure: { kind, ...(kind === 'conflict' ? { taskId } : {}) }, reason: `${kind}: ${diagnostic || 'no detail'}` });
-    return { status: 'returned' };
+      failure, reason: `${failure.kind}: ${failure.detail}` });
+    return { status: 'failed' };
   }
   const { mergeCommit, pushed, retried } = body;
   if (typeof mergeCommit !== 'string' || !/^[0-9a-f]{40}$/.test(mergeCommit) || typeof pushed !== 'boolean') throw new ShipRefused(400, 'expected { ticket, mergeCommit: 40 hex characters, pushed: boolean }');
@@ -232,15 +254,14 @@ export async function reportBatchShip(hub: Hub, secret: string, body: any): Prom
 }
 
 /** POST /bridge/ship-result. Any path in the request is ignored: git runs where the task's own members work. */
-export async function reportShip(hub: Hub, secret: string, body: any): Promise<{ status: 'merged' | 'returned' }> {
+export async function reportShip(hub: Hub, secret: string, body: any): Promise<{ status: 'merged' | 'failed' }> {
   const { claims, state } = checked(hub, secret, body?.ticket);
   const command = { taskId: claims.taskId, expectedRevision: state.task.revision, operationId: `ship-${randomUUID()}`, submissionId: claims.submissionId };
   if (body.failed) {
-    const { kind, detail } = body.failed;
-    if (!FAILURE_KINDS.has(kind) || typeof detail !== 'string') throw new ShipRefused(400, 'failed must be { kind: conflict|checks, detail: string }');
-    const diagnostic = detail.length > MAX_DETAIL ? `…（仅保留末尾）\n${detail.slice(-MAX_DETAIL).toWellFormed()}` : detail;
-    hub.collaboration.command({ kind: 'system' }, claims.clusterId, { ...command, action: 'task.ship_failed', reason: `${kind}: ${diagnostic || 'no detail'}` });
-    return { status: 'returned' };
+    const failure = normalizeFailureReport(body.failed);
+    hub.collaboration.command({ kind: 'system' }, claims.clusterId, { ...command, action: 'task.ship_failed',
+      failure, reason: `${failure.kind}: ${failure.detail}` });
+    return { status: 'failed' };
   }
   const { mergeCommit, pushed, retried } = body;
   if (typeof mergeCommit !== 'string' || !/^[0-9a-f]{40}$/.test(mergeCommit) || typeof pushed !== 'boolean') throw new ShipRefused(400, 'expected { ticket, mergeCommit: 40 hex characters, pushed: boolean }');

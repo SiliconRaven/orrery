@@ -26,9 +26,10 @@ function fixture() {
   return { store, hub, send, user, as };
 }
 
-test('coordinator rules v17 follow the ship flow and builder dispatch, and cover unaddressed messages, stalled members, started tasks, acceptance tiers and batched review', () => {
-  assert.equal(COORDINATOR_RULES.version, 'v17');
-  assert.match(COORDINATOR_RULES.text, /验收批次（manage_batch）.*批次齐了才唤醒一次.*各自给结论.*批次 ship 一次合并.*上游提交后就能开工/);
+test('coordinator rules v18 follow the ship flow and builder dispatch, and cover ship failure recovery, batched review and reject-takeover', () => {
+  assert.equal(COORDINATOR_RULES.version, 'v18');
+  assert.match(COORDINATOR_RULES.text, /ship 失败时保持已完成状态并只记未读（infoOnly）.*task_action ship_fix.*manage_batch attribute_failure/);
+  assert.match(COORDINATOR_RULES.text, /验收批次（manage_batch）.*批次齐了才唤醒一次.*各自给结论.*批次 ship 一次合并.*上游提交后就能开工.*manage_batch add.*verdict: "reject", takeover: true/);
   assert.match(COORDINATOR_RULES.text, /落到隐身成员身上.*第 9 条的例外.*改派给其他有资格的成员.*取消隐身.*告诉用户.*Hub 不会自动改派/);
   assert.match(COORDINATOR_RULES.text, /建任务的人自己派工和选验收者：自己有执行资格就自己优先做/);
   assert.match(COORDINATOR_RULES.text, /协调员只在用户指定、有成员闲着且有工作等分配、成员出错或离线、流程卡住且成员和程序处理不了时才做事/);

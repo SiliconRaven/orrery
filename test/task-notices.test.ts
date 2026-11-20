@@ -582,11 +582,11 @@ test('a rejected review and a failed ship wake the executor', async () => {
     const failed = send({ kind: 'system' }, { action: 'task.ship_failed', taskId: created.id, expectedRevision: approved.task!.revision,
       submissionId: approved.task!.approvedSubmissionId, reason: 'checks: npm test failed twice:\nfinal assertion failed' });
     const failure = notice(failed.eventId)!;
-    assert.equal(failure.body, `任务 #1【reject me】合并失败：合并前检查未通过，已退回执行者，事件 ${failed.eventId}。`);
+    assert.equal(failure.body, `任务 #1【reject me】合并失败：合并前检查未通过，保留已通过状态（可原样重跑、ship_fix 或 reopen），事件 ${failed.eventId}。`);
     assert.equal(failure.collabEventId, failed.eventId);
     assert.equal(failure.systemKind, 'ship_failed', 'a problem-level warning');
-    assert.deepEqual(failure.mentions, [a.id, b.id], 'the reviewer is informed without being woken');
-    assert.deepEqual(deliveriesOf(failure.id).map((delivery) => delivery.memberId), [a.id], 'only the executor is woken');
+    assert.deepEqual([...failure.mentions].sort(), [a.id, b.id].sort(), 'both executor and reviewer keep it as infoOnly unread');
+    assert.deepEqual(deliveriesOf(failure.id), [], 'ship_failed sends infoOnly without automatic wake');
     const eventPath = `/api/clusters/${cluster.id}/tasks/${created.id}/events/${failed.eventId}`;
     assert.equal((await rawFetch(app.url + eventPath)).status, 401);
     const payload = await app.api('GET', eventPath);
@@ -768,26 +768,28 @@ test('ship wake: a self-reviewed submission wakes nobody and has no ship instruc
   } finally { await app.close(); }
 });
 
-test('ship failure: an executor who ran ship keeps it unread; after a reviewer’s ship the executor is woken', async () => {
+test('ship failure: preserves completed state across every tier and informs infoOnly without waking', async () => {
   const { app, a, b, send, user, as, notice, submit, review, woken } = await shipFixture('ship-failed-runner');
   try {
     const fail = (done: any) => send({ kind: 'system' }, { action: 'task.ship_failed', taskId: done.task.id, expectedRevision: done.task.revision,
       submissionId: done.task.approvedSubmissionId, reason: 'checks: npm test failed' });
-    // User acceptance and self review: the executor runs ship and has seen its output in that turn.
+    // User acceptance and self review: task stays completed, failure stays in executor's unread without waking.
     for (const done of [review(user, submit('user tier'), 'approve'), submit('self tier', { reviewer: { kind: 'self' } })]) {
       const failed = fail(done);
-      assert.equal(failed.task.assignedMemberId, a.id, 'the task is back with its executor');
+      assert.equal(failed.task.status, 'completed');
+      assert.equal(failed.task.assignedMemberId, null);
+      assert.ok(failed.task.shipFailure);
       assert.deepEqual(notice(failed.eventId)!.mentions, [a.id], 'the failure is in the executor’s unread');
       assert.deepEqual(woken(notice(failed.eventId)!), [], 'and does not wake them again');
     }
-    // The user approving for a member reviewer leaves ship to the executor too; the reviewer is only informed.
+    // The user approving for a member reviewer leaves ship to the executor; both hear as infoOnly unread.
     const forMember = fail(review(user, submit('user for member', { reviewer: as(b) }), 'approve'));
-    assert.deepEqual(notice(forMember.eventId)!.mentions, [a.id, b.id]);
+    assert.deepEqual([...notice(forMember.eventId)!.mentions].sort(), [a.id, b.id].sort());
     assert.deepEqual(woken(notice(forMember.eventId)!), []);
-    // The member reviewer ran ship: the executor has not seen the failure.
+    // The member reviewer ran ship: both reviewer and executor get infoOnly unread without an automatic wake.
     const byReviewer = fail(review(as(b), submit('member tier', { reviewer: as(b) }), 'approve', 'ok'));
-    assert.deepEqual(notice(byReviewer.eventId)!.mentions, [a.id, b.id]);
-    assert.deepEqual(woken(notice(byReviewer.eventId)!), [a.id]);
+    assert.deepEqual([...notice(byReviewer.eventId)!.mentions].sort(), [a.id, b.id].sort());
+    assert.deepEqual(woken(notice(byReviewer.eventId)!), []);
   } finally { await app.close(); }
 });
 

@@ -129,7 +129,16 @@ test('group execution uses any listed role and also requires all roles on the ta
     const workingRef = { taskId: claimed.id, expectedRevision: started.task!.revision, assignmentId: started.assignment!.id };
     assert.throws(() => command(executor, { action: 'task.handoff', ...workingRef, memberId: 'outsider', reason: 'handoff' }), gate);
     const takeover = command(USER, { action: 'task.create', ...definition, reviewer: asMember('outsider') }).task!;
-    assert.throws(() => command(outsider, { action: 'task.takeover', taskId: takeover.id, expectedRevision: takeover.revision, reason: 'take over' }), gate);
+    const takeoverClaimed = command(executor, { action: 'task.claim', taskId: takeover.id, expectedRevision: takeover.revision }).task!;
+    const takeoverStarted = command(executor, { action: 'task.start', taskId: takeover.id, expectedRevision: takeoverClaimed.revision });
+    const takeoverSubmitted = command(executor, {
+      action: 'task.submit',
+      taskId: takeover.id,
+      expectedRevision: takeoverStarted.task!.revision,
+      assignmentId: takeoverStarted.assignment!.id,
+      summary: 'ready for review',
+    }).task!;
+    assert.throws(() => command(outsider, { action: 'task.takeover', taskId: takeover.id, expectedRevision: takeoverSubmitted.revision, reason: 'take over' }), gate);
     set({ executeRoleIds: [groupA] });
     assert.equal(command(executor, { action: 'task.submit', ...workingRef, summary: 'already assigned' }).task!.status, 'review');
   } finally { store.close(); }

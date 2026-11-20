@@ -1,7 +1,7 @@
 // The automatic branch link at submit (docs/collaboration.md「任务关联本地 Git 分支」, src/plugins/tasks/branch-link.ts):
 // read-only git before the transaction, the decision inside it, and the paths that create a submission.
 import assert from 'node:assert/strict';
-import { execFileSync, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawnSync, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type AddressInfo, type Socket } from 'node:net';
@@ -11,7 +11,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { CollaborationActor, CollaborationCommand, CollaborationResult } from '../src/core/collaboration-types.ts';
 import { git as gitAsync, GIT_READ_ENV, gitRead, gitSync, setGitTreeKill } from '../src/core/projects.ts';
-import { BRANCH_LOOKUP_BUDGET_MS, setBranchLookup, type GitRunner } from '../src/plugins/tasks/branch-link.ts';
+import { BRANCH_LOOKUP_BUDGET_MS, detectProductCodeChanges, setBranchLookup, type GitRunner } from '../src/plugins/tasks/branch-link.ts';
 import { saveCollaborationRecord } from '../src/plugins/tasks/store.ts';
 import { bearer, holdScript, startTestHub, tempDir, waitFor, type TestHub, turnsOf, memberHeaders } from './helpers.ts';
 
@@ -375,8 +375,13 @@ test('every path that submits a commit links: self review, after a reject, after
   const fixed = await f.submit(reviewed.id, f.repo.c4);
   assert.deepEqual(fixed.gitBranch, { status: 'linked', branch: 'other', automatic: true });
   const approved = review('approve', fixed.submission!.id);
-  f.app.hub.collaboration.command({ kind: 'system' }, f.clusterId, { action: 'task.ship_failed', taskId: reviewed.id, expectedRevision: approved.task!.revision,
+  const failed = f.app.hub.collaboration.command({ kind: 'system' }, f.clusterId, { action: 'task.ship_failed', taskId: reviewed.id, expectedRevision: approved.task!.revision,
     submissionId: fixed.submission!.id, reason: 'conflict: x', operationId: `ship-${++serial}` } as CollaborationCommand);
+  assert.equal(failed.task!.status, 'completed', 'ship_failed preserves completed state');
+  f.app.hub.collaboration.command(user, f.clusterId, { action: 'task.reopen', taskId: reviewed.id, expectedRevision: failed.task!.revision,
+    reason: 'reopen after failed ship', operationId: `reopen-${++serial}` } as CollaborationCommand);
+  f.app.hub.collaboration.command(user, f.clusterId, { action: 'task.assign', taskId: reviewed.id, expectedRevision: f.app.hub.store.tasks!.task(f.clusterId, reviewed.id)!.revision,
+    memberId: f.a, operationId: `assign-${++serial}` } as CollaborationCommand);
   f.start(reviewed.id);
   const afterShip = await f.submit(reviewed.id, f.repo.c2);
   assert.deepEqual(afterShip.gitBranch, { status: 'linked', branch: 'topic', automatic: true });
@@ -762,4 +767,107 @@ test('a healthy link is recognised from a linked worktree too, with no spurious 
     expectedRevision: (await f.current(task.id)).revision, operationId: 'confirm', gitBranch: { branch: 'other' } } as CollaborationCommand);
   assert.deepEqual(confirmed.task!.gitBranch, { repositoryPath: f.repo.repo, branch: 'other' });
   assert.deepEqual((await f.submit(task.id, f.repo.c3)).gitBranch, { status: 'kept', branch: 'other' });
+});
+
+test('detectProductCodeChanges inspects merges via read-only trees without invoking --remerge-diff or merge drivers', async () => {
+  const dir = tempDir();
+  const repo = join(dir, 'repo');
+  mkdirSync(join(repo, 'src'), { recursive: true });
+  git(repo, 'init', '-b', 'main');
+  git(repo, 'config', 'user.name', 'Test');
+  git(repo, 'config', 'user.email', 'test@example.invalid');
+  git(repo, 'config', 'core.autocrlf', 'false');
+
+  const commitFile = (rel: string, content: string, msg: string) => {
+    const abs = join(repo, rel);
+    mkdirSync(join(abs, '..'), { recursive: true });
+    writeFileSync(abs, content);
+    git(repo, 'add', rel);
+    git(repo, 'commit', '-qm', msg);
+    return git(repo, 'rev-parse', 'HEAD');
+  };
+
+  commitFile('src/conflict.ts', 'export const c = 0;\n', 'init conflict');
+  commitFile('src/shared.ts', 'line1\nline2\nline3\nline4\nline5\n', 'init shared');
+  commitFile('src/a.txt', 'alpha-0\nmiddle\nomega-0\n', 'init trap file');
+  git(repo, 'checkout', '-qb', 'topic');
+  const p1Conflict = commitFile('src/conflict.ts', 'export const c = 1;\n', 'topic conflict change');
+  git(repo, 'checkout', '-q', 'main');
+  commitFile('src/other.ts', 'export const other = 1;\n', 'main unrelated product');
+  commitFile('src/conflict.ts', 'export const c = 2;\n', 'main conflict change');
+  git(repo, 'checkout', '-q', 'topic');
+
+  const rec = recording();
+  const gitFn = (cwd: string, ...args: string[]) => rec.runner(cwd, args, AbortSignal.timeout(10_000));
+  const noRemerge = () => {
+    assert.equal(rec.seen.some((args) => args.includes('--remerge-diff') || args[0] === 'show'), false,
+      `must never invoke show or --remerge-diff: ${JSON.stringify(rec.seen)}`);
+  };
+
+  // (1) Clean merge carrying main's unrelated src/other.ts + declared conflict resolution src/conflict.ts -> no product notice
+  const merge1 = spawnSync('git', ['merge', '--no-commit', 'main'], { cwd: repo, encoding: 'utf8', stdio: 'pipe', windowsHide: true });
+  assert.notEqual(merge1.status, 0);
+  writeFileSync(join(repo, 'src/conflict.ts'), 'export const c = 12;\n');
+  git(repo, 'add', 'src/conflict.ts');
+  git(repo, 'commit', '-qm', 'clean resolve conflict only');
+  const cleanMergeSha = git(repo, 'rev-parse', 'HEAD');
+  assert.deepEqual(
+    await detectProductCodeChanges(gitFn, repo, p1Conflict, cleanMergeSha, AbortSignal.timeout(10_000), ['src/conflict.ts']),
+    { changed: false, files: [] },
+  );
+  noRemerge();
+
+  // (2) Evil merge adding extra unrequested product edit -> flagged cleanly via tree comparison
+  git(repo, 'reset', '--hard', p1Conflict);
+  const merge2 = spawnSync('git', ['merge', '--no-commit', 'main'], { cwd: repo, encoding: 'utf8', stdio: 'pipe', windowsHide: true });
+  assert.notEqual(merge2.status, 0);
+  writeFileSync(join(repo, 'src/conflict.ts'), 'export const c = 12;\n');
+  writeFileSync(join(repo, 'src/extra.ts'), 'export const extra = true;\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-qm', 'evil merge extra product file');
+  const evilMergeSha = git(repo, 'rev-parse', 'HEAD');
+  assert.deepEqual(
+    await detectProductCodeChanges(gitFn, repo, p1Conflict, evilMergeSha, AbortSignal.timeout(10_000), ['src/conflict.ts']),
+    { changed: true, files: ['src/extra.ts'] },
+  );
+  noRemerge();
+
+  // (3) Clean 3-way merge where both parents changed non-conflict product file src/shared.ts -> unverified fallback
+  git(repo, 'checkout', '-qb', 'both-topic', 'main');
+  const sharedBase = commitFile('src/shared.ts', 'line1-topic\nline2\nline3\nline4\nline5\n', 'topic edits top');
+  git(repo, 'checkout', '-q', 'main');
+  commitFile('src/shared.ts', 'line1\nline2\nline3\nline4\nline5-main\n', 'main edits bottom');
+  git(repo, 'checkout', '-q', 'both-topic');
+  git(repo, 'merge', '--no-edit', '-q', 'main');
+  const cleanThreeWaySha = git(repo, 'rev-parse', 'HEAD');
+  assert.deepEqual(
+    await detectProductCodeChanges(gitFn, repo, sharedBase, cleanThreeWaySha, AbortSignal.timeout(10_000)),
+    { changed: true, files: [], unverified: true },
+  );
+  noRemerge();
+
+  // (4) Custom merge driver in .git/config + .gitattributes is NEVER triggered by detectProductCodeChanges
+  git(repo, 'checkout', '-qb', 'trap-topic', 'main');
+  const trapBase = commitFile('src/a.txt', 'alpha-topic\nmiddle\nomega-0\n', 'topic trap edit');
+  git(repo, 'checkout', '-q', 'main');
+  commitFile('src/a.txt', 'alpha-0\nmiddle\nomega-main\n', 'main trap edit');
+  git(repo, 'checkout', '-q', 'trap-topic');
+  git(repo, 'merge', '--no-edit', '-q', 'main');
+  const trapMergeSha = git(repo, 'rev-parse', 'HEAD');
+
+  const trapScript = join(dir, 'trap-driver.mjs').replaceAll('\\', '/');
+  const trapMarker = join(dir, 'trap-ran.txt').replaceAll('\\', '/');
+  writeFileSync(trapScript, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(trapMarker)}, 'executed');`);
+  writeFileSync(join(repo, '.gitattributes'), '*.txt merge=trap\n');
+  git(repo, 'add', '.gitattributes');
+  const trapWithAttrSha = commitFile('docs/ignore.md', 'ok\n', 'commit attributes');
+  git(repo, 'config', 'merge.trap.name', 'trap driver');
+  git(repo, 'config', 'merge.trap.driver', `node "${trapScript}" %O %A %B`);
+
+  const trapDiff = await detectProductCodeChanges(gitFn, repo, trapBase, trapWithAttrSha, AbortSignal.timeout(10_000));
+  assert.equal(existsSync(trapMarker), false, 'Hub git read must NEVER trigger local merge.*.driver');
+  assert.equal(trapDiff.unverified, true);
+  assert.equal(trapDiff.changed, true);
+  assert.ok(trapMergeSha);
+  noRemerge();
 });

@@ -56,33 +56,88 @@ export interface Task {
   reviewRoles?: { id: string; name: string }[];
   /** Display-only: the current approved submission was recorded by the user without an executor. */
   manualCompletion?: true;
-  /** The latest reviewer takeover (task.takeover): who took the task over, on what basis, when. Kept as history. */
+  /** The latest reviewer takeover (task.takeover / reject-takeover): who took the task over, on what basis, when. */
   takeover?: TaskTakeoverMark;
   /** The review batch it belongs to (the tasks plugin's batches.ts); absent outside a batch. */
   batchId?: string;
+  /** The last failed single-task ship (kept while status remains completed until rerun, ship_fix, reopen or merge). */
+  shipFailure?: TaskShipFailure | null;
 }
 /**
- * Why the review mode after a takeover is what it is: the user did the takeover (user), the cluster setting allowed
- * self review (cluster_setting), the user reviews by default (user_review), or a named member reviews (named_member).
+ * Why the review mode after a takeover is what it is: user action (user), reviewer takeover (reviewer), or legacy
+ * cluster_setting / user_review / named_member records kept read-only for older tasks.
  */
-export type TakeoverBasis = 'user' | 'cluster_setting' | 'user_review' | 'named_member';
-export interface TaskTakeoverMark { recordId: string; memberId: string; basis: TakeoverBasis; at: string; }
+export type TakeoverBasis = 'user' | 'reviewer' | 'cluster_setting' | 'user_review' | 'named_member';
+export interface TaskTakeoverMark {
+  recordId: string; memberId: string; basis: TakeoverBasis; at: string;
+  baseSubmissionId?: string | null; baseCommitSha?: string | null;
+}
 /**
- * A takeover-style record (append-only, kind 'takeover'): a task.takeover (the reviewer became the executor and the
- * review mode changed), or, on a task already taken over, an authorised switch to self review (task.edit) or move of
- * it to another executor (task.assign / task.claim / task.handoff). Self review is bound to the latest one's toMemberId.
+ * A takeover-style record (append-only, kind 'takeover'): a task.takeover (the reviewer became the executor and bound
+ * to self review), an atomic reject+takeover (task.review), or an authorised update on a taken-over task.
  */
 export interface Takeover {
   id: string; taskId: string;
   /** The command that wrote it. Records written before this field existed are takeovers. */
   action?: string;
-  /** Who started it: 'user', or a member id (the executor, the reviewer or the coordinator). */
+  /** Who started it: 'user', or the member who triggered it. */
   by: string;
   /** The executor before, if any; the member who took over (the reviewer before). */
   fromMemberId: string | null; toMemberId: string;
   reviewFrom: CollaborationActor; reviewTo: CollaborationActor; basis: TakeoverBasis;
   /** The task's status before, and whether the latest review before it was a rejection. */
   previousStatus: TaskStatus; previousRejected: boolean; createdAt: string;
+  /** Submission and commit baseline captured immediately before taking over (null when none existed). */
+  baseSubmissionId?: string | null; baseCommitSha?: string | null;
+  /** Optional explanation (such as the reject reason in atomic reject-and-takeover). */
+  reason?: string;
+}
+export interface TaskShipFailure {
+  kind: 'conflict' | 'checks';
+  reason: string;
+  detail: string;
+  conflictFiles?: string[];
+  failedCheck?: string;
+  at: string;
+  eventId: number;
+  approvedSubmissionId: string;
+  approvedCommitSha: string;
+  runnerId: string;
+}
+export interface SubmissionShipFix {
+  runnerId: string;
+  baseSubmissionId: string;
+  baseCommitSha: string;
+  originSubmissionId: string;
+  failureEventId: number;
+}
+export interface BatchShipFailureAttribution {
+  taskIds: string[];
+  reason: string;
+  by: string;
+  at: string;
+  eventId: number;
+}
+export interface BatchShipFailureFix {
+  taskId: string;
+  fromSubmissionId: string;
+  toSubmissionId: string;
+  toCommitSha: string;
+  at: string;
+}
+export interface BatchShipFailure {
+  kind: 'conflict' | 'checks';
+  taskIds: string[];
+  reason: string;
+  detail: string;
+  conflictFiles?: string[];
+  failedCheck?: string;
+  digest: string;
+  runnerId: string;
+  at: string;
+  eventId: number;
+  attribution?: BatchShipFailureAttribution | null;
+  fixes?: BatchShipFailureFix[];
 }
 export interface Assignment {
   id: string; taskId: string; memberId: string; actorKey: string;
@@ -98,6 +153,8 @@ export interface Submission {
   dependencyVersions: Record<string, string>; createdAt: string;
   /** A result attested by the user, with no assigned executor or reviewed commit. */
   manual?: true;
+  /** An in-place forward repair replacing an approved submission after a failed ship (without changing task.reviewer). */
+  shipFix?: SubmissionShipFix;
 }
 export interface Review {
   id: string; taskId: string; submissionId: string; reviewer: CollaborationActor;
@@ -157,7 +214,7 @@ export interface WorkspaceResult {
   labels?: string[];
   /** The global label library with the groups this cluster chose (the tasks plugin's labels.ts LibraryView). */
   labelLibrary?: unknown;
-  /** This cluster's task settings; only the user changes them (tasks.settings). */
+  /** Deprecated/transitional: omitted by Hub queries; optional only so older frontend views degrade cleanly. */
   taskSettings?: { takeoverSelfReview: boolean };
   taskPermissions?: TaskPermissions;
 }
@@ -180,6 +237,9 @@ export interface TaskResult {
   watchers?: { memberId: string; note: string | null; createdAt: string }[];
   /** A member reading: its own entry of `watchers`, or null. Absent for the user. */
   watching?: { note: string | null; createdAt: string } | null;
+  /** Single-task completed awaiting merge: who runs ship, and whether that runner is authorised for ship_fix. */
+  shipRunnerId?: string;
+  shipFixAllowed?: boolean;
 }
 export interface CollectionsResult { items: CollectionItem[]; nextCursor: string | null; }
 export interface ContextResult {
@@ -193,9 +253,10 @@ export type CollaborationQueryResult = WorkspaceResult | Pick<WorkspaceResult, '
 
 export type CollaborationAction = 'task.create' | 'task.edit' | 'task.assign' | 'task.nominate' | 'task.claim' | 'task.start'
   | 'task.submit' | 'task.review' | 'task.approve' | 'task.merge' | 'task.mark_completed' | 'task.mark_merged'
-  | 'task.shipped' | 'task.ship_failed' | 'task.release' | 'task.cancel' | 'task.reopen' | 'task.set_git_branch'
+  | 'task.shipped' | 'task.ship_failed' | 'task.ship_fix' | 'task.release' | 'task.cancel' | 'task.reopen' | 'task.set_git_branch'
   | 'task.handoff' | 'task.takeover' | 'task.delete' | 'task.watch' | 'task.unwatch'
   | 'task.attention' | 'task.resolve_attention' | 'task.summary' | 'message.link'
+  | 'batch.create' | 'batch.add' | 'batch.remove' | 'batch.cancel' | 'batch.merge' | 'batch.shipped' | 'batch.ship_failed' | 'batch.attribute_failure'
   | 'role.create' | 'role.edit' | 'role.delete' | 'role.ensure_defaults' | 'member.roles' | 'coordinator.set' | 'cluster.pause' | 'member.hidden'
   | 'coordinator.instruction.add' | 'coordinator.instruction.edit' | 'coordinator.instruction.remove'
   // An action registered by a plugin.
@@ -212,10 +273,15 @@ export interface CollaborationCommand {
   /** Role description (role.create/role.edit): trimmed, '' clears it, at most 500 characters. */
   description?: string;
   name?: string; summary?: string; evidenceMessageIds?: string[]; evidenceFileIds?: string[];
-  /** task.submit/task.merge/task.mark_merged: the reviewed branch commit or the merge commit (7-40 hexadecimal characters). */
+  /** task.submit/task.merge/task.mark_merged/task.ship_fix: branch commit or merge commit (7-40 hex characters). */
   commitSha?: string | null; requiresApproval?: boolean; mergeRequired?: boolean;
   expectedDependencyVersions?: Record<string, string>;
   verdict?: 'approve' | 'reject'; reason?: string; confirmStopped?: boolean;
+  /** task.review (verdict reject): atomically reject and take over as self-reviewed executor. */
+  takeover?: boolean;
+  /** task.ship_fix and batch.attribute_failure: failure event seq and optional expected approved commit SHA. */
+  failureEventId?: number;
+  baseCommitSha?: string;
   /** task.cancel: why (default other); duplicate and superseded require relatedTaskId, the others refuse it. */
   closeReason?: TaskCloseKind; relatedTaskId?: string;
   attentionId?: string; kind?: string; question?: string; targetMemberId?: string | null; resolution?: string;
@@ -231,16 +297,14 @@ export interface CollaborationCommand {
   proposalState?: 'active' | 'proposed'; throughEventId?: number; sourceMessageIds?: string[];
   /** task.watch: the watcher's own note, returned in the end notice; trimmed, at most 200 characters. */
   note?: string | null;
-  /** tasks.settings (user only): allow self review after a reviewer takeover in this cluster. */
-  takeoverSelfReview?: boolean;
   /** tasks.permissions (user only): the complete set of group-wide task role gates. */
   taskPermissions?: TaskPermissions;
   /** task.create and batch.*: the review batch (an ID, a unique prefix or B<number>). */
   batchId?: string;
   /** batch.shipped / batch.ship_failed (the Hub only): the approved submissions the ship ticket was signed for. */
   batchSubmissions?: { taskId: string; submissionId: string }[];
-  /** batch.ship_failed (the Hub only): what failed, and for a conflict the task whose branch conflicted. */
-  failure?: { kind: 'conflict' | 'checks'; taskId?: string };
+  /** task.ship_failed / batch.ship_failed (the Hub only): structured failure details. */
+  failure?: { kind: 'conflict' | 'checks'; taskId?: string; detail?: string; conflictFiles?: string[]; failedCheck?: string };
 }
 export interface CollaborationResult {
   action: CollaborationAction; eventId: number; task?: Task; role?: Role; coordinator?: CoordinatorPolicy | null;

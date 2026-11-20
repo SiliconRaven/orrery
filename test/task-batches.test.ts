@@ -40,7 +40,29 @@ test('join and leave: at creation or with batch.add before work starts; the batc
   const loose = f.create('loose', undefined, { reviewer: c, memberId: 'b' }, a);
   const self = f.create('self', undefined, { reviewer: { kind: 'self' }, memberId: 'b' }, a);
   assert.throws(() => f.act(a, self, { action: 'batch.add', batchId: batch.id }), (e) => code(e) === 'INVALID_STATE', 'a self-review task cannot join');
-  assert.throws(() => f.act(b, loose, { action: 'batch.add', batchId: batch.id }), (e) => code(e) === 'FORBIDDEN', 'b created neither');
+  assert.throws(() => f.act(b, loose, { action: 'batch.add', batchId: batch.id }), (e) => code(e) === 'FORBIDDEN', 'b is not the batch creator');
+  const createdByC = f.create('from-c', undefined, { reviewer: r, memberId: 'b' }, c);
+  const crossJoined = f.act(a, createdByC, { action: 'batch.add', batchId: `B${batch.number}` });
+  assert.equal(crossJoined.task!.batchId, batch.id, 'batch creator a adds c-created task into a-created batch');
+  const addMsg = f.messages().find((m) => m.collabEventId === crossJoined.eventId)!;
+  assert.ok(addMsg.mentions.includes((c as { memberId: string }).memberId), 'original creator c notified');
+  assert.equal(f.woke(addMsg.id).length, 0, 'cross-creator batch.add sends infoOnly only');
+  const crossRemoved = f.act(a, createdByC, { action: 'batch.remove', batchId: batch.id });
+  const rmMsg = f.messages().find((m) => m.collabEventId === crossRemoved.eventId)!;
+  assert.ok(rmMsg.mentions.includes((c as { memberId: string }).memberId), 'original creator c notified on batch.remove');
+  assert.equal(f.woke(rmMsg.id).length, 0, 'cross-creator batch.remove sends infoOnly only');
+
+  // Guardrails: non-user member cannot downgrade user reviewer into member batch, bypass proposed, or add requiresApproval task.
+  const userReviewed = f.create('u-rev', undefined, { reviewer: user, memberId: 'b' }, c);
+  assert.throws(() => f.act(a, userReviewed, { action: 'batch.add', batchId: batch.id }), (e) => code(e) === 'FORBIDDEN');
+  assert.equal(f.act(user, userReviewed, { action: 'batch.add', batchId: batch.id }).task!.batchId, batch.id);
+  const proposed = f.create('prop', undefined, { requiresApproval: true, memberId: 'b' }, c);
+  assert.throws(() => f.act(a, proposed, { action: 'batch.add', batchId: batch.id }), (e) => code(e) === 'APPROVAL_REQUIRED');
+  assert.throws(() => f.act(user, proposed, { action: 'batch.add', batchId: batch.id }), (e) => code(e) === 'APPROVAL_REQUIRED');
+  f.send(user, { action: 'task.approve', taskId: proposed.id, expectedRevision: f.read(proposed.id).task.revision, verdict: 'approve' });
+  assert.throws(() => f.act(a, proposed, { action: 'batch.add', batchId: batch.id }), (e) => code(e) === 'FORBIDDEN');
+  assert.equal(f.act(user, proposed, { action: 'batch.add', batchId: batch.id }).task!.batchId, batch.id);
+
   const added = f.act(a, loose, { action: 'batch.add', batchId: `B${batch.number}` });
   assert.equal(added.task!.batchId, batch.id);
   assert.deepEqual(f.read(loose.id).task.reviewer, r);
@@ -280,7 +302,7 @@ test('takeover moves a task out of its batch', (t) => {
   const batch = f.batch();
   const x = f.create('x', batch.id, { memberId: 'a' });
   f.start(a, x);
-  const out = f.act(r, x, { action: 'task.takeover' });
+  const out = f.act(user, x, { action: 'task.takeover' });
   assert.equal('batchId' in out.task!, false);
   assert.match(f.messages().find((m) => m.collabEventId === out.eventId)!.body, /任务已移出批次 B1【chain】/);
 });

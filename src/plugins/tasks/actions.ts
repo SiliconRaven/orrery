@@ -14,14 +14,14 @@ import type { Collaboration } from '../../core/collaboration.ts';
 import type { PluginActionContext, PluginRefContext } from '../../core/plugin.ts';
 import type { Store, StoredMember } from '../../core/store.ts';
 import type { HubEvent, SystemMessageKind } from '../../core/types.ts';
-import { allTasks, completionValid, displayTask, eligible, fail, memberName, missingRoleNames, participantKeys, resolveTaskRef, shipState, taskDependencyEvaluation, taskOf, versions } from './model.ts';
-import { batchLabel, batchSnapshot, batchTransitions, checkJoin, refuseEarlyReview, resolveBatchRef } from './batches.ts';
-import { decideBranchLink } from './branch-link.ts';
+import { allTasks, approvedResult, canShipFixTask, completionValid, displayTask, eligible, fail, memberName, missingRoleNames, participantKeys, resolveTaskRef, shipState, taskDependencyEvaluation, taskOf, versions } from './model.ts';
+import { batchLabel, batchShipFixAffectedTasks, batchShipState, batchSnapshot, batchTransitions, canBatchShipFix, checkJoin, refuseEarlyReview, resolveBatchRef } from './batches.ts';
+import { decideBranchLink, type BranchFacts, type ProductCodeDiff, type ShipFixFacts } from './branch-link.ts';
 import { announceLibrary, applyTaskLabels } from './labels.ts';
 import { noticeBody } from './notices.ts';
 import { allowsTaskRoles, requireTaskPermission, taskPermissions } from './permissions.ts';
 import { mergedOnTarget, shipRunner } from './ship.ts';
-import { authoriseSelfReview, selfReviewBound, selfReviewHolder, takeoverRecords } from './takeover.ts';
+import { selfReviewBound, selfReviewHolder, takeoverRecords } from './takeover.ts';
 import { runWatchAction, takeWatches, taskEnd, watchNoticeBody, type TaskEnd } from './watches.ts';
 import {
   collaborationLinkCount, collaborationLinkedMessageIds, collaborationRecord, collaborationRecords, deleteCollaborationTask,
@@ -204,7 +204,7 @@ export function resolveTaskRefs({ store, clusterId, command, collaboration }: Pl
   }
   if (action === 'task.create' && command.originMessageId) out.originMessageId = message(command.originMessageId, 'unknown source message');
   if (action === 'task.create' && command.batchId != null) out.batchId = resolveBatchRef(store, clusterId, command.batchId);
-  if (action === 'task.submit' && Array.isArray(command.evidenceMessageIds)) {
+  if ((action === 'task.submit' || action === 'task.ship_fix') && Array.isArray(command.evidenceMessageIds)) {
     out.evidenceMessageIds = command.evidenceMessageIds.map((id) => message(id, 'unknown evidence message'));
   }
   if (action === 'task.assign' || action === 'task.nominate' || action === 'task.handoff' || (action === 'task.create' && command.memberId !== undefined)) out.memberId = collaboration.memberRef(clusterId, command.memberId);
@@ -231,6 +231,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
   let staleTaskNotices: { memberId: string; actions: string[] } | null = null;
   let wasDependencyReady = false;
   let approvalRequired = false;
+  let productDiffNotice: { recipientId: string; baseSha: string; newSha: string; diff: ProductCodeDiff } | null = null;
   const recipients = new Set<string>();
   // Info recipients get the notice in their unread list but no delivery/wake (K2 notification tiers).
   const infoOnly = new Set<string>();
@@ -238,6 +239,8 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
   let labelsCreated = false;   // task.create / task.edit added labels to the library
   let stoppedMemberId: string | undefined;
   let closeReason: TaskCloseReason | undefined;
+  let returnedToMemberId: string | null = null;
+  let previousExecutorUnavailable: { memberId: string; reason: string; reassignHint: string } | null = null;
   const management = (permission: CoordinatorPermission, ordinaryAllowed = false) => { suggest = ctx.management(permission, ordinaryAllowed); };
   const member = (id: unknown): StoredMember => collaboration.member(clusterId, id);
   const roleIds = (value: unknown, field: string) => collaboration.roleIds(clusterId, value, field);
@@ -254,17 +257,20 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
   // ---- reviewer takeover (docs/collaboration.md「验收者接手」): the records are the source of truth ----
   const takenOver = () => takeoverRecords(store, task!.id).length > 0;
   /** Appends a takeover-style record and the task's display mark together, so the two cannot disagree. */
-  const recordTakeover = (draft: Pick<Takeover, 'fromMemberId' | 'toMemberId' | 'reviewFrom' | 'reviewTo' | 'basis'> & Partial<Pick<Takeover, 'previousStatus'>>) => {
+  const recordTakeover = (draft: Pick<Takeover, 'fromMemberId' | 'toMemberId' | 'reviewFrom' | 'reviewTo' | 'basis'>
+    & Partial<Pick<Takeover, 'previousStatus' | 'baseSubmissionId' | 'baseCommitSha' | 'reason'>>) => {
     const record: Takeover = { id: randomUUID(), taskId: task!.id, action, by: actorId, previousStatus: task!.status, ...draft,
       previousRejected: records<Review>('review').at(-1)?.verdict === 'reject', createdAt: now };
     if (!suggest) save('takeover', record);
-    task!.takeover = { recordId: record.id, memberId: record.toMemberId, basis: record.basis, at: now };
+    task!.takeover = { recordId: record.id, memberId: record.toMemberId, basis: record.basis, at: now,
+      ...(draft.baseSubmissionId !== undefined ? { baseSubmissionId: draft.baseSubmissionId } : {}),
+      ...(draft.baseCommitSha !== undefined ? { baseCommitSha: draft.baseCommitSha } : {}) };
     out.takeover = record;
   };
   /**
-   * The one writer of task.reviewer after creation (task.edit, task.takeover). On a taken-over task the enabled
-   * coordinator cannot be named (it cannot review), and a switch to self goes through the rule and binds self review to
-   * the executor. `takeover` is task.takeover's own record, already authorised there.
+   * The one writer of task.reviewer after creation (task.edit, task.takeover, reject+takeover). On a taken-over task
+   * the enabled coordinator cannot be named (it cannot review), only the user may return it to self review, and
+   * moving away from self review appends a record clearing the binding.
    */
   const setReviewer = (next: CollaborationActor, takeover?: Parameters<typeof recordTakeover>[0]) => {
     const policy = store.coordinator?.policy(clusterId);
@@ -274,24 +280,29 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     let binding = takeover;
     if (!binding && next.kind === 'self' && task!.reviewer.kind !== 'self' && takenOver()) {
       const executorId = task!.assignedMemberId;
-      if (!executorId) fail('INVALID_STATE', 'self review on a taken-over task is bound to its executor; assign the executor first');
-      binding = { fromMemberId: executorId, toMemberId: executorId!, reviewFrom: task!.reviewer, reviewTo: next,
-        basis: authoriseSelfReview(store, clusterId, actor, 'switching this taken-over task to self review') };
+      if (!executorId) return fail('INVALID_STATE', 'self review on a taken-over task is bound to its executor; assign the executor first');
+      if (actor.kind !== 'user') return fail('FORBIDDEN', 'only the user can switch a taken-over task back to self review');
+      binding = { fromMemberId: executorId, toMemberId: executorId, reviewFrom: task!.reviewer, reviewTo: next, basis: 'user' };
+    } else if (!binding && next.kind !== 'self' && task!.reviewer.kind === 'self' && takenOver()) {
+      const holderId = selfReviewHolder(store, task!.id) ?? task!.assignedMemberId ?? actorId;
+      binding = { fromMemberId: task!.assignedMemberId, toMemberId: holderId, reviewFrom: task!.reviewer, reviewTo: next,
+        basis: actor.kind === 'user' ? 'user' : 'reviewer' };
     }
     if (binding) recordTakeover(binding);
     task!.reviewer = next;
   };
   /**
-   * A taken-over task whose self review is bound to someone else gets a new executor: the rule must authorise self
-   * review for the new one (it is recorded), or the change is refused. Nothing switches the review mode by itself.
+   * A taken-over task whose self review is bound to someone else gets a new executor: only the user may move it to
+   * another executor, and doing so writes a binding record. Nothing switches the review mode by itself.
    */
   const rebindSelf = (id: string) => {
     if (task!.reviewer.kind !== 'self' || !takenOver()) return;
     const holder = selfReviewHolder(store, task!.id);
     if (holder === id) return;
-    const basis = authoriseSelfReview(store, clusterId, actor, `giving this task to ${memberName(store, id)} (its self review is authorised for `
-      + `${holder ? memberName(store, holder) : 'nobody'}; to hand it over without that, first have the user or the coordinator change the reviewer to the user or a member)`);
-    recordTakeover({ fromMemberId: task!.assignedMemberId, toMemberId: id, reviewFrom: task!.reviewer, reviewTo: task!.reviewer, basis });
+    if (actor.kind !== 'user') {
+      fail('FORBIDDEN', `giving this task to ${memberName(store, id)} requires the user (its self review is bound to ${holder ? memberName(store, holder) : 'nobody'}; to hand it over yourself, first change the reviewer to the user or an independent member)`);
+    }
+    recordTakeover({ fromMemberId: task!.assignedMemberId, toMemberId: id, reviewFrom: task!.reviewer, reviewTo: task!.reviewer, basis: 'user' });
   };
   /** Who may be this task's executor; the reviewer never is (docs/collaboration.md, roles). */
   const checkExecutor = (id: string) => {
@@ -428,10 +439,12 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       management(permission, allowed);
     };
     // The creator may move the review elsewhere until the first review record (any verdict, self included);
-    // after that only the user or the coordinator may.
+    // after that only the user or the coordinator may (except the bound self-review holder stepping up to user/member).
     const reviewed = records<Review>('review').length > 0;
     if (reviewerEdit) {
-      allow('reviewerManagement', creator && !reviewed, !creator
+      const boundHolderUpgrades = task.reviewer.kind === 'self' && takenOver() && selfReviewHolder(store, task.id) === actorId
+        && command.reviewer !== undefined && command.reviewer?.kind !== 'self' && command.reviewRoleIds === undefined;
+      allow('reviewerManagement', (creator && !reviewed) || boundHolderUpgrades, !creator
         ? 'only the task creator, the user or the coordinator can change the reviewer; ask one of them'
         : 'the task already has a review; ask the user or the coordinator to change the reviewer, or, if the reviewer should do the work, use task_action takeover');
     }
@@ -627,13 +640,33 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       assignment.endedAt = now; assignment.endReason = 'approved'; save('assignment', assignment);
       task.status = 'completed'; task.approvedSubmissionId = submission.id; task.currentAssignmentId = null; task.assignedMemberId = null;
       out.review = review;
+      // Inform the prior executor (infoOnly) if takeover edited product code outside tests/docs, or git verification failed.
+      const latestTakeover = bound === true ? takeoverRecords(store, task.id).at(-1) : undefined;
+      const fromId = latestTakeover?.fromMemberId;
+      if (fromId && fromId !== actorId && latestTakeover?.baseCommitSha && submission.commitSha
+        && store.getMember(fromId)?.clusterId === clusterId) {
+        const facts = ctx.prepared as BranchFacts | undefined;
+        const verified = !!facts && facts.kind === 'branch-facts' && facts.taskId === task.id && facts.memberId === actorId
+          && facts.commitSha === submission.commitSha && facts.takeoverBaseSha === latestTakeover.baseCommitSha
+          && !!facts.productCodeDiff;
+        const diff: ProductCodeDiff = verified ? facts!.productCodeDiff! : { changed: true, files: [], unverified: true };
+        if (diff.changed || diff.unverified) {
+          productDiffNotice = { recipientId: fromId, baseSha: latestTakeover.baseCommitSha, newSha: submission.commitSha, diff };
+        }
+      }
     } else {
       task.status = 'review';
       // In a batch the reviewer is woken once, when the whole batch is submitted (batchTransitions); this one is only unread.
       if (task.reviewer.kind === 'member') { recipients.add(task.reviewer.memberId); if (task.batchId) infoOnly.add(task.reviewer.memberId); }
     }
   } else if (action === 'task.review' && task) {
+    if (command.takeover !== undefined && typeof command.takeover !== 'boolean') return fail('INVALID_REQUEST', 'takeover must be boolean');
+    const rejectTakeover = command.takeover === true;
+    if (rejectTakeover && command.verdict === 'approve') return fail('INVALID_REQUEST', 'takeover is only valid when verdict is reject');
     if (task.status !== 'review' || !task.latestSubmissionId || task.latestSubmissionId !== command.submissionId) return fail('STALE_SUBMISSION', 'submission is not the latest');
+    if (rejectTakeover && task.reviewer.kind !== 'member') {
+      return fail('INVALID_STATE', `only a task reviewed by a member can reject with takeover; this task is reviewed by ${task.reviewer.kind === 'self' ? 'its executor (self review)' : 'the user'}`);
+    }
     if (actor.kind === 'member') {
       const policy = store.coordinator?.policy(clusterId);
       if (policy?.enabled && policy.memberId === actorId) return fail('FORBIDDEN', `${memberName(store, actorId)} is the coordinator and cannot review; the designated reviewer or the user reviews instead`);
@@ -643,9 +676,16 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       // A member reviews a batch once it is complete; the user, the authority, may review any time.
       refuseEarlyReview(store, task);
     }
-    if (task.batchId) {
-      const batch = taskBatch(store, clusterId, task.batchId);
-      if (batch && !batch.reviewedAt) { batch.reviewedAt = now; saveTaskBatch(store, batch); }   // no task joins after this
+    if (rejectTakeover) {
+      const takerId = (task.reviewer as { kind: 'member'; memberId: string }).memberId;
+      const takerMember = store.getMember(takerId);
+      if (takerMember?.clusterId !== clusterId) {
+        return fail('INVALID_STATE', `the reviewer ${memberName(store, takerId)} is no longer in this cluster; change the reviewer instead`);
+      }
+      refuseHidden(store, clusterId, actor, actorId, takerId);
+      refuseCoordinator(store, clusterId, takerId);
+      requireGroupRole(takerId, 'executeRoleIds');
+      if (!isEligible(takerId, task.executeRoleIds)) return fail('ROLE_REQUIRED', `${memberName(store, takerId)} lacks roles: ${missing(takerId, task.executeRoleIds)}`);
     }
     const submission = records<Submission>('submission').find((s) => s.id === command.submissionId)!;
     if (actor.kind === 'member' && submission.contributorKeys.includes(actorKey(member(actorId)))) return fail('REVIEW_NOT_INDEPENDENT', `${memberName(store, actorId)} participated in the result, so they cannot review it`);
@@ -655,6 +695,10 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       if (!current || canonical(current) !== canonical(submission.dependencyVersions) || submission.definitionVersion !== task.definitionVersion) {
         return fail('DEPENDENCIES_NOT_READY', 'submission dependencies or definition changed');
       }
+    }
+    if (task.batchId) {
+      const batch = taskBatch(store, clusterId, task.batchId);
+      if (batch && !batch.reviewedAt) { batch.reviewedAt = now; saveTaskBatch(store, batch); }   // no task joins after this
     }
     const review: Review = { id: randomUUID(), taskId: task.id, submissionId: submission.id, reviewer: actor,
       verdict: command.verdict, reason: reviewReason(command.reason, command.verdict === 'reject' || actor.kind === 'member'), createdAt: now };
@@ -666,6 +710,25 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       const assignment = records<Assignment>('assignment').find((a) => a.id === task!.currentAssignmentId)!;
       assignment.endedAt = now; assignment.endReason = 'approved'; save('assignment', assignment);
       task.status = 'completed'; task.approvedSubmissionId = submission.id; task.currentAssignmentId = null; task.assignedMemberId = null;
+    } else if (rejectTakeover) {
+      const takerId = (task.reviewer as { kind: 'member'; memberId: string }).memberId;
+      const takerMember = member(takerId);
+      const current = records<Assignment>('assignment').find((a) => a.id === task!.currentAssignmentId);
+      previousExecutor = previousOwner;
+      if (task.batchId) { leftBatch = task.batchId; delete task.batchId; }
+      if (current && !current.endedAt) { current.endedAt = now; current.endReason = 'reviewer takeover'; save('assignment', current); }
+      const assignment: Assignment = { id: randomUUID(), taskId: task.id, memberId: takerId, actorKey: actorKey(takerMember),
+        acceptedAt: now, startedAt: now, endedAt: null, endReason: null, dependencyVersions: current?.dependencyVersions ?? versions(store, task) ?? {} };
+      save('assignment', assignment);
+      task.assignedMemberId = takerId; task.currentAssignmentId = assignment.id; out.assignment = assignment;
+      // Keep latestSubmissionId pointing to the rejected submission until the taker's next submit; expire stale notices.
+      staleTaskNotices = { memberId: takerId, actions: ['task.submit', 'task.edit'] };
+      setReviewer({ kind: 'self' }, { fromMemberId: previousOwner, toMemberId: takerId, reviewFrom: task.reviewer, reviewTo: { kind: 'self' },
+        basis: actor.kind === 'user' ? 'user' : 'reviewer', previousStatus: 'review', baseSubmissionId: submission.id,
+        baseCommitSha: submission.commitSha ?? null, reason: review.reason });
+      task.status = 'working';
+      if (previousOwner && previousOwner !== takerId) infoOnly.add(previousOwner);
+      if (actor.kind === 'user') recipients.add(takerId);
     } else task.status = 'working';
     out.review = review;
   } else if (action === 'task.set_git_branch' && task) {
@@ -741,6 +804,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       const merge: Merge = { id: randomUUID(), taskId: task.id, submissionId: task.approvedSubmissionId!,
         commitSha: sha, reason, recordedBy: actor, createdAt: now, manual: true };
       save('merge', merge);
+      task.shipFailure = null;
       task.mergedSubmissionId = merge.submissionId; task.mergedCommitSha = merge.commitSha; out.merge = merge;
     }
   } else if (action === 'task.merge' && task) {
@@ -757,6 +821,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
         return fail('MERGE_NOT_VERIFIED', `${sha} is not on the target branch with the reviewed commit as its second parent`);
       }
       save('merge', merge);
+      task.shipFailure = null;
       task.status = 'merged'; task.mergedCommitSha = merge.commitSha; task.mergedSubmissionId = merge.submissionId;
       out.merge = merge;
     }
@@ -772,22 +837,164 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       const merge: Merge = { id: randomUUID(), taskId: task.id, commitSha: commitSha(command.commitSha, true)!,
         submissionId: task.approvedSubmissionId!, reason: reviewReason(command.reason, false), recordedBy: actor, createdAt: now };
       save('merge', merge);
+      task.shipFailure = null;
       task.status = 'merged'; task.mergedCommitSha = merge.commitSha; task.mergedSubmissionId = merge.submissionId;
       out.merge = merge;
     } else {
-      // As a reopen, but back to the executor: they merge main into the branch or fix the check, then resubmit.
-      required(command.reason, 'reason');
-      const state = shipState(store, clusterId, task.id);   // read while the task still awaits its merge
-      const ranShip = state ? shipRunner(state) : null;
-      const approved = records<Submission>('submission').find((s) => s.id === task!.approvedSubmissionId)!;
-      const runner = records<Assignment>('assignment').find((a) => a.id === approved.assignmentId)?.memberId;
-      task.approvedSubmissionId = null; task.status = 'pending';
-      task.assignedMemberId = runner && store.getMember(runner)?.clusterId === clusterId ? runner : null;
-      if (task.assignedMemberId) recipients.add(task.assignedMemberId);
-      // An executor who ran ship themself saw its output in that turn. The actor is the system, so the usual
-      // "not the actor" rule does not cover them.
-      if (task.assignedMemberId && task.assignedMemberId === ranShip) infoOnly.add(task.assignedMemberId);
-      if (task.reviewer.kind === 'member') { recipients.add(task.reviewer.memberId); infoOnly.add(task.reviewer.memberId); }
+      // Keep completed state and approvedSubmissionId; persist structured TaskShipFailure for rerun, ship_fix or reopen.
+      const reason = required(command.reason, 'reason');
+      const state = shipState(store, clusterId, task.id)!;
+      const runnerId = shipRunner(state);
+      const kind = command.failure?.kind === 'conflict' || command.failure?.kind === 'checks'
+        ? command.failure.kind
+        : (reason.startsWith('conflict:') ? 'conflict' : 'checks');
+      const detail = typeof command.failure?.detail === 'string' && command.failure.detail.trim() ? command.failure.detail : reason;
+      const conflictFiles = Array.isArray(command.failure?.conflictFiles) && command.failure.conflictFiles.length
+        ? command.failure.conflictFiles : undefined;
+      const failedCheck = typeof command.failure?.failedCheck === 'string' && command.failure.failedCheck.trim()
+        ? command.failure.failedCheck.trim() : undefined;
+      task.shipFailure = {
+        kind, reason, detail,
+        ...(conflictFiles ? { conflictFiles } : {}),
+        ...(failedCheck ? { failedCheck } : {}),
+        at: now, eventId: 0,
+        approvedSubmissionId: task.approvedSubmissionId!,
+        approvedCommitSha: state.commitSha,
+        runnerId,
+      };
+      for (const id of [runnerId, state.executorId, task.reviewer.kind === 'member' ? task.reviewer.memberId : null]) {
+        if (id && store.getMember(id)?.clusterId === clusterId) {
+          recipients.add(id);
+          infoOnly.add(id);
+        }
+      }
+    }
+  } else if (action === 'task.ship_fix' && task) {
+    if (actor.kind !== 'member') {
+      return fail('FORBIDDEN', 'only an authorised member reviewer or self-review executor may invoke ship_fix');
+    }
+    if (task.status !== 'completed' || !task.mergeRequired || !completionValid(store, task)) {
+      return fail('INVALID_STATE', 'task has no valid completed result awaiting merge');
+    }
+    const approved = approvedResult(store, task);
+    if (!approved) return fail('INVALID_STATE', 'task has no valid completed result awaiting merge');
+    if (task.batchId) {
+      const batch = taskBatch(store, clusterId, task.batchId);
+      const batchState = batch ? batchShipState(store, clusterId, batch.id) : null;
+      if (!batch || !batchState) return fail('INVALID_STATE', 'the batch has no fully approved result awaiting its merge');
+      if (!canBatchShipFix(batchState, actorId)) {
+        return fail('FORBIDDEN', 'only an independent member reviewer who approved every task in this batch may invoke ship_fix');
+      }
+      if (!batch.shipFailure) return fail('INVALID_STATE', 'the batch has no active ship failure');
+      if (!Number.isSafeInteger(command.failureEventId) || command.failureEventId !== batch.shipFailure.eventId) {
+        return fail('INVALID_STATE', 'failureEventId does not match the active batch ship failure');
+      }
+      if (batch.shipFailure.kind === 'checks' && !batch.shipFailure.attribution) {
+        return fail('INVALID_STATE', 'checks failure has not been attributed yet; use manage_batch attribute_failure or rerun/reopen');
+      }
+      if ((batch.shipFailure.fixes ?? []).some((fix) => fix.taskId === task!.id)) {
+        return fail('INVALID_STATE', 'this task has already used ship_fix for the current batch failure; rerun ship first');
+      }
+      if (!batchShipFixAffectedTasks(batchState, batch.shipFailure).has(task.id)) {
+        return fail('INVALID_STATE', 'this task is not in the affected tasks (or their fixed dependents) for the current batch failure');
+      }
+    } else {
+      if (!canShipFixTask(store, task, actorId)) {
+        return fail('FORBIDDEN', 'only the independent member reviewer who approved this task (or bound self-review executor) may invoke ship_fix');
+      }
+      if (!task.shipFailure) return fail('INVALID_STATE', 'task has no active ship failure');
+      if (!Number.isSafeInteger(command.failureEventId) || command.failureEventId !== task.shipFailure.eventId) {
+        return fail('INVALID_STATE', 'failureEventId does not match the active ship failure');
+      }
+    }
+    const fixInputSha = commitSha(command.commitSha, true)!;
+    const fixSummary = required(command.summary, 'summary');
+    const evidenceMessageIds = strings(command.evidenceMessageIds, 'evidenceMessageIds');
+    const evidenceFileIds = strings(command.evidenceFileIds, 'evidenceFileIds');
+    for (const id of evidenceMessageIds) if (store.getMessage(id)?.clusterId !== clusterId) return fail('OUT_OF_SCOPE', 'unknown evidence message');
+    for (const id of evidenceFileIds) if (store.getFile(id)?.clusterId !== clusterId) return fail('OUT_OF_SCOPE', 'unknown evidence file; use a file ID from this cluster, or cite messages instead');
+    const baseInputSha = command.baseCommitSha !== undefined ? commitSha(command.baseCommitSha, true)! : null;
+    const currentBaseSha = approved.commitSha.toLowerCase();
+    if (baseInputSha && !currentBaseSha.startsWith(baseInputSha) && !baseInputSha.startsWith(currentBaseSha)) {
+      return fail('INVALID_STATE', `baseCommitSha (${baseInputSha}) does not match current approved commit (${currentBaseSha})`);
+    }
+    const facts = ctx.prepared as ShipFixFacts | undefined;
+    if (!facts || facts.kind !== 'ship-fix-facts'
+      || facts.taskId !== task.id
+      || facts.memberId !== actorId
+      || facts.baseSubmissionId !== approved.submission.id
+      || facts.baseCommitSha !== currentBaseSha
+      || facts.fixInputSha !== fixInputSha
+      || facts.failureEventId !== command.failureEventId) {
+      return fail('INVALID_STATE', 'git ancestry verification could not match current task state; retry ship_fix');
+    }
+    if (facts.error === 'same_commit') {
+      return fail('INVALID_REQUEST', 'commitSha resolves to the same commit as the current approved submission');
+    }
+    if (facts.error || !facts.fullFixSha || !facts.fullApprovedSha) {
+      if (facts.error === 'not_ancestor') {
+        return fail('INVALID_STATE', 'commitSha is not a forward descendant of the approved commit (amend/rebase or unrelated history); use task_action reopen for independent re-review');
+      }
+      return fail('INVALID_STATE', `could not verify forward git ancestry (${facts.error ?? 'unverified'}); ship_fix refused fail-closed`);
+    }
+    if (baseInputSha && !facts.fullApprovedSha.startsWith(baseInputSha)) {
+      return fail('INVALID_STATE', `baseCommitSha (${baseInputSha}) does not match resolved approved commit (${facts.fullApprovedSha})`);
+    }
+    const prevSub = approved.submission;
+    const submission: Submission = {
+      id: randomUUID(),
+      taskId: task.id,
+      assignmentId: prevSub.assignmentId,
+      commitSha: facts.fullFixSha,
+      definitionVersion: task.definitionVersion,
+      summary: fixSummary,
+      evidenceMessageIds,
+      evidenceFileIds,
+      contributorKeys: [...prevSub.contributorKeys],
+      dependencyVersions: { ...prevSub.dependencyVersions },
+      createdAt: now,
+      shipFix: {
+        runnerId: actorId,
+        baseSubmissionId: prevSub.id,
+        baseCommitSha: facts.fullApprovedSha,
+        originSubmissionId: prevSub.shipFix?.originSubmissionId ?? prevSub.id,
+        failureEventId: command.failureEventId!,
+      },
+    };
+    save('submission', submission);
+    task.latestSubmissionId = submission.id;
+    task.approvedSubmissionId = submission.id;
+    out.submission = submission;
+    const linkBefore = task.gitBranch ? { ...task.gitBranch } : null;
+    const branchLink = decideBranchLink(task, facts.branchFacts, actorId, submission.commitSha, store.getMember(actorId)?.cwd ?? null);
+    if (branchLink) out.gitBranch = branchLink;
+    if (canonical(linkBefore) !== canonical(task.gitBranch ?? null)) {
+      changes = [{ field: 'gitBranch', before: linkBefore, after: task.gitBranch ?? null }];
+    }
+    if (task.batchId) {
+      const batch = taskBatch(store, clusterId, task.batchId)!;
+      const failure = batch.shipFailure!;
+      batch.shipFailure = {
+        ...failure,
+        fixes: [...(failure.fixes ?? []), {
+          taskId: task.id,
+          fromSubmissionId: prevSub.id,
+          toSubmissionId: submission.id,
+          toCommitSha: submission.commitSha!,
+          at: now,
+        }],
+      };
+      saveTaskBatch(store, batch);
+    } else {
+      task.shipFailure = null;
+    }
+    if (approved.executorId !== actorId && store.getMember(approved.executorId)?.clusterId === clusterId) {
+      recipients.add(approved.executorId);
+      infoOnly.add(approved.executorId);
+      const diff = facts.productCodeDiff ?? { changed: true, files: [], unverified: true };
+      if (diff.changed || diff.unverified) {
+        productDiffNotice = { recipientId: approved.executorId, baseSha: facts.fullApprovedSha, newSha: submission.commitSha!, diff };
+      }
     }
   } else if (['task.release', 'task.cancel', 'task.handoff', 'task.reopen'].includes(action) && task) {
     const assignment = records<Assignment>('assignment').find((a) => a.id === task!.currentAssignmentId);
@@ -795,11 +1002,21 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     // anyone else still needs the user to confirm a started execution has stopped.
     const holder = assignment?.memberId ?? task.assignedMemberId;
     const selfExecutor = actor.kind === 'member' && holder === actorId && !assignment?.endedAt;
+    const shipReopenAllowed = (() => {
+      if (action !== 'task.reopen' || actor.kind !== 'member' || task!.status !== 'completed') return false;
+      if (task!.batchId) {
+        const batch = taskBatch(store, clusterId, task!.batchId);
+        if (!batch?.shipFailure) return false;
+        return batch.shipFailure.runnerId === actorId || approvedResult(store, task!)?.executorId === actorId;
+      }
+      if (!task!.shipFailure) return false;
+      return task!.shipFailure.runnerId === actorId || approvedResult(store, task!)?.executorId === actorId;
+    })();
     if (action === 'task.release') {
       if (actor.kind !== 'user' && !selfExecutor) return fail('FORBIDDEN', 'only the assignee or user can release; ask one of them, or hand off the task if you hold the recovery permission');
     } else if (action === 'task.cancel') management('cancelReopen', task.status === 'pending' && task.createdBy === actorId);
     else if (action === 'task.handoff') { if (!selfExecutor) management('recovery'); }
-    else management('cancelReopen', task.reviewer.kind === 'member' && task.reviewer.memberId === actorId);
+    else management('cancelReopen', (task.reviewer.kind === 'member' && task.reviewer.memberId === actorId) || shipReopenAllowed);
     if (assignment && command.assignmentId !== assignment.id) return fail('STALE_ASSIGNMENT', 'assignment changed');
     // management() above already checked the coordinator's permission and generation.
     const coordinator = store.coordinator?.policy(clusterId);
@@ -825,11 +1042,66 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       assignment.endedAt = now; assignment.endReason = reason || null; save('assignment', assignment);
     }
     previousExecutor = task.assignedMemberId;
-    task.currentAssignmentId = null; task.assignedMemberId = nominee?.id ?? null; task.approvedSubmissionId = null;
+    const reopenBatch = action === 'task.reopen' && task.batchId ? taskBatch(store, clusterId, task.batchId) : null;
+    const reopenFromShipFailed = action === 'task.reopen' && task.status === 'completed' && (!!task.shipFailure || !!reopenBatch?.shipFailure);
+    const takenOverTask = takenOver();
+    let priorApprovedExecutorId: string | null = null;
+    if (reopenFromShipFailed) {
+      const approvedSub = task.approvedSubmissionId ? records<Submission>('submission').find((s) => s.id === task!.approvedSubmissionId) : undefined;
+      const originSub = approvedSub?.shipFix
+        ? records<Submission>('submission').find((s) => s.id === approvedSub.shipFix!.originSubmissionId)
+        : approvedSub;
+      priorApprovedExecutorId = approvedResult(store, task)?.executorId
+        ?? (originSub ? records<Assignment>('assignment').find((a) => a.id === originSub.assignmentId)?.memberId : undefined)
+        ?? null;
+    }
+    const priorExecutorIneligibleReason = (id: string): string | null => {
+      const m = store.getMember(id);
+      if (!m || m.clusterId !== clusterId) return '成员已不在本群';
+      if (m.hiddenAt) return '成员当前不可接受派工';
+      if (coordinator?.enabled && coordinator.memberId === id) return '成员当前担任协调员，不能执行任务';
+      if (!allowsTaskRoles(store, clusterId, id, permissions.executeRoleIds)) return '成员缺少本群任务执行权限角色';
+      if (!isEligible(id, task!.executeRoleIds)) return `成员缺少任务所需执行角色（${missing(id, task!.executeRoleIds)}）`;
+      if (task!.reviewer.kind === 'member' && task!.reviewer.memberId === id) return '成员当前是本任务验收者，不能兼任执行者';
+      if (task!.reviewer.kind === 'self' && takenOverTask && selfReviewHolder(store, task!.id) !== id) return '该接手任务的自检资格已绑定给其他成员';
+      return null;
+    };
+    const preservedSelfHolder = action === 'task.reopen' && task.reviewer.kind === 'self' && takenOverTask ? selfReviewHolder(store, task.id) : null;
+    let keptHolder = preservedSelfHolder && store.getMember(preservedSelfHolder)?.clusterId === clusterId ? preservedSelfHolder : null;
+    if (reopenFromShipFailed && priorApprovedExecutorId) {
+      const ineligible = priorExecutorIneligibleReason(priorApprovedExecutorId);
+      if (ineligible) {
+        keptHolder = null;
+        previousExecutorUnavailable = {
+          memberId: priorApprovedExecutorId,
+          reason: ineligible,
+          reassignHint: task.reviewer.kind === 'self' && takenOverTask
+            ? '请由用户在页面改派其他成员或调整验收方式'
+            : '请由建单人、协调员或用户使用 task_action assign 改派其他具备执行资格的成员',
+        };
+      } else {
+        keptHolder = priorApprovedExecutorId;
+        returnedToMemberId = priorApprovedExecutorId;
+      }
+    }
+    task.currentAssignmentId = null; task.assignedMemberId = nominee?.id ?? keptHolder ?? null; task.approvedSubmissionId = null;
     task.mergedCommitSha = null; task.mergedSubmissionId = null;
+    if (action === 'task.reopen' || action === 'task.cancel') task.shipFailure = null;
+    if (action === 'task.reopen' && task.batchId) {
+      leftBatch = task.batchId;
+      if (reopenBatch?.shipFailure && !suggest) {
+        reopenBatch.shipFailure = null;
+        saveTaskBatch(store, reopenBatch);
+      }
+      delete task.batchId;
+    }
     task.status = action === 'task.cancel' ? 'cancelled' : 'pending';
     if (closeReason) task.closeReason = closeReason; else delete task.closeReason;
     if (nominee) recipients.add(nominee.id);
+    if (returnedToMemberId) {
+      recipients.add(returnedToMemberId);
+      if (waitsOnDependencies()) infoOnly.add(returnedToMemberId);
+    }
     // Whoever had the task and its member reviewer should hear about a release/cancel/reopen/handoff.
     if (holder) recipients.add(holder);
     if (task.reviewer.kind === 'member') recipients.add(task.reviewer.memberId);
@@ -845,22 +1117,27 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     if (selfExecutor && task.reviewer.kind === 'member') infoOnly.add(task.reviewer.memberId);
     if (stoppedMemberId) infoOnly.delete(stoppedMemberId);
   } else if (action === 'task.takeover' && task) {
-    // The reviewer becomes the executor and the review moves elsewhere (docs/collaboration.md「验收者接手」). Started by the
-    // executor (hands the task to its reviewer), the reviewer (takes it), the user, or the coordinator under the same rules.
+    // Simplified reviewer takeover (docs/collaboration.md「验收者接手」): only the designated member reviewer or the user
+    // may trigger it, and the taker always owns self-review through merge.
     if (task.reviewer.kind !== 'member') {
       return fail('INVALID_STATE', `only a task reviewed by a member can be taken over by its reviewer; this task is reviewed by ${task.reviewer.kind === 'self' ? 'its executor (self review)' : 'the user'}`);
     }
     const reviewerId = task.reviewer.memberId;
-    const policy = store.coordinator?.policy(clusterId);
-    const coordinatorActs = policy?.enabled === true && policy.memberId === actorId;
-    if (actor.kind === 'member' && !coordinatorActs && task.assignedMemberId !== actorId && reviewerId !== actorId) {
-      return fail('FORBIDDEN', 'only the task executor, its reviewer, the user or the coordinator can hand a task over to its reviewer');
+    if (actor.kind === 'member' && reviewerId !== actorId) {
+      return fail('FORBIDDEN', 'only the designated task reviewer or the user can take over this task');
+    }
+    if (command.reviewer !== undefined && (!command.reviewer || typeof command.reviewer !== 'object' || command.reviewer.kind !== 'self')) {
+      return fail('INVALID_REQUEST', 'takeover always binds self review to the reviewer; omit reviewer or pass { kind: "self" }');
     }
     management('recovery', true);
     management('reviewerManagement', true);
     if (task.proposalState === 'proposed') return fail('APPROVAL_REQUIRED', 'task requires user approval');
     if (task.status === 'completed') return fail('INVALID_STATE', 'the result is already approved; nothing is left to take over (reopen the task first if more work is needed)');
     if (!['pending', 'working', 'review'].includes(task.status)) return fail('INVALID_STATE', 'task is already closed; reopen it first');
+    const submissions = records<Submission>('submission');
+    if (actor.kind === 'member' && task.status !== 'review' && !(task.status === 'working' && submissions.length > 0)) {
+      return fail('INVALID_STATE', 'reviewer takeover by a member requires the task to be in review or working with at least one submission; ask the user to take over an unstarted or unsubmitted task');
+    }
     const reviewerMember = store.getMember(reviewerId);
     if (reviewerMember?.clusterId !== clusterId) {
       return fail('INVALID_STATE', `the reviewer ${memberName(store, reviewerId)} is no longer in this cluster; change the reviewer instead`);
@@ -869,23 +1146,15 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     refuseCoordinator(store, clusterId, reviewerId);
     requireGroupRole(reviewerId, 'executeRoleIds');
     if (!isEligible(reviewerId, task.executeRoleIds)) return fail('ROLE_REQUIRED', `${memberName(store, reviewerId)} lacks roles: ${missing(reviewerId, task.executeRoleIds)}`);
-    // What reviews after the takeover: the user unless the caller names a member or self review.
-    const next = command.reviewer === undefined ? { kind: 'user' as const } : reviewer(command.reviewer);
+    const next = { kind: 'self' as const };
     const assignments = records<Assignment>('assignment');
-    let basis: TakeoverBasis = actor.kind === 'user' ? 'user' : 'user_review';
-    if (next.kind === 'member') {
-      requireGroupRole(next.memberId, 'reviewRoleIds');
-      if (next.memberId === reviewerId) return fail('REVIEW_NOT_INDEPENDENT', `${memberName(store, reviewerId)} is taking the task over, so they cannot also review it`);
-      if (next.memberId === task.assignedMemberId || participantKeys(assignments).includes(actorKey(member(next.memberId)))) {
-        return fail('REVIEW_NOT_INDEPENDENT', `${memberName(store, next.memberId)} worked on this task, so they cannot review it`);
-      }
-      if (!isEligible(next.memberId, task.reviewRoleIds)) return fail('ROLE_REQUIRED', `reviewer ${memberName(store, next.memberId)} lacks roles: ${missing(next.memberId, task.reviewRoleIds)}`);
-      if (actor.kind !== 'user') basis = 'named_member';
-    } else if (next.kind === 'self') {
-      // No independent review is left: only the user's own action or the user's setting for this cluster may allow it.
-      basis = authoriseSelfReview(store, clusterId, actor, 'a takeover with self review');
-    }
+    const basis: TakeoverBasis = actor.kind === 'user' ? 'user' : 'reviewer';
     const before = structuredClone(task);
+    // Capture baseline submission & commit SHA before clearing latestSubmissionId when taking over from review.
+    const baselineSub = (before.latestSubmissionId ? submissions.find((s) => s.id === before.latestSubmissionId) : undefined)
+      ?? submissions.at(-1) ?? null;
+    const baseSubmissionId = baselineSub?.id ?? null;
+    const baseCommitSha = baselineSub?.commitSha ?? null;
     const current = assignments.find((a) => a.id === task!.currentAssignmentId);
     previousExecutor = task.assignedMemberId;
     // The review moves away from the batch reviewer, so the task leaves its batch and goes on as an ordinary task.
@@ -904,17 +1173,15 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     // A result waiting for review is superseded, as a new submission would supersede it; the reviewer's call to review it is stale.
     if (before.status === 'review') { task.latestSubmissionId = null; staleTaskNotices = { memberId: reviewerId, actions: ['task.submit', 'task.edit'] }; }
     setReviewer(next, { fromMemberId: previousExecutor, toMemberId: reviewerId, reviewFrom: before.reviewer, reviewTo: next, basis,
-      previousStatus: before.status });
+      previousStatus: before.status, baseSubmissionId, baseCommitSha });
     changes = taskChanges(store, before, task);
-    // Who hears: the old executor (woken when it may still be working, to stop), the reviewer now executing (woken
-    // unless it waits on dependencies), a member reviewing next and the creator (both only told).
+    // Who hears: the old executor (woken when working to stop, infoOnly otherwise), the taker (woken unless pending & waits), creator (infoOnly).
     if (previousExecutor && previousExecutor !== reviewerId) {
       recipients.add(previousExecutor);
       if (before.status !== 'working') infoOnly.add(previousExecutor);
     }
     recipients.add(reviewerId);
     if (task.status === 'pending' && waitsOnDependencies()) infoOnly.add(reviewerId);
-    if (next.kind === 'member') { recipients.add(next.memberId); infoOnly.add(next.memberId); }
     if (store.getMember(task.createdBy)?.clusterId === clusterId && !recipients.has(task.createdBy)) { recipients.add(task.createdBy); infoOnly.add(task.createdBy); }
   } else if (action === 'task.delete' && task) {
     // Permanent removal is a user-only, web-only action (the MCP task_action tool does not offer it). Only a task
@@ -981,7 +1248,7 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     else { task.revision++; task.updatedAt = now; }
     saveCollaborationTask(store, task);
     if (action === 'task.create' && task.originMessageId) linkCollaborationMessage(store, task.originMessageId, task.id, actorId);
-    if (action === 'task.submit' && out.submission) {
+    if ((action === 'task.submit' || action === 'task.ship_fix') && out.submission) {
       for (const id of out.submission.evidenceMessageIds) linkCollaborationMessage(store, id, task.id, actorId);
     }
     out.task = displayTask(store, task);
@@ -993,21 +1260,40 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     ...(command.paused !== undefined ? { paused: command.paused } : {}),
     ...(out.review ? { verdict: out.review.verdict } : {}), ...(out.approval ? { approvalVerdict: out.approval.verdict } : {}),
     ...(out.merge ? { commitSha: out.merge.commitSha } : {}), ...(out.attention ? { question: out.attention.question } : {}),
+    ...(action === 'task.ship_failed' && task?.shipFailure ? { failure: {
+      kind: task.shipFailure.kind,
+      ...(task.shipFailure.conflictFiles ? { conflictFiles: task.shipFailure.conflictFiles } : {}),
+      ...(task.shipFailure.failedCheck ? { failedCheck: task.shipFailure.failedCheck } : {}),
+    } } : {}),
+    ...(action === 'task.ship_fix' && out.submission?.shipFix ? {
+      submissionId: out.submission.id, commitSha: out.submission.commitSha,
+      baseSubmissionId: out.submission.shipFix.baseSubmissionId, baseCommitSha: out.submission.shipFix.baseCommitSha,
+      failureEventId: out.submission.shipFix.failureEventId, summary: out.submission.summary,
+    } : {}),
     ...(command.mode !== undefined ? { mode: command.mode, enabled: command.enabled } : {}),
     ...(command.instructionId !== undefined ? { instructionId: command.instructionId } : {}),
     ...(command.instructionText !== undefined ? { instructionText: command.instructionText } : {}),
     ...(changes.length ? { changes } : {}),
-    ...(out.takeover ? { takeover: { action: out.takeover.action, by: out.takeover.by, fromMemberId: out.takeover.fromMemberId, toMemberId: out.takeover.toMemberId,
+    ...(out.takeover ? { takeover: { id: out.takeover.id, action: out.takeover.action, by: out.takeover.by, fromMemberId: out.takeover.fromMemberId, toMemberId: out.takeover.toMemberId,
       reviewFrom: out.takeover.reviewFrom, reviewTo: out.takeover.reviewTo, basis: out.takeover.basis,
-      previousStatus: out.takeover.previousStatus, previousRejected: out.takeover.previousRejected } } : {}),
+      previousStatus: out.takeover.previousStatus, previousRejected: out.takeover.previousRejected,
+      baseSubmissionId: out.takeover.baseSubmissionId ?? null, baseCommitSha: out.takeover.baseCommitSha ?? null,
+      ...(out.takeover.reason ? { reason: out.takeover.reason } : {}) },
+      ...(action === 'task.review' ? { takeoverId: out.takeover.id } : {}) } : {}),
     ...(command.sourceEventId !== undefined ? { sourceEventId: command.sourceEventId } : {}),
     ...(command.taskIds ? { taskIds: command.taskIds } : {}), ...(command.removeTaskIds ? { removeTaskIds: command.removeTaskIds } : {}),
     ...(deletedMessageIds.length ? { messageIds: deletedMessageIds } : {}),
     ...(stoppedMemberId ? { coordinatorConfirmedStop: stoppedMemberId } : {}),
+    ...(returnedToMemberId ? { returnedToMemberId } : {}),
+    ...(previousExecutorUnavailable ? { previousExecutorUnavailable } : {}),
     ...(action === 'task.create' && task?.batchId ? { batchId: task.batchId } : {}), ...(leftBatch ? { leftBatchId: leftBatch } : {}),
     ...(suggested ? { suggested: true } : {}) });
 
   ctx.outcome.afterEvent = (event) => {
+    if (!suggest && task && action === 'task.ship_failed' && task.shipFailure) {
+      task.shipFailure.eventId = event.seq;
+      saveCollaborationTask(store, task);
+    }
     if (!suggest && task && previousExecutor && previousExecutor !== task.assignedMemberId) {
       const target = task.assignedMemberId ? `${memberName(store, task.assignedMemberId)}（${task.assignedMemberId}）` : '已清除';
       const reason = `分配被事件 ${event.seq} 取代：${target}`;
@@ -1068,7 +1354,8 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
     if (shipWake) { recipients.add(shipBy); infoOnly.delete(shipBy); }
     // A self-reviewed completion and a merge often have nobody to tell; the chat still records them, naming nobody.
     let retainHistory = manualMark || (action === 'task.set_git_branch' && changes.length > 0) || (!suggest && !!out.takeover)
-      || (!suggest && (merged || (action === 'task.submit' && out.review?.self === true)));
+      || (!suggest && !!previousExecutorUnavailable)
+      || (!suggest && (merged || action === 'task.ship_fix' || (action === 'task.submit' && out.review?.self === true)));
     if (policy?.enabled && action.startsWith('task.') && !coordinatorNotice && !out.approval) {
       retainHistory ||= !suggest && policy.memberId !== actorId && store.getMember(policy.memberId)?.clusterId === clusterId
         && (recipients.has(policy.memberId) || ['task.create', 'task.claim', 'task.submit', 'task.review', 'task.merge', 'task.shipped'].includes(action));
@@ -1105,11 +1392,30 @@ export function runTaskAction(ctx: PluginActionContext): Partial<CollaborationRe
       const body = approvalRequired && task ? `任务${task.number ? ` #${task.number}` : ''}【${task.title}】等待用户批准，事件 ${event.seq}。` : noticeBody(store, clusterId, event, action, task, shipWake);
       // Its kind decides the chat category (src/core/system-kinds.js): a failure or something sent back is a warning.
       const systemKind: SystemMessageKind = action === 'task.ship_failed' ? 'ship_failed'
+        : out.takeover?.reviewTo.kind === 'self' ? 'review_downgraded'
         : (action === 'task.review' && out.review?.verdict === 'reject') || out.approval?.verdict === 'reject' ? 'task_rejected'
         : action === 'task.attention' ? 'task_attention'
-          : out.takeover?.reviewTo.kind === 'self' ? 'review_downgraded' : task ? 'task' : 'settings';
+          : task ? 'task' : 'settings';
       ctx.notice(event, { ...notice(event, task), systemKind, body, recipients: [...recipients], wake: [...recipients].filter((id) => !infoOnly.has(id)),
         retain: retainHistory || editHistory || approvalRequired });
+    }
+    if (!suggest && task && productDiffNotice) {
+      const { recipientId, baseSha, newSha, diff } = productDiffNotice;
+      const who = personName(store, clusterId, actorId);
+      const roleLabel = action === 'task.ship_fix' ? 'ship_fix 修复者' : '接手者';
+      const verb = action === 'task.ship_fix' ? '在 ship_fix 修复提交中' : '的新提交中';
+      const title = `任务${task.number ? ` #${task.number}` : ''}【${task.title}】`;
+      const range = `${baseSha.slice(0, 7)}..${newSha.slice(0, 7)}`;
+      const filesSummary = diff.files.length > 0
+        ? `涉及产品代码（${diff.files.slice(0, 5).join('、')}${diff.files.length > 5 ? ` 等 ${diff.files.length} 个文件` : ''}`
+        : '';
+      const summary = diff.files.length > 0 && diff.unverified
+        ? `${filesSummary}），且含无法只读核对的合并改动（对比 ${range}）`
+        : diff.unverified
+          ? `（未能只读核对 ${range} 变更范围，请复核）`
+          : `${filesSummary}，对比 ${range}）`;
+      ctx.notice(event, { ...notice(event, task), systemKind: 'task', recipients: [recipientId], wake: [], retain: true,
+        body: `知会：${roleLabel} ${who} 对${title}${verb}${summary}，仅供复看参考，事件 ${event.seq}。` });
     }
     for (const item of ready) {
       if (policy?.enabled && item.memberId === policy.memberId) continue;

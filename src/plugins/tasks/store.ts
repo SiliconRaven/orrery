@@ -1,6 +1,6 @@
 // The task tables and all SQL over them. Their names predate the plugin system; the rows are unchanged.
 import { type Store, toEvent } from '../../core/store.ts';
-import type { Task, TaskRef, TaskStatus } from '../../core/collaboration-types.ts';
+import type { BatchShipFailure, Task, TaskRef, TaskStatus } from '../../core/collaboration-types.ts';
 import type { HubEvent } from '../../core/types.ts';
 import { LABEL_MIGRATION } from './labels.ts';
 
@@ -64,8 +64,8 @@ export interface TaskBatch {
   reviewedAt: string | null;
   /** The last "complete" notice and the submissions it put up for review. */
   notified: { at: string; eventId: number; submissions: { taskId: string; submissionId: string }[] } | null;
-  /** The last failed batch ship: what failed and which tasks went back. */
-  shipFailure: { kind: 'conflict' | 'checks'; taskIds: string[]; at: string; eventId: number } | null;
+  /** The last failed batch ship: structured failure metadata, optional attribution and per-task fixes. */
+  shipFailure: BatchShipFailure | null;
 }
 
 export function saveTaskBatch(store: Store, batch: TaskBatch): void {

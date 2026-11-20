@@ -48,29 +48,36 @@ async function fixture(name: string) {
 const refusedSelf = (result: any, what: string) => {
   assert.ok(result.error, `${what}: refused`);
   assert.match(result.error, /FORBIDDEN/, what);
-  assert.match(result.error, /允许验收者接手后自检/, `${what}: says how to get authorisation`);
 };
 
-test('bypass (a), creator: a default takeover, then the creator edits the reviewer to self; refused without the user', async () => {
+test('bypass (a): explicit user/member reviewer on takeover is refused 400; only the user may re-enable self after switching away', async () => {
   const f = await fixture('creator');
   const { app, a, c } = f;
   try {
-    // B creates the task (executor A, reviewer C) and is its creator; C takes it over with the default (user review).
     const created = await f.mcp('s2', 'create_task', { title: 'creator', scope: 's', acceptance: 'a', memberId: a.id, reviewer: { kind: 'member', memberId: c.id } });
     const id = created.task.id;
-    assert.equal((await f.act('s3', id, { action: 'takeover', reviewer: { kind: 'self' } })).error?.includes('FORBIDDEN'), true, 'self directly is refused');
+    // Member takeover requires review or submitted working state; user may take over from pending, or submit first.
+    await f.act('s1', id, { action: 'start' });
+    await f.submitVia('s1', id, 'abcdef0100');
+    const badUser = await f.act('s3', id, { action: 'takeover', reviewer: { kind: 'user' } });
+    assert.match(badUser.error, /INVALID_REQUEST/);
+    const badMember = await f.act('s3', id, { action: 'takeover', reviewer: { kind: 'member', memberId: f.b.id } });
+    assert.match(badMember.error, /INVALID_REQUEST/);
+
     const taken = await f.act('s3', id, { action: 'takeover' });
-    assert.equal(taken.takeover.basis, 'user_review');
-    refusedSelf(await f.act('s2', id, { action: 'edit', reviewer: { kind: 'self' } }), 'the creator\'s edit to self');
+    assert.equal(taken.takeover.basis, 'reviewer');
+    assert.deepEqual(taken.task.reviewer, { kind: 'self' });
+    // Bound holder C may step reviewer up back to user; once moved away from self, creator B or C cannot move it back to self without the user.
+    const steppedUp = await f.act('s3', id, { action: 'edit', reviewer: { kind: 'user' } });
+    assert.deepEqual(steppedUp.task.reviewer, { kind: 'user' });
+    refusedSelf(await f.act('s2', id, { action: 'edit', reviewer: { kind: 'self' } }), 'the creator\'s edit back to self');
     assert.deepEqual(f.task(id).reviewer, { kind: 'user' });
-    // C works and submits: the user reviews, nothing self-approved.
-    await f.act('s3', id, { action: 'start' });
-    const submitted = await f.submitVia('s3', id);
-    assert.equal(submitted.task.status, 'review');
+    const done = await f.submitVia('s3', id);
+    assert.equal(done.task.status, 'review', 'user reviews once upgraded away from self');
   } finally { await app.close(); }
 });
 
-test('bypass (a), coordinator: a default takeover of a working task, then the coordinator edits to self; refused', async () => {
+test('bypass (a), coordinator: coordinator cannot take over, cannot switch taken-over task to self', async () => {
   const f = await fixture('coordinator');
   const { app, a, c, d } = f;
   try {
@@ -78,9 +85,12 @@ test('bypass (a), coordinator: a default takeover of a working task, then the co
       permissions: { recovery: true, reviewerManagement: true, cancelReopen: true, deliveryControl: true } }).coordinator;
     const id = f.send(f.user, { action: 'task.create', title: 'coord', scope: 's', acceptance: 'a', memberId: a.id, reviewer: { kind: 'member', memberId: c.id } }).task.id;
     await f.act('s1', id, { action: 'start' });
-    const taken = await f.act('s4', id, { action: 'takeover', generation: policy.generation });
-    assert.equal(taken.task.status, 'working');
-    refusedSelf(await f.act('s4', id, { action: 'edit', reviewer: { kind: 'self' }, generation: policy.generation }), 'the coordinator\'s edit to self');
+    const coordTake = await f.act('s4', id, { action: 'takeover', generation: policy.generation });
+    assert.match(coordTake.error, /FORBIDDEN/, 'coordinator is not the designated reviewer');
+    // User takes over; if moved to user review, coordinator still cannot switch it back to self.
+    await f.page({ action: 'task.takeover', taskId: id, expectedRevision: f.rev(id) });
+    await f.page({ action: 'task.edit', taskId: id, expectedRevision: f.rev(id), reviewer: { kind: 'user' } });
+    refusedSelf(await f.act('s4', id, { action: 'edit', reviewer: { kind: 'self' }, generation: policy.generation }), 'the coordinator\'s edit back to self');
     const submitted = await f.submitVia('s3', id);
     assert.equal(submitted.task.status, 'review', 'no self approval');
   } finally { await app.close(); }
@@ -131,27 +141,28 @@ test('authorised moves of self review: the user on the page, or the setting; eac
     const verified = verifyShip(app.hub, f.secret(), /--ticket (\S+)/.exec(ship.ship.command)![1]);
     assert.deepEqual([verified.reviewer, verified.verdict, verified.takeover], ['E', 'self', true]);
 
-    // With the setting on, a member may move it; with it off again, not.
-    const t2 = f.send(f.user, { action: 'task.create', title: 'setting', scope: 's', acceptance: 'a', memberId: a.id, reviewer: { kind: 'member', memberId: c.id } }).task.id;
-    await f.setSelf(true);
-    await f.act('s3', t2, { action: 'takeover', reviewer: { kind: 'self' } });
-    const assigned = await f.act('s3', t2, { action: 'handoff', memberId: b.id, reason: 'over to B' });
-    assert.equal(assigned.takeover.basis, 'cluster_setting');
-    assert.equal(assigned.takeover.toMemberId, b.id);
-    await f.setSelf(false);
-    refusedSelf(await f.act('s2', t2, { action: 'handoff', memberId: e.id, reason: 'over to E' }), 'setting off again');
+    // Reopen preserves the bound holder; the user or holder stepping up to user/member unlocks handoff.
+    const t2 = f.send(f.user, { action: 'task.create', title: 'stepup', scope: 's', acceptance: 'a', memberId: a.id, reviewer: { kind: 'member', memberId: c.id } }).task.id;
+    await f.page({ action: 'task.takeover', taskId: t2, expectedRevision: f.rev(t2), reviewer: { kind: 'self' } });
+    // After C edits reviewer to user, self-review binding clears and C can hand off to B (user still reviews).
+    await f.act('s3', t2, { action: 'edit', reviewer: { kind: 'user' } });
+    const handedOff = await f.act('s3', t2, { action: 'handoff', memberId: b.id, reason: 'C steps up reviewer first' });
+    assert.equal(handedOff.task.assignedMemberId, b.id);
+    assert.deepEqual(handedOff.task.reviewer, { kind: 'user' });
+
     // An edit to self on a taken-over task by the user binds it to the current executor.
     const t3 = f.send(f.user, { action: 'task.create', title: 'edit', scope: 's', acceptance: 'a', memberId: a.id, reviewer: { kind: 'member', memberId: c.id } }).task.id;
-    await f.act('s3', t3, { action: 'takeover' });
+    await f.page({ action: 'task.takeover', taskId: t3, expectedRevision: f.rev(t3) });
+    await f.page({ action: 'task.edit', taskId: t3, expectedRevision: f.rev(t3), reviewer: { kind: 'user' } });
     const edited = await f.page({ action: 'task.edit', taskId: t3, expectedRevision: f.rev(t3), reviewer: { kind: 'self' } });
     assert.equal(edited.takeover.action, 'task.edit');
     assert.equal(edited.takeover.toMemberId, c.id);
     assert.equal(f.noticeOf(edited.eventId)!.systemKind, 'review_downgraded');
-    assert.deepEqual(f.detail(t3).takeovers.map((r: any) => [r.action, r.basis, r.toMemberId]), [['task.takeover', 'user_review', c.id], ['task.edit', 'user', c.id]]);
+    assert.deepEqual(f.detail(t3).takeovers.map((r: any) => [r.action, r.basis, r.toMemberId]), [['task.takeover', 'user', c.id], ['task.edit', 'user', c.id], ['task.edit', 'user', c.id]]);
   } finally { await app.close(); }
 });
 
-test('reopen after a self-reviewed finish: a new executor needs a new authorisation; the bound one does not', async () => {
+test('reopen after a self-reviewed finish keeps the bound holder assigned and blocks third-party claims', async () => {
   const f = await fixture('reopen');
   const { app, a, c, e } = f;
   try {
@@ -160,40 +171,41 @@ test('reopen after a self-reviewed finish: a new executor needs a new authorisat
     await f.page({ action: 'task.takeover', taskId: id, expectedRevision: f.rev(id), reviewer: { kind: 'self' } });
     await f.act('s3', id, { action: 'start' });
     assert.equal((await f.submitVia('s3', id)).task.status, 'completed');
-    await f.page({ action: 'task.reopen', taskId: id, expectedRevision: f.rev(id), reason: 'again' });
-    refusedSelf(await f.act('s5', id, { action: 'claim' }), 'E claims the reopened task');
-    assert.ok(e);
-    assert.equal((await f.act('s3', id, { action: 'claim' })).task.assignedMemberId, c.id, 'C, still bound, picks it up again');
+    const reopened = await f.page({ action: 'task.reopen', taskId: id, expectedRevision: f.rev(id), reason: 'again' });
+    assert.equal(reopened.task.assignedMemberId, c.id, 'bound holder stays assigned across reopen');
+    assert.equal(e && (await f.act('s5', id, { action: 'claim' })).error?.includes('FORBIDDEN'), true, 'E cannot claim');
+    assert.equal((await f.act('s3', id, { action: 'start' })).task.assignedMemberId, c.id, 'C, still bound, restarts directly');
   } finally { await app.close(); }
 });
 
-test('the coordinator cannot be named as the next reviewer; the page leaves it out; edits on a taken-over task neither', async () => {
+test('the coordinator cannot be named as the next reviewer; explicit reviewer on takeover is rejected; edits on taken-over task reject coordinator', async () => {
   const f = await fixture('coordinator-reviewer');
   const { app, a, c, d } = f;
   try {
     const policy = f.send(f.user, { action: 'coordinator.set', memberId: d.id, enabled: true, mode: 'execute' }).coordinator;
     const id = f.send(f.user, { action: 'task.create', title: 'x', scope: 's', acceptance: 'a', memberId: a.id, reviewer: { kind: 'member', memberId: c.id } }).task.id;
     const named = await f.act('s3', id, { action: 'takeover', reviewer: { kind: 'member', memberId: d.id } });
-    assert.match(named.error, /FORBIDDEN/);
-    assert.match(named.error, /coordinator and cannot review/);
-    await f.act('s3', id, { action: 'takeover' });
+    assert.match(named.error, /INVALID_REQUEST/);
+    await f.page({ action: 'task.takeover', taskId: id, expectedRevision: f.rev(id) });
     await assert.rejects(f.page({ action: 'task.edit', taskId: id, expectedRevision: f.rev(id), reviewer: { kind: 'member', memberId: d.id } }),
       /coordinator and cannot review/, 'not by an edit on a taken-over task either');
     assert.ok(policy);
   } finally { await app.close(); }
 });
 
-test('a second takeover withdraws the first takeover\'s queued wake-up to the member who no longer executes', async () => {
+test('a second takeover by user after upgrading reviewer supersedes the prior takeover notice', async () => {
   const f = await fixture('withdraw');
   const { app, a, b, c } = f;
   try {
     const id = f.send(f.user, { action: 'task.create', title: 'w', scope: 's', acceptance: 'a', memberId: a.id, reviewer: { kind: 'member', memberId: b.id } }).task.id;
     app.hub.setPaused(true);
-    const first = f.send({ kind: 'member', memberId: a.id }, { action: 'task.takeover', taskId: id, expectedRevision: f.rev(id), reviewer: { kind: 'member', memberId: c.id } });
+    const first = f.send(f.user, { action: 'task.takeover', taskId: id, expectedRevision: f.rev(id) });
     const notice = f.noticeOf(first.eventId)!;
     const toB = () => app.store.withDeliveries([app.store.getMessage(notice.id)!])[0].deliveries.find((x) => x.memberId === b.id)!;
     assert.equal(toB().state, 'queued');
-    f.send({ kind: 'member', memberId: c.id }, { action: 'task.takeover', taskId: id, expectedRevision: f.rev(id) });
+    // Assign back away and name C as reviewer, then takeover to C: old wake-up to B is superseded.
+    f.send(f.user, { action: 'task.edit', taskId: id, expectedRevision: f.rev(id), reviewer: { kind: 'member', memberId: c.id } });
+    f.send(f.user, { action: 'task.takeover', taskId: id, expectedRevision: f.rev(id) });
     assert.equal(toB().state, 'superseded', 'B no longer executes, so the old wake-up is withdrawn');
     app.hub.setPaused(false);
   } finally { await app.close(); }
@@ -215,17 +227,17 @@ test('boundary: reviewer self is only written through the takeover rule on taken
   assert.match(source, /const checkExecutor = [\s\S]{0,1200}rebindSelf\(/);
 });
 
-test('sequences: setting on, takeover, setting off; self→user→self; cancel and reopen; nominate; a second takeover', async () => {
+test('sequences: reviewer takeover directly binds self; self→user→self; cancel and reopen; nominate; a second takeover', async () => {
   const f = await fixture('sequences');
   const { app, a, c, d, e } = f;
   try {
-    // The binding made while the setting was on stays C's after it is turned off: C was authorised at that moment.
-    await f.setSelf(true);
+    // Reviewer takes over directly once a submission exists: bound to C with basis reviewer.
     const t1 = f.send(f.user, { action: 'task.create', title: 'on-off', scope: 's', acceptance: 'a', memberId: a.id, mergeRequired: false,
       reviewer: { kind: 'member', memberId: c.id } }).task.id;
-    await f.act('s3', t1, { action: 'takeover', reviewer: { kind: 'self' } });
-    await f.setSelf(false);
-    await f.act('s3', t1, { action: 'start' });
+    await f.act('s1', t1, { action: 'start' });
+    await f.submitVia('s1', t1, 'abcdef0101');
+    const taken1 = await f.act('s3', t1, { action: 'takeover' });
+    assert.equal(taken1.takeover.basis, 'reviewer');
     assert.equal((await f.submitVia('s3', t1)).review.takeover, true);
 
     // The coordinator may move a self-reviewed task back to user review (an upgrade), but not to self again.
@@ -236,7 +248,7 @@ test('sequences: setting on, takeover, setting off; self→user→self; cancel a
     assert.deepEqual((await f.act('s4', t2, { action: 'edit', reviewer: { kind: 'user' }, generation: policy.generation })).task.reviewer, { kind: 'user' });
     refusedSelf(await f.act('s4', t2, { action: 'edit', reviewer: { kind: 'self' }, generation: policy.generation }), 'back to self');
 
-    // Cancel and reopen: the executor is cleared; only the bound C may pick it up, the coordinator cannot hand it to E.
+    // Cancel and reopen: bound C stays assigned; coordinator cannot hand or assign to E.
     const t3 = f.send(f.user, { action: 'task.create', title: 'cancel', scope: 's', acceptance: 'a', memberId: a.id, reviewer: { kind: 'member', memberId: c.id } }).task.id;
     await f.page({ action: 'task.takeover', taskId: t3, expectedRevision: f.rev(t3), reviewer: { kind: 'self' } });
     await f.act('s4', t3, { action: 'cancel', reason: 'x', generation: policy.generation });
