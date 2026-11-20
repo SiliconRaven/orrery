@@ -1,0 +1,112 @@
+name: Bug Report / 问题反馈
+description: Report a bug in Orrery (Hub, desktop app, web UI, Star Map, adapters, or official plugins) / 反馈 Orrery 的问题
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill in the environment fields so we can reproduce it quickly.
+        - **Security issue?** Do **not** open a public issue — use [Private Vulnerability Reporting](https://github.com/SiliconRaven/orrery/security/advisories/new) instead.
+        - **Privacy:** Redact tokens, secrets, personal paths, and private conversation content before pasting logs or screenshots.
+
+  - type: input
+    id: orrery_version
+    attributes:
+      label: Orrery Version / Orrery 版本
+      description: Release version (e.g. `0.10.0-beta.4`) or git commit SHA, and whether you used the Windows installer or ran from source.
+      placeholder: "e.g. 0.10.0-beta.4 (Windows installer)"
+    validations:
+      required: true
+
+  - type: input
+    id: windows_version
+    attributes:
+      label: Windows / OS Version / 系统版本
+      description: Run `winver` on Windows to check your build number.
+      placeholder: "e.g. Windows 11 24H2 (Build 26100)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: harnesses
+    attributes:
+      label: Harnesses Used / 用到的原生客户端（可多选）
+      description: Select every AI harness involved in the issue.
+      multiple: true
+      options:
+        - Claude Code / Claude Desktop
+        - Codex / ChatGPT
+        - Kimi Code
+        - DeepSeek Harness
+        - Cursor
+        - Qoder
+        - Antigravity
+        - ZCode
+        - WorkBuddy
+        - None (Hub / Web UI / Desktop shell only)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: third_party_plugins
+    attributes:
+      label: Third-Party Plugins Installed? / 是否安装了第三方插件？
+      description: Official built-in plugins (`tasks`, `coordinator`, `bookmarks`, `starmap`) do not count as third-party.
+      options:
+        - No (official built-in plugins only) / 否（仅官方内置插件）
+        - Yes — restricted plugin(s) only / 是（仅受限第三方插件）
+        - Yes — full-trust plugin(s) enabled / 是（启用了完全信任第三方插件）
+        - Not sure / 不确定
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Area / 涉及模块
+      options:
+        - Hub & message delivery / Hub 与消息投递
+        - Windows Desktop shell (Electron) / 桌面版外壳
+        - Web UI (Standard view) / 协作页（标准界面）
+        - Star Map plugin / 星图插件
+        - Tasks / Coordinator / Bookmarks / 任务、协调与收藏
+        - Native adapter / Bridge / MCP / 原生适配与桥接
+        - Plugin system & updates / 插件系统与更新
+        - Other / 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened? / 问题描述
+      description: Clear summary of the bug. If you have third-party plugins enabled, please list their names.
+      placeholder: Describe what went wrong...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce / 复现步骤
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior / 预期行为
+      placeholder: What did you expect to happen instead?
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or Screenshots / 日志或截图（可选，请先脱敏）
+      description: Paste relevant console/Hub logs or drag-and-drop screenshots. Please remove any tokens or private paths.
+      render: text

@@ -1,0 +1,56 @@
+name: Feature Request / 功能建议
+description: Suggest a new feature, native harness adapter, or plugin capability / 提出新功能、新客户端接入或插件能力建议
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a general usage question or want to share a plugin idea? Start a thread in [GitHub Discussions](https://github.com/SiliconRaven/orrery/discussions) first!
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category / 类别
+      options:
+        - New native harness adapter / 新增原生客户端接入
+        - Plugin API & Star Map embedding / 插件能力与星图嵌入
+        - Collaboration & Tasks workbench / 协作与任务工作台
+        - Web UI & Star Map UX / 网页与星图体验
+        - Windows Desktop shell / Windows 桌面外壳
+        - Documentation / 文档
+        - Other / 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Use Case / 想解决什么问题或场景？
+      description: Describe the friction or workflow gap you ran into.
+      placeholder: "When working with multiple agents, I want to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution / 期望的做法
+      description: How would you like this to work?
+      placeholder: Describe the feature, UX, or plugin interface you have in mind...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or Additional Context / 备选方案或补充说明（可选）
+      placeholder: Any workarounds, mockups, or references?
+
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Orrery Design Guardrails / 安全与设计边界（参考）
+      description: Orrery routes messages transparently into your native apps and leaves execution approvals to each host app.
+      options:
+        - label: This feature does not require auto-approving host-app permissions or launching closed native apps without an explicit user click.
