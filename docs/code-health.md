@@ -24,11 +24,11 @@ check:health 检查未引用文件、依赖和循环，循环按 error 处理，
 Knip 自动读取 package.json 的 main / exports / scripts 和 CI 命令；这些不重复登记。其余动态入口和扫描范围统一维护在 knip.json 的 workspaces 中，根包使用 `"."`，桌面包和 DeepSeek 插件保留自己的依赖边界。
 
 - 根 Node 入口：Hub、启动器、备份、Claude 桥，以及 package.json / CI 使用的开发脚本。
-- 网页：index.html 加载的 app.js 和经典脚本 theme.js；app 的静态导入继续跟踪。官方书签插件由插件插槽动态加载，单独登记为入口。
+- 网页：index.html 加载 app.js 和经典脚本 theme.js，app 的静态导入继续跟踪。书签、协调员、星图和任务的官方网页模块由插件插槽动态加载，各自在 Knip 中登记为入口。
 - 原生插件：会被外部 harness 复制或执行的 MCP、hook、sidecar、后台等待脚本；Antigravity 的 hook-dump 是文档公开的诊断入口。Cursor 的 lib/hub.mjs 等内部模块仍由实际导入跟踪。
 - DeepSeek 插件：lib/index.js 是 package.json 的 main / exports，导出由外部 Cordis 使用，不能按仓库内没有调用就删除。
 - 示例：两个 hub-plugins 的 main.mjs 由各自清单指定，由 Hub 另起进程执行。
-- 测试：scripts/test.mjs 实际运行的 test/*.test.ts 是非生产入口；helpers 和其余测试支持文件不直接豁免，通过导入跟踪。两个 test/live 脚本是文档说明的手动入口；两个 fake CLI fixture 由测试的字符串路径另起进程执行，逐个登记。
+- 测试：scripts/test.mjs 实际运行的 test/*.test.ts 是非生产入口；helpers 和其余测试支持文件通过导入跟踪。用路径启动的模拟 CLI 和用清单加载的插件 fixture（例如 config-demo）逐个登记。
 - 桌面：main / shortcut、三份 preload 和三个 HTML 直接加载的 UI 模块；四个独立 Electron 检查，以及测试通过字符串路径运行的 win32-host / temp-reaper。其他桌面模块继续按实际导入跟踪。
 
 入口末尾的 `!` 表示生产入口，不带该标记的测试和开发命令不会在 `--production` 模式中作为入口。生产模式只是辅助观察测试专用导出，不替代默认的全仓报告。
