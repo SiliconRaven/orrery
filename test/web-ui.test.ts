@@ -138,7 +138,10 @@ test('sidebar read advancement waits for replay, stops after failure, and rechec
     messages: new Map([['m1', { id: 'm1', from: 'agent' }], ['n1', { id: 'n1', from: 'agent' }]]) };
   const doc = { visibilityState: 'visible', hasFocus: () => true };
   const windows = new Map<string, any>([['a', { live: true, pending: null }], ['b', { live: true, pending: null }]]);
+  const appClasses = new Set<string>();   // #app: 'view-open' while a full-page plugin view covers the chat
+  const appEl = { classList: { contains: (c: string) => appClasses.has(c) } };
   const context: any = { S: state, clusterSnapshotSeq: 5, chatWindows: windows, unread: new Map(), document: doc,
+    $: (id: string) => (id === 'app' ? appEl : assert.fail(`unexpected $(${id})`)),
     Date: { now: () => now }, setTimeout: (fn: () => void, delay: number) => (timers.push({ fn, delay }), timers.length),
     api: (_method: string, path: string, body: { messageId: string }) => {
       calls.push({ path, messageId: body.messageId });
@@ -181,6 +184,25 @@ test('sidebar read advancement waits for replay, stops after failure, and rechec
   context.read.scheduleSelectedRead();
   assert.deepEqual(calls[3], { path: '/api/clusters/b/read', messageId: 'n2' }, 'the read position is not in the window: still advanced');
   pending[3].resolve({});
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // A full-page plugin view covers the chat: a message arriving meanwhile stays unread, a delayed receipt included.
+  appClasses.add('view-open');
+  state.clusterMsgs.get('b').push('n3'); state.messages.set('n3', { id: 'n3', from: 'agent' });
+  context.read.scheduleSelectedRead();
+  assert.equal(calls.length, 4, 'nothing is read while a view covers the chat');
+  appClasses.delete('view-open');
+  context.read.scheduleSelectedRead();   // n2 was sent just now: this receipt is delayed
+  assert.equal(calls.length, 4);
+  const delayed = timers.at(-1)!;
+  appClasses.add('view-open');   // a view opens before the delayed receipt fires
+  now += 2000; delayed.fn();
+  assert.equal(calls.length, 4, 'a delayed receipt does not read under a view either');
+  // Back in the chat (closing the view redraws, which schedules again): read as before.
+  appClasses.delete('view-open');
+  context.read.scheduleSelectedRead();
+  assert.deepEqual(calls[4], { path: '/api/clusters/b/read', messageId: 'n3' });
+  pending[4].resolve({});
   await new Promise((resolve) => setImmediate(resolve));
 });
 
@@ -646,7 +668,7 @@ test('web ui: only enabled first-party module names are imported and register sl
     return { register(given: unknown) { assert.equal(given, host); return hooks; } };
   };
   const disabled = await loadPluginSlots({ frontend: [], plugins: [{ id: 'external' }] }, host, load);
-  assert.deepEqual(disabled, { message: [], composer: [], workbench: [], settings: [], trusted: [], tried: [], onRelease: null });
+  assert.deepEqual(disabled, { message: [], composer: [], workbench: [], settings: [], view: [], trusted: [], tried: [], onRelease: null, closeView: null });
   const enabled = await loadPluginSlots({
     frontend: ['bookmarks', 'bookmarks', 'disabled', '../app', '/app.js', 'https://external.invalid/a.js'],
     plugins: [{ id: 'bookmarks' }, { id: 'external' }, { id: '../app' }, { id: '/app.js' }, { id: 'https://external.invalid/a.js' }],

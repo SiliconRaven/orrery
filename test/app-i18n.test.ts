@@ -130,10 +130,11 @@ test('unsaved() still guards a reload after a Hub restart: drafts, attachments a
   const dialogs: object[] = [];
   const chat = { input: { value: '' } };
   const uploads = new Map<string, string[]>();
+  const viewHost = { typed: false, hasTypedInput() { return this.typed; } };
   const read = runInNewContext(unsaved + '\nunsaved', {
     chat, direct: { input: { value: '' } }, drafts: new Map(), uploads, sending: new Set(), editingId: null,
     panelEditor: { dirty: () => false }, openForm: null, taskDrafts: new Map(), S: {},
-    document: { querySelectorAll: () => dialogs }, $: () => ({ value: '' }), LIMIT_FORMS: [], NOTIFY_FORMS: [],
+    document: { querySelectorAll: () => dialogs }, $: () => ({ value: '' }), LIMIT_FORMS: [], NOTIFY_FORMS: [], viewHost,
   });
   assert.equal(reloadWouldLose(read()), false);
   chat.input.value = 'unsent';
@@ -142,6 +143,9 @@ test('unsaved() still guards a reload after a Hub restart: drafts, attachments a
   uploads.set('chat', ['attachment']);
   assert.equal(reloadWouldLose(read()), true);
   uploads.clear();
+  viewHost.typed = true;   // unsent input in an open full-page view
+  assert.equal(reloadWouldLose(read()), true);
+  viewHost.typed = false;
   dialogs.push({ id: 'settings-dialog' });
   assert.equal(reloadWouldLose(read()), true);
 });

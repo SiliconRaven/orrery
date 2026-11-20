@@ -482,5 +482,7 @@ export default {
   "第三方插件可在卡片上立即启动、停止或重启。发言设置保存后立即生效。": "Start, stop, or restart third-party plugins directly from their cards. Message settings take effect when saved.",
   " 重新列出的已摘除插件仍需刷新页面才能恢复。": " Reload the page to restore detached plugins that are listed again.",
   "「{title}」没有运行": "“{title}” did not run",
-  "「{title}」没有取消": "“{title}” was not canceled"
+  "「{title}」没有取消": "“{title}” was not canceled",
+  "返回聊天": "Back to chat",
+  "第三方插件：{title}": "Third-party plugin: {title}"
 };

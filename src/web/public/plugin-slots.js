@@ -10,7 +10,8 @@ const IMPORT_TIMEOUT_MS = 5000;
 /** Full-trust plugins released in this page (detached, or failed): never called again, never attached again. */
 const released = new Set();
 const pendingRelease = new Set();
-const isInactive = (id) => released.has(id) || pendingRelease.has(id);
+/** Whether a full-trust plugin is released, or about to be, in this page (its callbacks are no longer called). */
+export const isInactive = (id) => released.has(id) || pendingRelease.has(id);
 /** Each full-trust plugin's own cleanup functions (host.onDispose), run once when it is released. */
 const disposers = new Map();
 
@@ -21,12 +22,15 @@ const catchThenable = (value, label) => Promise.resolve(value).catch(warnOf(labe
 /**
  * The shapes a full-trust module must hand back (checked before anything of it is attached). `hooks`: methods, the
  * `required` ones present; `data`: plain fields of a given type. Anything else is refused. `register(host)` returns an
- * object with any of the four slots; `message` is an object of hooks, the other three are functions (factories) the
- * host calls; a workbench factory returns a TAB.
+ * object with any of the five slots; `message` is an object of hooks, `view` an object checked by checkView, the other
+ * three are functions (factories) the host calls; a workbench factory returns a TAB.
  */
 const MESSAGE = { required: ['render'], optional: ['key', 'capture', 'restore', 'update'] };
 const TAB = { required: ['render', 'load'], optional: ['reset', 'itemRow'], data: { id: 'string', label: 'string' } };
-const SLOTS = ['message', 'composer', 'workbench', 'settings'];
+const SLOTS = ['message', 'composer', 'workbench', 'settings', 'view'];
+const VIEW_KEYS = ['id', 'title', 'icon', 'mount', 'unmount'];
+/** Whether the page's sprite has the icon `i-<name>` (a view names its icon, it never brings its own markup). */
+const spriteHas = (name) => globalThis.document?.getElementById(`i-${name}`)?.localName === 'symbol';
 
 function checkShape(what, value, { required, optional, data = {} }) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || isThenable(value)) throw new Error(`${what} must be an object (not a promise)`);
@@ -37,6 +41,20 @@ function checkShape(what, value, { required, optional, data = {} }) {
     if ((required.includes(key) || value[key] !== undefined) && typeof value[key] !== 'function') throw new Error(`${what}.${key} must be a function`);
   }
   for (const [key, type] of Object.entries(data)) if (typeof value[key] !== type || !value[key]) throw new Error(`${what}.${key} must be a non-empty ${type}`);
+}
+
+/**
+ * A full-page view (docs/plugins.md「官方网页插槽」): `id` is the plugin's own id (so one plugin cannot take another's
+ * place), `title` plain text or a function returning it, `icon` the name of an icon of the page's sprite, `mount(el, ctx)`
+ * and `unmount()`; nothing else, and not a promise.
+ */
+function checkView(view, id, hasIcon) {
+  if (!view || typeof view !== 'object' || Array.isArray(view) || isThenable(view)) throw new Error('view must be an object (not a promise)');
+  for (const key of Object.keys(view)) if (!VIEW_KEYS.includes(key)) throw new Error(`view.${key} is not part of the slot`);
+  if (view.id !== id) throw new Error(`view.id must be the plugin's id (${id})`);
+  if (typeof view.title !== 'function' && (typeof view.title !== 'string' || !view.title.trim())) throw new Error('view.title must be a non-empty string or a function');
+  if (typeof view.icon !== 'string' || !ID.test(view.icon) || !hasIcon(view.icon)) throw new Error('view.icon must name an icon of the page (i-<name>)');
+  for (const key of ['mount', 'unmount']) if (typeof view[key] !== 'function') throw new Error(`view.${key} must be a function`);
 }
 
 /** What register(host) returned, checked as a whole: one bad slot refuses the module. */
@@ -132,7 +150,7 @@ function draftText(control) {
   return control.value;
 }
 
-function trackTypedInput(node, id) {
+export function trackTypedInput(node, id) {
   node.setAttribute('data-plugin-slot', id);
   if (trackedNodes.has(node)) return;
   trackedNodes.add(node);
@@ -151,7 +169,8 @@ function trackTypedInput(node, id) {
   }, true);
 }
 
-function typedInput(nodes) {
+/** What the user typed into these elements (each a slot's element) and is still visible there: [label, text] pairs. */
+export function typedInput(nodes) {
   const fields = [];
   for (const control of new Set(nodes.flatMap(draftControls))) {
     const value = draftValue(control);
@@ -204,7 +223,8 @@ function keepTypedInput(fields) {
  * Releases one full-trust plugin, at once and for good: its slots leave `slots`, every element it rendered through a
  * slot or its host's dialogs is removed (what the user typed into them is kept in the host's own notice), its cleanup
  * functions run once, and its host handles refuse from now on. `slots.onRelease` lets the page follow (workbench tabs,
- * a redraw). Used for a registration that failed and for a detach.
+ * a redraw). Used for a registration that failed and for a detach. Its open full-page view, if any, is closed in between
+ * (`slots.closeView`): after what was typed there is read, before the cleanup functions run.
  */
 function release(slots, id, root = globalThis.document) {
   if (released.has(id)) return;
@@ -216,6 +236,7 @@ function release(slots, id, root = globalThis.document) {
   }
   const nodes = [...(root?.querySelectorAll?.(`[data-plugin-slot="${CSS.escape(id)}"]`) ?? [])];
   const fields = nodes.length ? typedInput(nodes) : [];
+  slots.closeView?.(id);
   for (const node of nodes) {
     if (node.open && typeof node.close === 'function') node.close();
     node.remove();
@@ -268,8 +289,11 @@ function trustedHost(id, host) {
  * trust only): a factory the host calls later that hands back a promise or a value of the wrong shape releases the whole
  * plugin (after the current call, so the host's own loop over the slots is not disturbed).
  */
-function addSlots(slots, id, hooks, own, fail = null) {
+function addSlots(slots, id, hooks, own, fail = null, hasIcon = spriteHas) {
   const mark = (entry) => Object.assign(entry, { pluginId: id });
+  const view = hooks.view;
+  if (isThenable(view)) catchThenable(view, `${id}.view`);   // refused below; its later rejection is only logged
+  if (view !== undefined) checkView(view, id, hasIcon);   // before anything of the module is added
   if (hooks.message) slots.message.push(mark(protectMethods(`${id}.message`, hooks.message, ['render', 'key', 'capture', 'restore', 'update'], own, ['render'])));
   for (const name of ['composer', 'settings']) {
     if (!hooks[name]) continue;
@@ -284,6 +308,22 @@ function addSlots(slots, id, hooks, own, fail = null) {
     };
     slots[name].push(mark(protect(`${id}.${name}`, factory, own, true)));
   }
+  // The view host (plugin-view.js) calls mount and unmount itself, each in its own guard, and unmount once per opening.
+  if (view) slots.view.push(mark({ icon: view.icon, trusted: own !== null,
+    title() {
+      if (typeof view.title === 'string') return view.title;
+      try {
+        if (own === null || !isInactive(id)) {
+          const text = view.title();
+          if (isThenable(text)) catchThenable(text, `${id}.view.title`);   // not a title: the id stands in
+          if (typeof text === 'string' && text.trim()) return text;
+        }
+      } catch (error) { warnOf(`${id}.view.title`)(error); }
+      return id;
+    },
+    mount: (el, ctx) => view.mount(el, ctx),
+    unmount: () => view.unmount(),
+  }));
   const createTab = hooks.workbench;
   if (createTab) slots.workbench.push(mark(protect(`${id}.workbench`, function (...args) {
     const tab = createTab.apply(this, args);
@@ -303,20 +343,20 @@ const withTimeout = (promise, what) => {
 /**
  * Loads each listed module and collects its slots. `result` is GET /api/plugins: `frontend` names official modules,
  * `trustedFrontend` the full-trust plugins whose page module may load; either must also be running (`plugins`). A
- * module exports `register(host)` and returns the slots message, composer, workbench and settings (checked: SLOTS,
- * MESSAGE, TAB). A full-trust module that fails to load, register or fit is released as a whole (release). For a later
- * comparison: `tried`, the full-trust plugins this page tried to load, and `trusted`, those attached (registered their
- * slots and not failed since).
+ * module exports `register(host)` and returns the slots message, composer, workbench, settings and view (checked: SLOTS,
+ * MESSAGE, TAB, checkView; `hasIcon` tells the page's icons). A full-trust module that fails to load, register or fit is
+ * released as a whole (release). For a later comparison: `tried`, the full-trust plugins this page tried to load, and
+ * `trusted`, those attached (registered their slots and not failed since).
  */
 export async function loadPluginSlots(result, host, load = (id) => import(`./official-plugins/${id}.js`),
-  loadTrusted = (id) => import(`/plugin-web/${id}/`)) {
-  const slots = { message: [], composer: [], workbench: [], settings: [], trusted: [], tried: [], onRelease: null };
+  loadTrusted = (id) => import(`/plugin-web/${id}/`), hasIcon = spriteHas) {
+  const slots = { message: [], composer: [], workbench: [], settings: [], view: [], trusted: [], tried: [], onRelease: null, closeView: null };
   const running = new Set(result?.plugins.map((plugin) => plugin.id));
   for (const id of new Set(result?.frontend)) {
     if (typeof id !== 'string' || !ID.test(id) || !running.has(id)) continue;
     try {
       const { register } = await load(id);
-      addSlots(slots, id, register(host), null);
+      addSlots(slots, id, register(host), null, null, hasIcon);
     } catch (error) {
       console.warn(`plugin UI failed to load: ${id}`, error);
     }
@@ -341,7 +381,7 @@ export async function loadPluginSlots(result, host, load = (id) => import(`./off
       const hooks = modules[i].value.register(trustedHost(id, host));
       if (isThenable(hooks)) catchThenable(hooks, `${id}.register`);
       checkHooks(hooks);
-      addSlots(slots, id, hooks, id, fail);
+      addSlots(slots, id, hooks, id, fail, hasIcon);
       slots.trusted.push(id);
     } catch (error) {
       console.warn(`plugin UI failed to load: ${id}`, error);

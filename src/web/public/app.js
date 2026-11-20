@@ -21,8 +21,9 @@ import { initSettings } from './settings.js';
 import { mountPluginInstall } from './plugin-install.js';
 import { mountUpdates } from './updates.js';
 import { detachPluginSlots, loadPluginSlots, trustedChange, trustNoticeText } from './plugin-slots.js';
+import { createViewHost } from './plugin-view.js';
 import { formDialog } from './workbench-form.js';
-import { createPluginUi } from './plugin-ui.js';
+import { createPluginUi, themeSnapshot } from './plugin-ui.js';
 import { isTaskChangeNotice, parseLegacyTaskNotice, shipFailureNotice } from './task-diff.js';
 import { createTaskCandidates, createTaskRefs, inRanges, quotedRanges, taskRefIds } from './task-refs.js';
 import { conversationMatrix, CONVERSATIONS_VIEW_KEY, harnessApp, mountKeepingScroll, STATUS_WORD, viewFromStored } from './conversation-matrix.js';
@@ -799,7 +800,10 @@ function connect(since, rebuilt = false) {
   const es = new EventSource(`/api/stream?since=${since}`);
   stream = es;
   let down = rebuilt;   // a rebuilt stream follows an outage (maybe a Hub restart), so it re-syncs pause on first open
-  es.onmessage = (m) => applyEvent(JSON.parse(m.data));
+  es.onmessage = (m) => {
+    applyEvent(JSON.parse(m.data));
+    viewHost.emit(m.data);   // an open full-page view's listeners (ctx.onEvent) get their own copy
+  };
   // A plugin command run (docs/external-plugins.md「命令」): a named frame outside the event log, for this page only.
   es.addEventListener('plugin-run', (m) => { try { runState.apply(JSON.parse(m.data)); } catch { /* a bad frame changes nothing */ } render(); });
   // A third-party plugin's state (docs/external-plugins.md「生命周期」): its card on the settings page, if drawn, keeps the newer copy.
@@ -896,6 +900,7 @@ function unsaved() {
     drafts: [chat.input.value, direct.input.value, ...drafts.values()],
     uploads: [...uploads.values()].reduce((n, list) => n + list.length, 0),
     editing: sending.size > 0 || editingId !== null || panelEditor.dirty() || Boolean(openForm) || [...taskDrafts.values()].some((ids) => ids.length)
+      || viewHost.hasTypedInput()
       || [...document.querySelectorAll('dialog[open]')].some((d) => d.id !== 'viewer')
       || Boolean(S.settings?.usageAlert && (String(S.settings.usageAlert.turnTokens) !== $('usage-alert-turn').value
         || String(S.settings.usageAlert.conversationTokens) !== $('usage-alert-conversation').value))
@@ -1005,6 +1010,8 @@ function scheduleSelectedRead() {
   const id = S.sel.cluster;
   const cluster = S.clusters.get(id);
   if (!cluster || S.sel.overview || !replayComplete() || document.visibilityState !== 'visible' || !document.hasFocus()) return;
+  // A full-page plugin view covers the chat: nothing in it is being read. Closing the view redraws, which reads again.
+  if ($('app').classList.contains('view-open')) return;
   // Only a window that shows the newest message: reading older history does not read what came after it. The old read
   // position need not be loaded; the Hub only ever moves it forward.
   const w = chatWindows.get(id);
@@ -4790,6 +4797,7 @@ onLanguageChange(() => {
   translateStatic(document);
   translateStatic($('editor-template').content);   // the name/avatar editors cloned later
   if (connOk !== null) setConn(connOk);
+  viewHost.relabel();   // view titles given as functions, and the third-party label
   fitPanes();   // the dividers' "N 像素"
   $('chat-filter-panel').replaceChildren();   // built once: renderChatFilter builds it again, the filter itself is kept
   if (clusterMenu) {   // an open ⋯ menu is built again in the new language, on its (redrawn) trigger
@@ -4809,6 +4817,17 @@ onLanguageChange(() => {
   }
   render();
 });
+
+// ---- full-page plugin views (plugin-view.js): entries in the sidebar head, the view over the main area ----
+
+const viewHost = createViewHost({ app: $('app'), layer: $('plugin-view'), heading: $('plugin-view-title'), back: $('plugin-view-back'),
+  before: $('open-settings'), api: featureApi, clusterId: () => S.sel.cluster ?? null,
+  openChat: (cluster) => { if (typeof cluster === 'string' && S.clusters.has(cluster)) select(cluster); }, theme: () => themeSnapshot().scheme, onChange: render,
+  // Under the view: the chat (but its global banners, raised over the view) and the member panel.
+  covered: () => [...[...$('chat').children].filter((node) => !node.matches('#update-banner, #trust-banner, #safe-mode-banner')), $('panel-divider'), $('member-panel')],
+  // Shown, and not in the narrow screen's closed sidebar drawer (opening a view closes it).
+  canFocus: (node) => node.getClientRects().length > 0 && !(innerWidth <= 900 && !$('app').classList.contains('sidebar-open') && $('sidebar').contains(node)),
+  fallbackFocus: () => [$('open-settings'), $('open-sidebar')] });
 
 // ---- start ----
 
@@ -4834,7 +4853,9 @@ try {
     ui: Object.freeze({ h, icon, emptyState, noticeDialog, confirmDialog, formDialog }) });
   // A plugin released later (detached, or a slot of it found wrong): its workbench tab goes, and kept message elements
   // are rebuilt without it before they are shown again.
-  pluginSlots.onRelease = (ids) => { workbench.detachPlugins(ids); render(); };
+  pluginSlots.onRelease = (ids) => { workbench.detachPlugins(ids); viewHost.setViews(pluginSlots.view); render(); };
+  pluginSlots.closeView = (id) => viewHost.release(id);   // in release: after its typed input is kept, before its onDispose
+  viewHost.setViews(pluginSlots.view);
   pagePlugins = plugins;
   pluginsStart = typeof plugins?.instance === 'string' ? plugins.instance : null;   // the start this list came from
   hubCheckPending = plugins === null;
