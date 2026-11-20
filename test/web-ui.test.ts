@@ -3175,6 +3175,10 @@ test('web ui: task notice details load lazily and only use an event belonging to
   const old = { ...failure, id: 'old', body: '任务【标题】合并失败，已退回执行者（原因：checks: old\npartial log），事件 42。' };
   assert.equal(helpers.shipFailureNotice(old), '任务【标题】合并失败，已退回执行者，事件 42。');
   assert.equal(context.diff.messageTaskDiff(old, null).failure, true);
+  // Since a failed ship keeps the task completed, the Hub's notice says 保留已通过状态 instead of 已退回执行者.
+  const kept = { ...failure, id: 'kept', body: '任务 #7【标题】合并失败：合并前检查未通过，保留已通过状态（可原样重跑、ship_fix 或 reopen），事件 42。' };
+  assert.equal(helpers.shipFailureNotice(kept), '任务 #7【标题】合并失败：合并前检查未通过，保留已通过状态（可原样重跑、ship_fix 或 reopen），事件 42。');
+  assert.equal(context.diff.messageTaskDiff(kept, null).failure, true);
   const numberedFailure = { ...failure, id: 'numbered-failure', body: '任务 #7【标题】合并失败：合并前检查未通过，已退回执行者，事件 42。' };
   assert.equal(context.diff.messageTaskDiff(numberedFailure, null).failure, true);
   const numberedEdit = { ...message, id: 'numbered-edit', body: '任务 #7【标题】已更新：改了 范围，事件 42。' };

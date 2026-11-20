@@ -174,7 +174,7 @@ export const pendingMerge = (task) => task.status === 'completed' && task.mergeR
 export const supersededSubmission = (task, submission) => Object.hasOwn(task, 'latestSubmissionId') && submission.id !== task.latestSubmissionId;
 
 /** Why the review mode after a reviewer takeover is what it is (docs/collaboration.md「验收者接手」). */
-export const TAKEOVER_BASIS = { user: '用户本人操作', cluster_setting: '群设置授权', user_review: '默认改为用户验收', named_member: '指定成员' };
+export const TAKEOVER_BASIS = { reviewer: '验收者本人操作', user: '用户本人操作', cluster_setting: '群设置授权', user_review: '默认改为用户验收', named_member: '指定成员' };
 /** The 验收者接手 mark of a task taken over by its reviewer, or null. */
 export const takeoverMark = (task) => task.takeover ? t("验收者接手 · {basis}", { basis: (TAKEOVER_BASIS[task.takeover.basis] ? t(TAKEOVER_BASIS[task.takeover.basis]) : t("依据未知")) }) : null;
 /** A review mode in words: 用户验收, 自查, or 成员验收 (`nameOf` names the member). */
@@ -183,17 +183,6 @@ export const reviewModeText = (reviewer, nameOf) => reviewer?.kind === 'member' 
 /** A task its member reviewer can take over: not awaiting approval, still pending, working or in review. */
 export const canTakeOver = (task) => task.reviewer?.kind === 'member' && task.proposalState !== 'proposed'
   && ['pending', 'working', 'review'].includes(task.status);
-/**
- * The takeover command for the dialog's choice: user review sends no reviewer (the Hub's default), a member needs one
- * picked. Returns null while the choice is incomplete.
- */
-export function takeoverCommand(task, mode, memberId) {
-  const base = { action: 'task.takeover', taskId: task.id, expectedRevision: task.revision };
-  if (mode === 'self') return { ...base, reviewer: { kind: 'self' } };
-  if (mode === 'member') return memberId ? { ...base, reviewer: { kind: 'member', memberId } } : null;
-  return base;
-}
-
 /**
  * The task detail's controls: at most one primary action for the state the task is in, the negative paired with it,
  * and the rest for the 更多 menu, each only when it applies. The Hub still validates every command.
@@ -291,10 +280,12 @@ export function batchGroups(tasks, batches) {
 
 /** A batch's progress as the texts of its chips: submitted n/m, approved k/m, and where it stands. */
 export function batchProgress(batch) {
-  const state = batch.merged ? t('已合并') : batch.shipFailure && batch.allApproved === false && !batch.complete ? t("合并失败，已退回")
+  // A failed ship keeps every task completed and approved (docs/collaboration.md「ship 失败」): say so instead of "待 ship".
+  const failed = Boolean(batch.shipFailure);
+  const state = batch.merged ? t('已合并') : failed ? t("上次合并失败，待处理")
     : batch.allApproved ? t("已全部通过，待 ship") : batch.complete ? t("已齐，待验收") : t("未齐");
   return { submitted: t('已提交 {submitted}/{total}', { submitted: batch.submitted, total: batch.total }), approved: t('已通过 {approved}/{total}', { approved: batch.approved, total: batch.total }), state,
-    tone: batch.merged ? 'merged' : batch.allApproved || batch.complete ? 'ready' : batch.shipFailure ? 'failed' : 'open' };
+    tone: batch.merged ? 'merged' : failed ? 'failed' : batch.allApproved || batch.complete ? 'ready' : 'open' };
 }
 
 const BATCH_STATE = { missing: '未提交', submitted: '已提交', approved: '已通过', merged: '已合并', cancelled: '已取消' };
@@ -1352,6 +1343,8 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
         t("提交 "), h('code', {}, submission.commitSha.slice(0, 7))) : null,
       submission.manual ? h('span', { class: 'wb-mode' }, t("用户手动标记")) : null,
       supersededSubmission(task, submission) ? h('span', { class: 'wb-mode' }, t("已取代")) : null),
+      submission.shipFix ? h('div', { class: 'wb-row' }, h('span', { class: 'wb-row-key' }, t("原地修复")),
+        h('span', {}, t("基于提交 {base} · 对应失败事件 {eventId}", { base: submission.shipFix.baseCommitSha.slice(0, 7), eventId: submission.shipFix.failureEventId }))) : null,
       submission.summary ? longText(`submission:${submission.id}`, submission.summary) : null,
       attachmentList(`submission:${submission.id}`, submissionFiles(submission, messageFiles)),
       h('div', { class: 'workbench-actions' }, (submission.evidenceMessageIds ?? []).map((id) => messageLink(id, t("证据消息")))));
@@ -1378,11 +1371,13 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   }
 
   function takeoverView(item) {
-    // task.takeover: the reviewer took the task over; an edit, assignment or hand-off moved self review to an executor.
-    const moved = item.action && item.action !== 'task.takeover';
+    // task.takeover and the atomic reject-takeover (task.review) both hand the task to its reviewer straight away; an
+    // edit, assignment or hand-off just moved self review to an executor.
+    const moved = item.action && !['task.takeover', 'task.review'].includes(item.action);
     return h('p', { class: 'wb-takeover-record' }, t("{actorName} 发起 · ", { actorName: actorName(item.by) }), moved ? t("自查授权给 ") : null, memberChip(item.toMemberId), moved ? '' : t(" 接手执行"),
       item.fromMemberId && item.fromMemberId !== item.toMemberId ? [t("（原执行者 "), memberChip(item.fromMemberId), t('）')] : null,
       t(" · 验收方式 {before} → {after} · 依据 {basis}", { before: reviewModeText(item.reviewFrom, nameOf), after: reviewModeText(item.reviewTo, nameOf), basis: (TAKEOVER_BASIS[item.basis] ? t(TAKEOVER_BASIS[item.basis]) : t("未知")) }),
+      item.baseCommitSha ? [t(" · 接手基线 "), h('code', { title: item.baseCommitSha }, item.baseCommitSha.slice(0, 7))] : null,
       item.previousRejected ? t(" · 上一轮验收为退回") : '', ` · ${item.createdAt ?? t("时间未知")}`);
   }
 
@@ -1789,27 +1784,18 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       : rpEmpty(t("标签库里还没有组。点“管理标签库”新建。")));
   }
 
-  /** Switches that take effect at once: this cluster's delivery, and 允许验收者接手后自检 (per cluster, off by default, user only). */
+  /** Switches that take effect at once: this cluster's delivery. */
   function clusterSettingsCard() {
     const paused = view.workspace?.paused === true;
-    const takeover = view.workspace?.taskSettings?.takeoverSelfReview === true;
     const pause = async (next) => {
       try { await command({ action: 'cluster.pause', paused: next }); }
       catch (e) { view.error = e.message; render(); }
-    };
-    const allowTakeover = async (checked) => {
-      try { await command({ action: 'tasks.settings', takeoverSelfReview: checked }); }
-      catch (e) { await noticeDialog(e.message, lt("没有完成")); render(); }
     };
     return settingsCard('cluster', t("本群设置"), { sub: t("这里的开关点一下立即生效。") },
       settingsRow(h('span', { id: 'wb-rp-delivery-title' }, t("本群投递")),
         h('span', { id: 'wb-rp-delivery-note' }, paused ? t("本群已暂停开始新投递；已开始的执行不受影响。") : t("本群允许开始新投递。")),
         [settingSwitch({ checked: !paused, 'aria-labelledby': 'wb-rp-delivery-title', 'aria-describedby': 'wb-rp-delivery-note',
-          'data-wb-focus': 'setting-delivery', onchange: (event) => pause(!event.target.checked) })]),
-      settingsRow([h('span', { id: 'wb-rp-takeover-title' }, t("允许验收者接手后自检")), h('span', { class: 'wb-warn' }, t("降低验收档"))],
-        h('span', { id: 'wb-takeover-setting-note' }, t("打开后，成员把任务交给验收者时可以选自查：验收者自己检查后直接完成，不必等你在网页上操作；每次都会记在任务上并提醒。")),
-        [settingSwitch({ checked: takeover, 'aria-labelledby': 'wb-rp-takeover-title', 'aria-describedby': 'wb-takeover-setting-note',
-          'data-wb-focus': 'setting-takeover', onchange: (event) => allowTakeover(event.target.checked) })]));
+          'data-wb-focus': 'setting-delivery', onchange: (event) => pause(!event.target.checked) })]));
   }
 
   function taskPermissionsCard() {
@@ -1966,11 +1952,27 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       () => command({ action: 'task.assign', taskId: task.id, expectedRevision: task.revision, memberId: select.value || null }));
   }
 
+  /** 退回结果: a member-reviewed result can also be taken over in the same step (docs/collaboration.md「退回与接手」). */
   function review(task, verdict) {
     const reason = h('textarea', verdict === 'reject' ? { required: true } : {});
-    formDialog(verdict === 'approve' ? lt("验收通过") : lt("退回结果"), [h('label', {}, lt("说明"), reason)], () => command({
+    const takeoverAllowed = verdict === 'reject' && task.reviewer?.kind === 'member';
+    const radios = [];
+    const option = (value, caption, hint) => {
+      const input = h('input', { type: 'radio', name: 'wb-reject-mode', value, checked: value === 'rework' });
+      radios.push([value, input]);
+      return h('label', { class: 'workbench-check wb-takeover-option' }, input,
+        h('span', { class: 'wb-check-text' }, h('b', {}, caption), h('span', { class: 'wb-role-description' }, hint)));
+    };
+    const takesOver = () => radios.find(([, input]) => input.checked)?.[0] === 'takeover';
+    formDialog(verdict === 'approve' ? lt("验收通过") : lt("退回结果"), [
+      h('label', {}, lt("说明"), reason),
+      takeoverAllowed ? h('fieldset', { class: 'wb-takeover-modes' }, h('legend', {}, lt("退回之后")),
+        option('rework', lt("退回执行者重做"), lt("由原执行者修改后重新提交。")),
+        option('takeover', lt("退回并交给验收者直接改"),
+          lt("{reviewerName} 当场接手，改完自己检查到合并；原执行者不再改这个任务。", { reviewerName: nameOf(task.reviewer.memberId) }))) : null,
+    ], () => command({
       action: 'task.review', taskId: task.id, expectedRevision: task.revision, submissionId: task.latestSubmissionId,
-      verdict, ...(reason.value.trim() ? { reason: reason.value.trim() } : {}),
+      verdict, ...(reason.value.trim() ? { reason: reason.value.trim() } : {}), ...(takesOver() ? { takeover: true } : {}),
     }));
   }
 
@@ -2155,46 +2157,16 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   }
 
   /**
-   * 交给验收者: the reviewer becomes the executor, and the user says who reviews afterwards. Self review asks again
-   * (confirmDialog), since no independent review is left. The Hub checks everything again; its refusal stays in the dialog.
+   * 交给验收者: the reviewer becomes the executor and reviews their own result to the merge (docs/collaboration.md
+   * 「验收者接手」). The Hub checks everything again; its refusal stays in the dialog.
    */
-  function takeoverTask(task, detail) {
+  function takeoverTask(task) {
     const reviewerName = nameOf(task.reviewer.memberId);
-    // Members who could review next: not the reviewer taking over, not anyone who has worked on the task, not the
-    // enabled coordinator (it cannot review).
-    const policy = view.workspace?.coordinator;
-    const worked = new Set([task.reviewer.memberId, task.assignedMemberId, ...(detail?.assignments ?? []).map((item) => item.memberId),
-      ...(policy?.enabled ? [policy.memberId] : [])]);
-    const others = getMembers(view.clusterId).filter((member) => !worked.has(member.id) && !member.hiddenAt);
-    const memberSelect = h('select', { 'aria-label': t("指定验收的成员"), disabled: true }, h('option', { value: '' }, t("选择成员")),
-      others.map((member) => h('option', { value: member.id }, member.name)));
-    const radios = [];
-    const option = (value, caption, hint) => {
-      const input = h('input', { type: 'radio', name: 'wb-takeover-mode', value, checked: value === 'user',
-        onchange: () => { memberSelect.disabled = value !== 'member'; memberSelect.required = value === 'member'; } });
-      radios.push([value, input]);
-      return h('label', { class: 'workbench-check wb-takeover-option' }, input,
-        h('span', { class: 'wb-check-text' }, h('b', {}, caption), h('span', { class: 'wb-role-description' }, hint)));
-    };
-    const mode = () => radios.find(([, input]) => input.checked)?.[0] ?? 'user';
     formDialog(lt("交给验收者"), [
-      h('p', { class: 'muted' }, lt(() => t("{reviewer} 将成为执行者；原执行者的派工结束{stopNotice}", { reviewer: reviewerName, stopNotice: task.status === 'working' ? t("，如果还在做会收到停手通知") : '' })
+      h('p', { class: 'muted' }, lt(() => t("{reviewer} 将成为执行者；接手后自己检查并直接完成，不再有独立验收。", { reviewer: reviewerName })
+        + t("原执行者的派工结束{stopNotice}", { stopNotice: task.status === 'working' ? t("，如果还在做会收到停手通知") : '' })
         + t("{submissionNotice}。之前的提交和验收记录都保留，验收轮次接着数。", { submissionNotice: task.status === 'review' ? t("，待验收的提交标为已取代") : '' }))),
-      h('fieldset', { class: 'wb-takeover-modes' }, h('legend', {}, lt("之后谁来验收")),
-        option('user', lt("用户验收（默认）"), lt("由你在网页上验收。")),
-        option('member', lt("指定成员验收"), lt("由一位没参与过这个任务的成员验收。")),
-        h('label', { class: 'wb-takeover-member' }, lt("成员"), memberSelect),
-        option('self', lt("自查"), lt("{reviewerName} 自己检查后直接完成，不再有独立验收。", { reviewerName }))),
-    ], async () => {
-      const body = takeoverCommand(task, mode(), memberSelect.value);
-      if (!body) throw new Error(lt("请选择验收的成员"));
-      if (mode() === 'self') {
-        const ok = await confirmDialog({ title: lt("改为自查？"), message: lt("{reviewerName} 接手后自己检查并直接完成，不再有独立验收。这次改动会记在任务上，并在群里发一条提醒。", { reviewerName }),
-          confirmText: lt("改为自查"), danger: true });
-        if (!ok) throw new Error(lt("没有改为自查，任务未改动"));
-      }
-      await command(body);
-    }, undefined, lt("交给验收者"));
+    ], () => command({ action: 'task.takeover', taskId: task.id, expectedRevision: task.revision }), undefined, lt("交给验收者"));
   }
 
   function attention(task, item = null) {
@@ -2223,7 +2195,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
         gitBranch: null }).catch((e) => noticeDialog(e.message, lt("解除 Git 分支关联失败")))],
       edit: [t("编辑任务"), () => editTask(task, detail.attachments ?? [])], reviewer: [t("更换验收人"), () => changeReviewer(task)],
       release: [t("释放派工"), () => lifecycle(task, 'task.release')], handoff: [t("安排接手"), () => lifecycle(task, 'task.handoff')],
-      takeover: [t("交给验收者"), () => takeoverTask(task, detail)],
+      takeover: [t("交给验收者"), () => takeoverTask(task)],
       public: [t("公共资料"), () => { view.collectionMode = 'public'; chooseTab('collections'); loadPublic(task.id); }],
       reopen: [t("重开任务"), () => lifecycle(task, 'task.reopen')], cancel: [t("取消任务"), () => lifecycle(task, 'task.cancel')],
       delete: [t("永久删除"), () => deleteTask(task)],
@@ -2258,6 +2230,100 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
     h('summary', { 'data-wb-focus': id }, h('span', {}, title), h('span', { class: 'wb-count' }, count)), ...body));
   }
 
+  /** A failed ship's kind in words (task.shipFailure / batch.shipFailure; docs/collaboration.md「ship 失败」). */
+  const shipFailureKind = (failure) => failure?.kind === 'conflict' ? t('合并冲突') : t('合并前检查未通过');
+  /** The structured failure of a failed ship: the event, the member who ran or will rerun it, and what the script reported. */
+  function shipFailureMeta(failure) {
+    return h('div', { class: 'wb-rows' },
+      h('div', { class: 'wb-row' }, h('span', { class: 'wb-row-key' }, t('失败事件')), h('code', {}, `#${failure.eventId}`),
+        h('span', { class: 'wb-row-key' }, t('合并执行者')), failure.runnerId ? memberChip(failure.runnerId) : h('span', { class: 'muted' }, t('未记录'))),
+      failure.failedCheck ? h('div', { class: 'wb-row' }, h('span', { class: 'wb-row-key' }, t('失败的检查')), h('code', {}, failure.failedCheck)) : null,
+      failure.conflictFiles?.length ? h('div', { class: 'wb-row' }, h('span', { class: 'wb-row-key' }, t('冲突文件')),
+        h('pre', { class: 'wb-ship-log' }, failure.conflictFiles.join('\n'))) : null);
+  }
+  /** The script's long diagnostic, folded; the same text as reason adds nothing. */
+  const shipFailureLog = (failure) => typeof failure?.detail === 'string' && failure.detail.trim() && failure.detail.trim() !== failure.reason?.trim()
+    ? h('details', { class: 'wb-ship-detail' }, h('summary', {}, t('完整诊断')), h('pre', { class: 'wb-ship-log' }, failure.detail)) : null;
+  /**
+   * One task's failed single-task ship (task.shipFailure): the members who may rerun ship or ship_fix are named, and the
+   * page only guides them (it is the user's page: ship_fix and failure attribution are refused for { kind: 'user' }).
+   */
+  function taskShipFailure(task, detail) {
+    const failure = task.shipFailure;
+    const runner = nameOf(detail?.shipRunnerId ?? failure.runnerId);
+    const lines = [t("{runner} 可以直接原样重跑 ship 命令（在会话里用 get_task 重新获取），不需要改代码。", { runner })];
+    if (detail?.shipFixAllowed) {
+      lines.push(t("{runner} 也可以在自己的会话里调用 task_action ship_fix（failureEventId {eventId}）提交前向修复；网页端不代填提交或发起。", { runner, eventId: failure.eventId }));
+    } else {
+      lines.push(t("这不是独立成员验收或自查产生的获批结果，不能原地换提交：只能原样重跑；要改代码请用「重开任务」退回重做并重新验收。"));
+    }
+    return h('section', { class: 'wb-ship-failure', 'data-wb-ship-failure': 'task' },
+      h('h4', {}, t('上次合并失败')),
+      h('p', { class: 'wb-warn' }, shipFailureKind(failure), failure.reason ? ` ${failure.reason}` : ''),
+      shipFailureMeta(failure), shipFailureLog(failure),
+      ...lines.map((line) => h('p', { class: 'muted' }, line)),
+      h('div', { class: 'row end' }, h('button', { type: 'button', class: 'small', onclick: () => lifecycle(task, 'task.reopen') }, t('重开任务'))));
+  }
+  /** A batched task's detail: the batch, not the task, merges, so point at the batch's failure instead of repeating it. */
+  function taskBatchFailureHint(task) {
+    const batch = task.batchId ? batchOf(task.batchId) : null;
+    if (!batch?.shipFailure) return null;
+    const failure = batch.shipFailure;
+    return h('section', { class: 'wb-ship-failure', 'data-wb-ship-failure': 'batch' },
+      h('h4', {}, t('批次 B{number} 上次合并失败', batch)),
+      h('p', { class: 'wb-warn' }, shipFailureKind(failure), failure.reason ? ` ${failure.reason}` : ''),
+      h('p', { class: 'muted' }, t("批次里的任务都保持已通过；整批一起重跑、原地修复或退回，见批次详情。")),
+      h('div', { class: 'row end' }, h('button', { type: 'button', class: 'small', onclick: () => batchDetail(batch) }, t('批次详情'))));
+  }
+  /**
+   * A batch's failed ship (batch.shipFailure): the rerun path for every batch, plus attribution and ship_fix when the
+   * independent member reviewer may use them. The page keeps only the user's own real actions (reopen / cancel batch).
+   */
+  function batchShipFailure(batch) {
+    const failure = batch.shipFailure;
+    const runner = nameOf(batch.shipRunnerId ?? failure.runnerId);
+    const taskText = (id) => {
+      const item = (batch.tasks ?? []).find((task) => task.id === id);
+      return item ? t('#{number} {title}', item) : id.slice(0, 8);
+    };
+    // A ship_fix replaced some approved results: the old b1. ticket is worthless, and the members take a fresh one.
+    const stale = Boolean(failure.digest && batch.currentDigest && failure.digest !== batch.currentDigest);
+    const attribution = failure.attribution ? h('div', { class: 'wb-row' }, h('span', { class: 'wb-row-key' }, t('归因')),
+      h('span', {}, t("{name} 归因于 {tasks}：{reason}", { name: nameOf(failure.attribution.by),
+        tasks: failure.attribution.taskIds.map(taskText).join(t('、')), reason: failure.attribution.reason }))) : null;
+    const fixes = failure.fixes?.length ? h('div', { class: 'wb-row' }, h('span', { class: 'wb-row-key' }, t('已原地修复')),
+      h('span', {}, failure.fixes.map((fix) => t('{task} 至 {sha}', { task: taskText(fix.taskId), sha: fix.toCommitSha.slice(0, 7) })).join(t('、')))) : null;
+    // A conflict names the task whose branch conflicts (attribution stays null for conflicts).
+    const conflictTasks = failure.kind === 'conflict' && failure.taskIds?.length
+      ? h('div', { class: 'wb-row' }, h('span', { class: 'wb-row-key' }, t('冲突任务')), h('span', {}, failure.taskIds.map(taskText).join(t('、')))) : null;
+    const reviewer = batch.reviewer?.kind === 'member' ? nameOf(batch.reviewer.memberId) : t('用户');
+    const lines = [];
+    if (stale) lines.push(t("部分任务已原地修复：旧的批次 ship 票据已失效，请用 get_batch 取新的批次命令重跑。"));
+    lines.push(t("{runner} 可以直接原样重跑批次 ship 命令（在会话里用 get_batch 重新获取），不需要改代码。", { runner }));
+    if (!batch.shipFixAllowed) {
+      lines.push(t("这个批次不能原地换提交（用户验收、代点通过或后备 runner）：只能原样重跑；要改代码请对任务「重开任务」或「取消批次」后重新验收。"));
+    } else if (failure.kind === 'checks' && !failure.attribution) {
+      lines.push(t("检查失败还没有归因：批验收者 {reviewer} 先在会话里调用 manage_batch attribute_failure（failureEventId {eventId}）指定受影响任务，再对这些任务调用 task_action ship_fix；无法可靠归因时直接重跑，或退回/取消。", { reviewer, eventId: failure.eventId }));
+    } else {
+      lines.push(t("批验收者 {reviewer} 可以在自己的会话里对受影响任务调用 task_action ship_fix（failureEventId {eventId}）提交前向修复；网页端不代填提交或发起。", { reviewer, eventId: failure.eventId }));
+    }
+    return h('section', { class: 'wb-ship-failure', 'data-wb-ship-failure': 'batch' },
+      h('h4', {}, t('上次批次 ship 失败')),
+      h('p', { class: 'wb-warn' }, shipFailureKind(failure), failure.reason ? ` ${failure.reason}` : ''),
+      shipFailureMeta(failure), conflictTasks, shipFailureLog(failure), attribution, fixes,
+      ...lines.map((line, index) => h('p', { class: index === 0 && stale ? 'wb-warn' : 'muted' }, line)));
+  }
+  /** 重开 a task from the batch panel: its row carries no revision, so read the task, then the ordinary reopen form. */
+  async function reopenTask(taskId, panel = null) {
+    try {
+      const detail = await api('GET', path(`/tasks/${encodeURIComponent(taskId)}`));
+      if (!detail?.task) return;
+      // Reopening clears the batch's failure and takes the task out of it: the panel's failure data is stale from here.
+      panel?.close();
+      lifecycle(detail.task, 'task.reopen');
+    } catch (e) { await noticeDialog(e.message, lt("没有加载到这个任务")); }
+  }
+
   function detailView(detail) {
     if (!detail?.task) return h('div', { class: 'workbench-detail wb-task-detail' },
       view.taskId ? h('p', { class: 'muted' }, t("正在加载任务详情…")) : emptyState(t("选择一个任务查看详情。")));
@@ -2278,6 +2344,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
         return CLOSED_STATUSES.includes(task.status) ? [] : [t(" · 尚未分配")];
       })()),
       detailActions(task, detail),
+      task.shipFailure ? taskShipFailure(task, detail) : taskBatchFailureHint(task),
       CLOSED_STATUSES.includes(task.status) ? null : h('p', { class: 'muted wb-detail-hint' }, t("任务的开工和结果提交由执行者在自己的会话中完成。")),
       h('section', {}, h('h4', {}, t("目标与范围")), markdown('scope', task.scope), attachmentList(`task:${task.id}`, detail.attachments ?? [])),
       h('section', {}, h('h4', {}, t("验收条件")), markdown('acceptance', task.acceptance)),
@@ -2378,15 +2445,16 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   /** One batch: its tasks with their state and commit, the reviewer, and where the batch ship stands. */
   function batchDetail(batch) {
     const progress = batchProgress(batch);
+    const failure = batch.shipFailure;
     const rows = (batch.tasks ?? []).map((item) => h('div', { class: 'wb-row' },
       h('span', { class: 'wb-task-num' }, `#${item.number}`), h('span', {}, item.title),
       h('span', { class: `wb-status wb-status-${item.status}` }, t(STATUS[item.status] ?? item.status)),
       h('span', { class: item.state === 'missing' ? 'wb-count' : 'wb-mode' }, t(BATCH_STATE[item.state] ?? item.state)),
-      item.commitSha ? h('code', {}, item.commitSha.slice(0, 7)) : null, item.branch ? h('code', {}, item.branch) : null));
+      item.commitSha ? h('code', {}, item.commitSha.slice(0, 7)) : null, item.branch ? h('code', {}, item.branch) : null,
+      failure && item.status === 'completed' ? h('button', { type: 'button', class: 'small', onclick: () => reopenTask(item.id, dialog) }, t('重开任务')) : null));
     const ship = batch.merged ? t('已一次合并整批。')
       : batch.allApproved ? t('全部验收通过：拿到命令的成员用批次 ship 一次合并整批，检查只跑一遍。')
-        : batch.shipFailure ? t('上次批次 ship 失败（{reason}），相关任务已退回执行者。', { reason: batch.shipFailure.kind === 'conflict' ? t('合并冲突') : t('合并前检查未通过') })
-          : t('全部验收通过后才能合并；单个任务不能单独 ship。');
+        : t('全部验收通过后才能合并；单个任务不能单独 ship。');
     const cancel = h('button', { type: 'button', class: 'small danger', hidden: batch.merged, onclick: () => { dialog.close(); cancelBatch(batch); } }, t('取消批次'));
     const close = h('button', { type: 'button', class: 'primary', onclick: () => dialog.close() }, t('关闭'));
     const dialog = h('dialog', { class: 'wb-batch-dialog', 'aria-label': t('批次 B{number}', batch) }, h('div', { class: 'workbench-form' },
@@ -2398,7 +2466,8 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
         h('span', { class: 'wb-row-key' }, t('建单人')), creatorLink(batch.createdBy))),
       h('h4', {}, t('任务（按依赖顺序）')), rows.length ? h('div', { class: 'wb-rows' }, rows) : emptyState(t('批次里还没有任务。'), { compact: true }),
       batch.missing?.length ? h('p', { class: 'muted' }, t('还差：{items}', { items: batch.missing.join(t('、')) })) : null,
-      h('h4', {}, t('合并')), h('p', { class: 'muted' }, ship),
+      h('h4', {}, t('合并')),
+      failure ? batchShipFailure(batch) : h('p', { class: 'muted' }, ship),
       h('div', { class: 'row end' }, cancel, close)));
     dialog.addEventListener('close', () => dialog.remove());
     document.body.append(dialog);

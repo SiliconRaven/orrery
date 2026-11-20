@@ -123,6 +123,21 @@ test('ship failure details load on open, can retry, and preserve only the saved 
   open(old);
   await tick();
   assert.equal(walk(old).find((node) => node.tagName === 'pre')?.textContent, 'only the part saved at the time');
+
+  // The Hub's structured failure fields are shown first; an event without them keeps the text-only view above.
+  const conflict = createShipFailureView({ load: async () => ({ reason: 'conflict: src/a.js',
+    failure: { kind: 'conflict', conflictFiles: ['src/a.js', 'src/b.js'] } }) });
+  open(conflict);
+  await tick();
+  assert.match(conflict.textContent, /失败类型：合并冲突/);
+  assert.match(conflict.textContent, /冲突文件：src\/a\.js\nsrc\/b\.js/);
+  const check = createShipFailureView({ load: async () => ({ reason: 'checks: npm test failed',
+    failure: { kind: 'checks', failedCheck: 'npm test' } }) });
+  open(check);
+  await tick();
+  assert.match(check.textContent, /失败类型：合并前检查未通过/);
+  assert.match(check.textContent, /失败的检查：npm test/);
+  assert.match(check.textContent, /npm test failed/, 'the diagnostic stays too');
 });
 
 test('truncated and bounded comparisons are labelled without claiming missing content is complete', async () => {

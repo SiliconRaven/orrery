@@ -255,8 +255,11 @@ function mockWorkbenchDom(t: TestContext) {
     hidden = false; disabled = false; open = false; checked = false; value = ''; text = ''; offsetHeight = 0;
     readonly tagName: string;
     constructor(tagName: string) { this.tagName = tagName; }
+    /** A <select>'s options and chosen ones, as the real element exposes them. */
+    get options(): any[] { return this.tagName === 'select' ? this.children.filter((child) => child.tagName === 'option') : []; }
+    get selectedOptions(): any[] { return this.options.filter((option) => option.selected); }
     set textContent(value: string) { this.text = String(value); this.children = []; }
-    get textContent(): string { return this.text + this.children.map((child) => child.textContent).join(''); }
+    get textContent(): string { return this.text + this.children.map((child) => typeof child === 'string' ? child : (child.textContent ?? child.nodeValue ?? '')).join(''); }
     setAttribute(name: string, value: string) { this.attributes[name] = String(value); }
     getAttribute(name: string) { return this.attributes[name] ?? null; }
     removeAttribute(name: string) { delete this.attributes[name]; }
@@ -277,6 +280,7 @@ function mockWorkbenchDom(t: TestContext) {
   (globalThis as any).window = { addEventListener() {}, removeEventListener() {} };
   const body = new El('body');
   (globalThis as any).document = { createElement: (tag: string) => new El(tag), createElementNS: (_ns: string, tag: string) => new El(tag),
+    createTextNode: (value: string) => ({ nodeValue: value, get textContent() { return this.nodeValue; }, set textContent(next: string) { this.nodeValue = next; } }),
     body, activeElement: null, addEventListener() {}, removeEventListener() {} };
   (globalThis as any).localStorage = { getItem: () => null, setItem() {} };
   t.after(() => Object.assign(globalThis, previous));
@@ -1024,13 +1028,10 @@ test('交给验收者 is offered only for a member-reviewed task that is pending
     ['reviewer', 'release', 'handoff', 'takeover', 'markCompleted', 'markMerged', 'gitBranch', 'public', 'cancel']);
 });
 
-test('the takeover command, mark and review-mode words', () => {
-  const task = { id: 't', revision: 4 };
-  assert.deepEqual(ui.takeoverCommand(task, 'user', 'x'), { action: 'task.takeover', taskId: 't', expectedRevision: 4 }, 'user review is the Hub default');
-  assert.deepEqual(ui.takeoverCommand(task, 'member', 'd').reviewer, { kind: 'member', memberId: 'd' });
-  assert.equal(ui.takeoverCommand(task, 'member', ''), null, 'a member must be picked');
-  assert.deepEqual(ui.takeoverCommand(task, 'self').reviewer, { kind: 'self' });
+test('the takeover mark and review-mode words', () => {
   assert.equal(ui.takeoverMark({}), null);
+  assert.equal(ui.takeoverMark({ takeover: { basis: 'reviewer' } }), '验收者接手 · 验收者本人操作');
+  assert.equal(ui.takeoverMark({ takeover: { basis: 'user' } }), '验收者接手 · 用户本人操作');
   assert.equal(ui.takeoverMark({ takeover: { basis: 'cluster_setting' } }), '验收者接手 · 群设置授权');
   assert.equal(ui.takeoverMark({ takeover: { basis: 'user_review' } }), '验收者接手 · 默认改为用户验收');
   assert.equal(ui.takeoverMark({ takeover: { basis: 'odd' } }), '验收者接手 · 依据未知');
@@ -1040,117 +1041,234 @@ test('the takeover command, mark and review-mode words', () => {
   assert.equal(ui.reviewModeText({ kind: 'user' }, name), '用户验收');
 });
 
-test('交给验收者: three labelled modes, user review by default, a member must be picked, self asks again before posting', async (t) => {
+test('交给验收者: one confirmation says the reviewer reviews their own result to the merge', async (t) => {
   const body = mockWorkbenchDom(t);
   const posted: any[] = [];
-  const task: any = { id: 't1', number: 7, title: '任务', status: 'working', revision: 3, currentAssignmentId: 'a1', assignedMemberId: 'b',
+  const task: any = { id: 't1', number: 7, title: '任务', status: 'review', revision: 3, latestSubmissionId: 's1', assignedMemberId: 'b',
     reviewer: { kind: 'member', memberId: 'c' }, mergeRequired: true };
   const api = async (method: string, url: string, args: Record<string, unknown>) => {
-    if (method === 'POST') {
-      const { operationId: _op, ...action } = args;
-      posted.push(action);
-      return { task };
-    }
-    if (url.includes('/workspace')) return { tasks: [task], labels: [], roles: [], memberRoles: [], nextCursor: null, taskSettings: { takeoverSelfReview: false },
+    if (method === 'POST') { const { operationId: _op, ...action } = args; posted.push(action); return { task }; }
+    if (url.includes('/workspace')) return { tasks: [task], labels: [], roles: [], memberRoles: [], nextCursor: null,
       coordinator: { memberId: 'f', enabled: true, mode: 'execute', generation: 1, permissions: {}, rules: { version: 'v', text: '' } } };
     if (url.endsWith('/context')) return {};
-    return { task, assignments: [{ id: 'a0', memberId: 'a' }, { id: 'a1', memberId: 'b' }], takeovers: [] };
+    return { task, assignments: [{ id: 'a0', memberId: 'a' }, { id: 'a1', memberId: 'b' }], submissions: [{ id: 's1', summary: '完成' }], takeovers: [] };
   };
   const members = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => ({ id, name: id.toUpperCase(), ...(id === 'e' ? { hiddenAt: 'x' } : {}) }));
   const workbench = ui.createWorkbench({ api, getMembers: () => members, getHistoryMembers: () => [], getClusters: () => [{ id: 'c1', name: '群' }],
     nameOf: (id: string) => String(id).toUpperCase(), messageName: () => '', showMessage() {}, selectCluster() {}, getActivity: () => ({}) });
   const fire = (node: any, event: string) => Promise.all((node.listeners.get(event) ?? []).map((fn: any) => fn({ preventDefault() {}, target: node })));
   const button = (caption: string) => body.all((node) => node.tagName === 'button' && node.textContent === caption)[0];
-  const openDialog = async () => {
-    await fire(button('更多'), 'click');
-    await fire(button('交给验收者'), 'click');
-    return body.all((node) => node.tagName === 'dialog' && node.open).at(-1)!;
-  };
   workbench.openTask('c1', 't1');
   await new Promise((done) => setImmediate(done));
-
-  let dialog = await openDialog();
+  await fire(button('更多'), 'click');
+  await fire(button('交给验收者'), 'click');
+  const dialog = body.all((node) => node.tagName === 'dialog' && node.open).at(-1)!;
   const form = dialog.all((node) => node.tagName === 'form')[0];
-  assert.match(form.textContent, /C 将成为执行者；原执行者的派工结束，如果还在做会收到停手通知/);
-  assert.equal(dialog.all((node) => node.tagName === 'legend')[0].textContent, '之后谁来验收', 'a fieldset legend names the group for screen readers');
-  const radios = dialog.all((node) => node.attributes.type === 'radio');
-  assert.deepEqual(radios.map((node) => node.attributes.value), ['user', 'member', 'self']);
-  assert.ok(radios.every((node) => node.attributes.name === 'wb-takeover-mode'), 'one keyboard group');
-  assert.ok('checked' in radios[0].attributes, 'user review starts selected');
-  assert.match(form.textContent, /自己检查后直接完成，不再有独立验收/, 'the self option states the consequence');
-  const select = dialog.all((node) => node.tagName === 'select')[0];
-  assert.deepEqual(select.all((node) => node.tagName === 'option').map((node) => node.attributes.value), ['', 'd'],
-    'only members who never worked on it, are not hidden and are not the coordinator');
+  assert.match(form.textContent, /C 将成为执行者；接手后自己检查并直接完成，不再有独立验收/);
+  assert.match(form.textContent, /原执行者的派工结束，待验收的提交标为已取代/, 'a submission in review is superseded');
+  assert.match(form.textContent, /之前的提交和验收记录都保留，验收轮次接着数/);
+  const i18n = await import(pathToFileURL(join(REPO_ROOT, 'shared/i18n/index.js')).href);
+  i18n.setLanguage('en');
+  try {
+    assert.match(form.textContent, /becomes the executor and reviews their own result through to the merge\. There is no independent review afterwards\. The previous assignment ends; the pending submission is marked superseded\./,
+      'a language switch re-renders the clauses and keeps a space between the English sentences');
+  } finally { i18n.setLanguage('zh'); }
+  assert.match(form.textContent, /原执行者的派工结束，待验收的提交标为已取代/, 'the dialog follows the page back to Chinese');
+  assert.equal(dialog.all((node) => node.attributes.type === 'radio').length, 0, 'no other review mode is offered');
+  assert.equal(dialog.all((node) => node.tagName === 'select').length, 0, 'no next reviewer is picked');
   assert.equal(form.all((node) => node.attributes.type === 'submit')[0].textContent, '交给验收者', 'the submit button says what it does');
   await fire(form, 'submit');
   assert.deepEqual([...posted], [{ action: 'task.takeover', taskId: 't1', expectedRevision: 3 }]);
-
-  // A member mode without a member: refused in the dialog, nothing posted.
-  dialog = await openDialog();
-  let modes = dialog.all((node) => node.attributes.type === 'radio');
-  modes[1].checked = true;
-  await fire(modes[1], 'change');
-  await fire(dialog.all((node) => node.tagName === 'form')[0], 'submit');
-  assert.equal(posted.length, 1);
-  assert.match(dialog.textContent, /请选择验收的成员/);
-  dialog.all((node) => node.tagName === 'select')[0].value = 'd';
-  await fire(dialog.all((node) => node.tagName === 'form')[0], 'submit');
-  assert.deepEqual(posted[1].reviewer, { kind: 'member', memberId: 'd' });
-
-  // Self: confirmDialog first; cancelling posts nothing, confirming posts.
-  for (const answer of ['cancel', 'confirm']) {
-    dialog = await openDialog();
-    modes = dialog.all((node) => node.attributes.type === 'radio');
-    modes[0].checked = false;
-    modes[2].checked = true;
-    const submitted = fire(dialog.all((node) => node.tagName === 'form')[0], 'submit');
-    await new Promise((done) => setImmediate(done));
-    const ask = body.all((node) => node.tagName === 'dialog' && node.attributes.class === 'ask' && node.open).at(-1)!;
-    assert.match(ask.textContent, /改为自查？.*不再有独立验收/);
-    (ask as any).returnValue = answer;
-    ask.open = false;
-    await fire(ask, 'close');
-    await submitted;
-  }
-  assert.equal(posted.length, 3, 'only the confirmed self review was posted');
-  assert.deepEqual(posted[2].reviewer, { kind: 'self' });
 });
 
-test('the cluster setting and the takeover mark: the setting posts tasks.settings; a taken-over task shows its mode and basis', async (t) => {
+test('the takeover mark shows its basis, and 本群设置 no longer offers the retired self-review switch', async (t) => {
   const body = mockWorkbenchDom(t);
   const posted: any[] = [];
   const task: any = { id: 't1', number: 1, title: '接手过的任务', status: 'working', revision: 2, assignedMemberId: 'c',
-    reviewer: { kind: 'self' }, takeover: { recordId: 'r', memberId: 'c', basis: 'cluster_setting', at: '2026-11-16T00:00:00Z' } };
+    reviewer: { kind: 'self' }, takeover: { recordId: 'r', memberId: 'c', basis: 'reviewer', at: '2026-11-16T00:00:00Z' } };
   const api = async (method: string, url: string, args: Record<string, unknown>) => {
     if (method === 'POST') { const { operationId: _op, ...action } = args; posted.push(action); return {}; }
-    if (url.includes('/workspace')) return { tasks: [task], labels: [], roles: [], memberRoles: [], nextCursor: null, taskSettings: { takeoverSelfReview: true } };
+    if (url.includes('/workspace')) return { tasks: [task], labels: [], roles: [], memberRoles: [], nextCursor: null };
     if (url.endsWith('/context')) return {};
-    return { task, assignments: [], takeovers: [{ id: 'r', by: 'b', fromMemberId: 'b', toMemberId: 'c', reviewFrom: { kind: 'member', memberId: 'c' },
-      reviewTo: { kind: 'self' }, basis: 'cluster_setting', previousRejected: true, createdAt: '2026-11-16T00:00:00Z' }] };
+    return { task, assignments: [], takeovers: [{ id: 'r', action: 'task.review', by: 'c', fromMemberId: 'b', toMemberId: 'c', reviewFrom: { kind: 'member', memberId: 'c' },
+      reviewTo: { kind: 'self' }, basis: 'reviewer', previousRejected: true, baseCommitSha: 'abcdef1234567', createdAt: '2026-11-16T00:00:00Z' }] };
   };
   const workbench = ui.createWorkbench({ api, getMembers: () => [{ id: 'b', name: 'B' }, { id: 'c', name: 'C' }], getHistoryMembers: () => [],
     getClusters: () => [{ id: 'c1', name: '群' }], nameOf: (id: string) => String(id).toUpperCase(), messageName: () => '', showMessage() {}, selectCluster() {}, getActivity: () => ({}) });
   workbench.openTask('c1', 't1');
   await new Promise((done) => setImmediate(done));
-  assert.match(body.textContent, /验收者接手 · 群设置授权/);
-  assert.match(body.textContent, /验收方式自查验收者接手 · 群设置授权/, 'the detail names the current mode');
-  assert.match(body.textContent, /验收者接手记录.*B 发起 · .*C.* 接手执行.*验收方式 成员验收（C） → 自查 · 依据 群设置授权 · 上一轮验收为退回/);
+  assert.match(body.textContent, /验收者接手 · 验收者本人操作/);
+  assert.match(body.textContent, /验收方式自查验收者接手 · 验收者本人操作/, 'the detail names the current mode');
+  assert.match(body.textContent, /验收者接手记录.*C 发起 · .*C.* 接手执行.*验收方式 成员验收（C） → 自查 · 依据 验收者本人操作 · 接手基线 abcdef1 · 上一轮验收为退回/);
+  assert.doesNotMatch(body.textContent, /自查授权给/, 'a reject-takeover is a direct takeover, not a delegated self review');
+  const baseline = body.all((node) => node.tagName === 'code' && node.attributes.title === 'abcdef1234567')[0];
+  assert.ok(baseline, 'the takeover baseline keeps its full SHA in the title');
   const card = body.all((node) => /^workbench-task /.test(node.attributes.class ?? ''))[0];
-  assert.match(card.textContent, /验收者接手 · 群设置授权/, 'the card carries the mark');
+  assert.match(card.textContent, /验收者接手 · 验收者本人操作/, 'the card carries the mark');
 
   const settings = body.all((node) => node.tagName === 'button' && node.textContent === '角色与协调')[0];
   for (const fn of settings.listeners.get('click') ?? []) await fn({});
   for (let i = 0; i < 5; i++) await new Promise((done) => setImmediate(done));
-  const box = body.all((node) => node.attributes['aria-describedby'] === 'wb-takeover-setting-note')[0];
-  assert.ok(box, 'the setting is in the settings view with its explanation');
-  assert.ok('checked' in box.attributes, 'it reflects the workspace');
-  for (const fn of box.listeners.get('change') ?? []) await fn({ target: { checked: false } });
-  assert.deepEqual(posted, [{ action: 'tasks.settings', takeoverSelfReview: false }]);
+  assert.equal(body.all((node) => node.attributes['aria-describedby'] === 'wb-takeover-setting-note').length, 0, 'the retired switch is gone');
+  assert.equal(body.all((node) => node.textContent === '允许验收者接手后自检').length, 0);
+  assert.deepEqual(posted, [], 'the settings view posts nothing by itself');
+});
+
+test('退回结果 for a member-reviewed task offers 退回执行者重做 or 退回并交给验收者直接改', async (t) => {
+  const body = mockWorkbenchDom(t);
+  const posted: any[] = [];
+  const task: any = { id: 't1', number: 8, title: '结果', status: 'review', revision: 5, latestSubmissionId: 's1',
+    reviewer: { kind: 'member', memberId: 'c' }, mergeRequired: true, assignedMemberId: 'b' };
+  const api = async (method: string, url: string, args: Record<string, unknown>) => {
+    if (method === 'POST') { const { operationId: _op, ...action } = args; posted.push(action); return { task }; }
+    if (url.includes('/workspace')) return { tasks: [task], labels: [], roles: [], memberRoles: [], nextCursor: null };
+    if (url.endsWith('/context')) return {};
+    return { task, assignments: [{ id: 'a1', memberId: 'b' }], submissions: [{ id: 's1', summary: '完成' }], reviews: [], takeovers: [] };
+  };
+  const workbench = ui.createWorkbench({ api, getMembers: () => [{ id: 'b', name: 'B' }, { id: 'c', name: 'C' }], getHistoryMembers: () => [],
+    getClusters: () => [{ id: 'c1', name: '群' }], nameOf: (id: string) => String(id).toUpperCase(), messageName: () => '', showMessage() {}, selectCluster() {}, getActivity: () => ({}) });
+  const fire = (node: any, event: string) => Promise.all((node.listeners.get(event) ?? []).map((fn: any) => fn({ preventDefault() {}, target: node })));
+  const button = (caption: string) => body.all((node) => node.tagName === 'button' && node.textContent === caption)[0];
+  const openReject = async () => {
+    await fire(button('退回结果'), 'click');
+    const dialog = body.all((node) => node.tagName === 'dialog' && node.open).at(-1)!;
+    return { dialog, form: dialog.all((node) => node.tagName === 'form')[0] };
+  };
+  workbench.openTask('c1', 't1');
+  await new Promise((done) => setImmediate(done));
+
+  let opened = await openReject();
+  assert.equal(opened.dialog.all((node) => node.tagName === 'legend')[0].textContent, '退回之后', 'a fieldset legend names the choice');
+  const radios = opened.dialog.all((node) => node.attributes.type === 'radio');
+  assert.deepEqual(radios.map((node) => node.attributes.value), ['rework', 'takeover']);
+  assert.ok('checked' in radios[0].attributes, 'the executor redoing it starts selected');
+  assert.match(opened.form.textContent, /退回执行者重做.*由原执行者修改后重新提交/);
+  assert.match(opened.form.textContent, /退回并交给验收者直接改.*C 当场接手，改完自己检查到合并/);
+  opened.form.all((node) => node.tagName === 'textarea')[0].value = '请改一下';
+  await fire(opened.form, 'submit');
+  assert.deepEqual(posted.at(-1), { action: 'task.review', taskId: 't1', expectedRevision: 5, submissionId: 's1', verdict: 'reject', reason: '请改一下' });
+
+  opened = await openReject();
+  const both = opened.dialog.all((node) => node.attributes.type === 'radio');
+  both[0].checked = false;
+  both[1].checked = true;
+  opened.form.all((node) => node.tagName === 'textarea')[0].value = '我直接改';
+  await fire(opened.form, 'submit');
+  assert.deepEqual(posted.at(-1), { action: 'task.review', taskId: 't1', expectedRevision: 5, submissionId: 's1', verdict: 'reject', reason: '我直接改', takeover: true },
+    'the takeover travels in the same review command');
+});
+
+async function openFailedTask(t: TestContext, { fixAllowed = true, batch = null as any } = {}) {
+  const body = mockWorkbenchDom(t);
+  const posted: any[] = [];
+  const task: any = { id: 't1', number: 9, title: '合并失败的任务', status: 'completed', revision: 4, mergeRequired: true,
+    approvedSubmissionId: 's1', ...(batch ? { batchId: batch.id } : {}),
+    ...(batch ? {} : { shipFailure: { kind: 'conflict', reason: 'conflict: src/a.js 无法自动合并', detail: 'both changed src/a.js',
+      conflictFiles: ['src/a.js'], at: '2026-11-20T00:00:00Z', eventId: 42, approvedSubmissionId: 's1', approvedCommitSha: 'abcdef1234567', runnerId: 'c' } }) };
+  const api = async (method: string, url: string, args: Record<string, unknown>) => {
+    if (method === 'POST') { const { operationId: _op, ...action } = args; posted.push(action); return { task }; }
+    if (url.includes('/workspace')) return { tasks: [task], labels: [], roles: [], memberRoles: [], nextCursor: null, batches: batch ? [batch] : [] };
+    if (url.endsWith('/context')) return {};
+    return { task, assignments: [], submissions: [{ id: 's1', commitSha: 'abcdef1234567' }], reviews: [], takeovers: [],
+      shipRunnerId: 'c', shipFixAllowed: fixAllowed };
+  };
+  const workbench = ui.createWorkbench({ api, getMembers: () => [{ id: 'c', name: 'C' }], getHistoryMembers: () => [], getClusters: () => [{ id: 'c1', name: '群' }],
+    nameOf: (id: string) => String(id).toUpperCase(), messageName: () => '', showMessage() {}, selectCluster() {}, getActivity: () => ({}) });
+  const fire = (node: any, event: string) => Promise.all((node.listeners.get(event) ?? []).map((fn: any) => fn({ preventDefault() {}, target: node })));
+  workbench.openTask('c1', 't1');
+  await new Promise((done) => setImmediate(done));
+  return { body, posted, fire };
+}
+
+test('a failed single-task ship shows the structured failure and names who may rerun or repair it', async (t) => {
+  const { body, posted, fire } = await openFailedTask(t);
+  assert.match(body.textContent, /上次合并失败/);
+  assert.match(body.textContent, /合并冲突/);
+  assert.match(body.textContent, /失败事件#42/);
+  assert.match(body.textContent, /冲突文件/);
+  assert.match(body.textContent, /完整诊断/);
+  assert.match(body.textContent, /C 可以直接原样重跑 ship 命令（在会话里用 get_task 重新获取），不需要改代码/);
+  assert.match(body.textContent, /C 也可以在自己的会话里调用 task_action ship_fix（failureEventId 42）提交前向修复/);
+  // The page never offers a ship_fix form: its real write here is the user's own reopen.
+  assert.equal(body.all((node) => node.tagName === 'input' && /合并提交号/.test(node.attributes.placeholder ?? '')).length, 0);
+  const section = body.all((node) => node.attributes['data-wb-ship-failure'] === 'task')[0];
+  const reopen = section.all((node) => node.tagName === 'button' && node.textContent === '重开任务')[0];
+  for (const fn of reopen.listeners.get('click') ?? []) await fn({});
+  const dialog = body.all((node) => node.tagName === 'dialog' && node.open).at(-1)!;
+  dialog.all((node) => node.tagName === 'textarea')[0].value = '改不动，重开';
+  await fire(dialog.all((node) => node.tagName === 'form')[0], 'submit');
+  assert.deepEqual(posted.at(-1), { action: 'task.reopen', taskId: 't1', expectedRevision: 4, reason: '改不动，重开' });
+});
+
+test('a failed ship whose approval cannot be replaced says only the rerun and reopen paths are left', async (t) => {
+  const { body } = await openFailedTask(t, { fixAllowed: false });
+  assert.match(body.textContent, /这不是独立成员验收或自查产生的获批结果，不能原地换提交：只能原样重跑/);
+  assert.doesNotMatch(body.textContent, /task_action ship_fix/);
+});
+
+test('a batched task points at its batch failure instead of showing a per-task one', async (t) => {
+  const batch = { id: 'b1', number: 3, title: 'chain', reviewer: { kind: 'member', memberId: 'c' }, createdBy: 'user', total: 1, submitted: 1, approved: 1,
+    complete: true, allApproved: true, merged: false, missing: [], reviewedAt: null, cancelledAt: null,
+    shipFailure: { kind: 'conflict', reason: 'conflict: src/a.js', detail: 'both changed src/a.js', conflictFiles: ['src/a.js'], digest: 'd1', runnerId: 'c', eventId: 7, attribution: null, fixes: [] },
+    shipRunnerId: 'c', currentDigest: 'd1', shipFixAllowed: true,
+    tasks: [{ id: 't1', number: 9, title: '合并失败的任务', status: 'completed', state: 'approved', commitSha: 'abcdef1' }] };
+  const { body } = await openFailedTask(t, { batch });
+  assert.match(body.textContent, /批次 B3 上次合并失败/);
+  assert.match(body.textContent, /批次里的任务都保持已通过；整批一起重跑、原地修复或退回，见批次详情/);
+  assert.equal(body.all((node) => node.attributes['data-wb-ship-failure'] === 'task').length, 0, 'the task itself has no single-task failure');
+});
+
+test('the task form can put a new task into a batch created by any member', async (t) => {
+  const body = mockWorkbenchDom(t);
+  const posted: any[] = [];
+  const batch = { id: 'b1', number: 2, title: '共享批次', reviewer: { kind: 'member', memberId: 'm' }, createdBy: 'other', total: 0, submitted: 0, approved: 0,
+    complete: false, allApproved: false, merged: false, missing: [], reviewedAt: null, cancelledAt: null, shipFailure: null, tasks: [] };
+  const api = async (method: string, url: string, args: Record<string, unknown>) => {
+    if (method === 'POST') { const { operationId: _op, ...action } = args; posted.push(action); return { task: { id: 't9' } }; }
+    if (url.includes('/workspace')) return { tasks: [], labels: [], roles: [], memberRoles: [], nextCursor: null, batches: [batch] };
+    return {};
+  };
+  const workbench = ui.createWorkbench({ api, getMembers: () => [{ id: 'm', name: 'M' }], getHistoryMembers: () => [], getClusters: () => [{ id: 'c1', name: '群' }],
+    nameOf: (id: string) => String(id).toUpperCase(), messageName: () => '', showMessage() {}, selectCluster() {}, getActivity: () => ({}) });
+  const fire = (node: any, event: string) => Promise.all((node.listeners.get(event) ?? []).map((fn: any) => fn({ preventDefault() {}, target: node })));
+  workbench.open('c1');
+  for (let i = 0; i < 10; i++) await new Promise((ok) => setImmediate(ok));
+  await fire(body.all((node) => node.tagName === 'button' && node.textContent === '新建任务')[0], 'click');
+  const dialog = body.all((node) => node.tagName === 'dialog' && node.open).at(-1)!;
+  const select = dialog.all((node) => node.tagName === 'select' && node.attributes['aria-label'] === '验收批次')[0];
+  assert.deepEqual(select.all((node) => node.tagName === 'option').map((node) => node.attributes.value), ['', 'b1'],
+    'the form offers every open batch, whoever created it');
+  assert.match(select.textContent, /B2 · 共享批次/);
+  select.value = 'b1';
+  await fire(select, 'change');
+  await fire(dialog.all((node) => node.tagName === 'form')[0], 'submit');
+  assert.equal(posted.at(-1).action, 'task.create');
+  assert.equal(posted.at(-1).batchId, 'b1', 'the task joins the batch');
+  assert.equal(posted.at(-1).mergeRequired, true, 'a batched task always needs a merge');
+  assert.equal(posted.at(-1).reviewer, undefined, 'the batch reviewer replaces the form reviewer');
+  dialog.close();
+});
+
+test('a ship_fix submission names its base commit and the failure event it answers', async (t) => {
+  const body = mockWorkbenchDom(t);
+  const task: any = { id: 't1', number: 8, title: '前向修复', status: 'completed', revision: 6, mergeRequired: true, approvedSubmissionId: 's2' };
+  const api = async (method: string, url: string) => {
+    if (url.includes('/workspace')) return { tasks: [task], labels: [], roles: [], memberRoles: [], nextCursor: null };
+    if (url.endsWith('/context')) return {};
+    return { task, assignments: [], reviews: [], takeovers: [], submissions: [
+      { id: 's1', summary: '原来的结果', commitSha: 'aaaaaaa' },
+      { id: 's2', summary: '修好冲突', commitSha: 'bbbbbbb', shipFix: { runnerId: 'c', baseSubmissionId: 's1', baseCommitSha: 'abcdef1234567', originSubmissionId: 's1', failureEventId: 42 } }] };
+  };
+  const workbench = ui.createWorkbench({ api, getMembers: () => [{ id: 'c', name: 'C' }], getHistoryMembers: () => [], getClusters: () => [{ id: 'c1', name: '群' }],
+    nameOf: (id: string) => String(id).toUpperCase(), messageName: () => '', showMessage() {}, selectCluster() {}, getActivity: () => ({}) });
+  workbench.openTask('c1', 't1');
+  await new Promise((done) => setImmediate(done));
+  assert.match(body.textContent, /原地修复基于提交 abcdef1 · 对应失败事件 42/);
 });
 
 // ---- 角色与协调: the section rail, the same card for every section, rows, danger actions and empty states ----
 const FULL_SETTINGS = {
-  tasks: [], labels: [], nextCursor: null, paused: false, taskSettings: { takeoverSelfReview: false },
+  tasks: [], labels: [], nextCursor: null, paused: false,
   coordinator: { memberId: 'a', enabled: true, mode: 'execute', generation: 3, standingInstructions: [{ id: 'i1', text: '晚上不派新任务' }],
     permissions: { taskPlanning: true, assignment: true, roleManagement: false }, rules: { version: 'v16', text: '1. 第一条规则' } },
   roles: [{ id: 'r1', name: '设计者', description: '写设计' }, { id: 'r2', name: '验收者', description: '' }],

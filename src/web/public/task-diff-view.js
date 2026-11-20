@@ -109,8 +109,18 @@ export function createTaskDiffView({ load, legacy = false, resolve } = {}) {
 export function createShipFailureView({ load }) {
   return eventDetails({ label: t("查看失败详情"), subject: t("诊断"), load, render(event) {
     const diagnostic = typeof event?.reason === 'string' ? event.reason.replace(/^(?:checks|conflict): /, '') : '';
-    return [diagnostic.trim() && diagnostic !== 'no detail'
-      ? h('pre', { class: 'task-diff-after' }, diagnostic)
-      : h('p', { class: 'task-diff-state' }, t("该事件没有保存失败详情。"))];
+    const detail = diagnostic.trim() && diagnostic !== 'no detail' ? h('pre', { class: 'task-diff-after' }, diagnostic) : null;
+    const empty = h('p', { class: 'task-diff-state' }, t("该事件没有保存失败详情。"));
+    // The Hub writes structured fields with the failure (conflict files, the failed check); old events only keep the text.
+    const failure = event?.failure && typeof event.failure === 'object' && !Array.isArray(event.failure) ? event.failure : null;
+    if (!failure) return [detail ?? empty];
+    const kind = failure.kind === 'conflict' ? t("合并冲突") : t("合并前检查未通过");
+    return [
+      h('p', { class: 'task-diff-warning' }, t("失败类型：{kind}", { kind })),
+      ...(typeof failure.failedCheck === 'string' && failure.failedCheck ? [h('p', {}, t("失败的检查：{name}", { name: failure.failedCheck }))] : []),
+      ...(Array.isArray(failure.conflictFiles) && failure.conflictFiles.length
+        ? [h('p', {}, t("冲突文件：")), h('pre', { class: 'task-diff-after' }, failure.conflictFiles.join('\n'))] : []),
+      detail ?? empty,
+    ];
   } });
 }

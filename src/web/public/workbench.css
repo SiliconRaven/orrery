@@ -544,12 +544,23 @@
 .wb-lp-input { width: 100%; }
 .wb-lp-note { margin: 0; padding: 6px 8px; border-radius: var(--r-md); font-size: var(--f-sm); color: var(--text); background: var(--accent-soft); border-left: 3px solid var(--accent); }
 .wb-fb-group { margin: 6px 8px 2px; font-size: var(--f-xs); font-weight: 600; color: var(--muted); }
-/* 交给验收者 (reviewer takeover): the three review modes. */
+/* 交给验收者 and 退回结果: the takeover confirmation and the two reject choices. */
 .wb-takeover-modes { display: grid; gap: 6px; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-lg); }
 .wb-takeover-modes legend { padding: 0 4px; font-weight: 600; color: var(--text); }
 .wb-takeover-option .wb-check-text { display: grid; gap: 2px; }
 .wb-takeover-member { margin-left: 26px; }
 .wb-takeover-member select:disabled { opacity: .55; }
+/* 合并失败 (task.shipFailure / batch.shipFailure): the structured failure and the rerun or repair paths. */
+.wb-ship-failure { display: grid; gap: 8px; margin: 12px 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--warn-text) 55%, var(--line));
+  border-left-width: 3px; border-radius: var(--r-md); background: var(--warn-bg); }
+.wb-ship-failure h4 { margin: 0; color: var(--warn-text); }
+.wb-ship-failure p { margin: 0; overflow-wrap: anywhere; }
+.wb-ship-failure .wb-rows { margin: 0; }
+.wb-ship-detail summary { cursor: pointer; color: var(--warn-text); font-size: var(--f-sm); }
+.wb-ship-log { margin: 4px 0 0; max-height: 16em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--f-sm);
+  background: var(--surface); border-radius: var(--r-sm); padding: 6px 8px; }
+.wb-ship-failure .row.end { margin-top: 2px; }
+
 .wb-label-manager { width: min(760px, calc(100vw - 32px)); height: min(720px, calc(100dvh - 48px)); max-height: none; background: var(--bg); }
 .wb-lm-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .wb-lm-head { justify-content: space-between; background: var(--surface); }

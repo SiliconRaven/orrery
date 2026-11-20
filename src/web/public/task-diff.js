@@ -86,10 +86,11 @@ export function isTaskChangeNotice(message) {
 }
 
 // Historical notices may contain the saved reason in their body. Use the short sentence in chat and load the event for details.
+// A failed ship keeps the task completed (docs/collaboration.md「ship 失败」): the newer sentence says so.
 export function shipFailureNotice(message) {
   if (!linkedSystemNotice(message)) return null;
-  const match = /^(任务(?: #[0-9]+)?【[\s\S]*?】合并失败(?:：合并前检查未通过|：文件有合并冲突)?，已退回执行者)(?:（原因：[\s\S]*）)?，事件 ([0-9]+)。$/.exec(message.body);
-  return Number(match?.[2]) === message.collabEventId ? `${match[1]}，事件 ${match[2]}。` : null;
+  const match = /^(任务(?: #[0-9]+)?【[\s\S]*?】合并失败)(：合并前检查未通过|：文件有合并冲突)?(，已退回执行者|，保留已通过状态（可原样重跑、ship_fix 或 reopen）)(?:（原因：[\s\S]*）)?，事件 ([0-9]+)。$/.exec(message.body);
+  return Number(match?.[4]) === message.collabEventId ? `${match[1]}${match[2] ?? ''}${match[3]}，事件 ${match[4]}。` : null;
 }
 
 /** Parse only the exact legacy task notification from a verified system message. Event IDs remain strings. */
