@@ -115,7 +115,10 @@ function describeLock(lockPath: string, nowMs: number): LockState {
   try {
     mtimeMs = statSync(lockPath).mtimeMs;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return { state: 'missing' };
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') return { state: 'missing' };
+    // On Windows, unlinking a lock file while another process reads it briefly leaves STATUS_DELETE_PENDING (EPERM).
+    if (process.platform === 'win32' && code === 'EPERM') return { state: 'held', holder: null };
     throw error;
   }
   const holder = readHolder(lockPath);
@@ -129,7 +132,8 @@ function tryCreateLock(lockPath: string, holder: TestQueueHolder): TestQueueHold
   try {
     fd = openSync(lockPath, 'wx');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') return null;
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === 'EEXIST' || (process.platform === 'win32' && code === 'EPERM')) return null;
     throw error;
   }
   try {
@@ -153,7 +157,8 @@ function takeStaleLock(lockPath: string, now: () => number): 'done' | 'busy' {
   try {
     fd = openSync(breaker, 'wx');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') throw error;
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code !== 'EEXIST' && !(process.platform === 'win32' && code === 'EPERM')) throw error;
     try {
       if (now() - statSync(breaker).mtimeMs > BREAKER_GRACE_MS) unlinkSync(breaker);
     } catch { /* another waiter already cleaned it */ }
@@ -162,7 +167,8 @@ function takeStaleLock(lockPath: string, now: () => number): 'done' | 'busy' {
   try {
     if (describeLock(lockPath, now()).state === 'stale') {
       try { unlinkSync(lockPath); } catch (error) {
-        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
+        const code = (error as NodeJS.ErrnoException)?.code;
+        if (code !== 'ENOENT' && !(process.platform === 'win32' && code === 'EPERM')) throw error;
       }
     }
   } finally {

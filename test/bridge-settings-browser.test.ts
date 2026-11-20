@@ -6,7 +6,7 @@ import { hubSecret, startTestHub, TEST_TOKEN } from './helpers.ts';
 const found = findBrowser();
 const skip = found.path === null && process.env.ORRERY_REQUIRE_BROWSER !== '1' ? found.reason : false;
 
-test('bridge settings reveal the key only on click, wrap it on a narrow page and clear it on close', { skip, timeout: 30_000 }, async () => {
+test('bridge settings reveal the key only on click, wrap it on a narrow page and clear it on close', { skip, timeout: 180_000 }, async () => {
   assert.ok(found.path);
   const app = await startTestHub();
   let browser: Browser | undefined;

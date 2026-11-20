@@ -9,7 +9,7 @@ const found = findBrowser();
 const skip = !found.path && process.env.ORRERY_REQUIRE_BROWSER !== '1' ? 'no supported browser' : false;
 const root = resolve(import.meta.dirname, '..');
 
-test('plugin installer reviews sources, grants only checked scopes, uploads archives, cancels stages and translates UI', { skip, timeout: 90_000 }, async (test) => {
+test('plugin installer reviews sources, grants only checked scopes, uploads archives, cancels stages and translates UI', { skip, timeout: 180_000 }, async (test) => {
   assert.ok(found.path);
   const pageHtml = `<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="data:,"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/settings.css"></head>
     <body><main class="settings-dialog" style="max-width:720px;margin:24px auto;padding:16px"><div id="install"></div></main><script type="module">

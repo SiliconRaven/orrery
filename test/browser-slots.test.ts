@@ -8,7 +8,7 @@ import { basename, join, sep } from 'node:path';
 import { sweep, TEST_TEMP_PREFIX } from '../scripts/test-temp.ts';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { acquireSlot, cleanSlot, poolRoot, POOL_SIZE, SLOTS_ENV } from './browser-slots.ts';
+import { acquireSlot, cleanSlot, cleanWithRetry, poolRoot, POOL_SIZE, SLOTS_ENV } from './browser-slots.ts';
 import { junction } from './extensions-fixture.ts';
 import { tempDir } from './helpers.ts';
 
@@ -164,4 +164,45 @@ test('slot pool: an orphaned browser (owner process gone, browser still holding 
   const slot = await acquireSlot({ root, size: 1 });
   assert.deepEqual(readdirSync(slot.dir), []);
   slot.release();
+});
+
+test('cleanWithRetry retries transient Windows/POSIX file-busy errors, fails fast on non-busy errors, and caps retries', async () => {
+  const err = (code: string, msg = code) => Object.assign(new Error(msg), { code });
+  const busyCodes = ['EACCES', 'EBUSY', 'EPERM', 'ENOTEMPTY'];
+  let calls = 0;
+  const dir = await cleanWithRetry('root', 'slot-0', {
+    delayMs: 0,
+    maxAttempts: 6,
+    clean: () => {
+      if (calls < busyCodes.length) throw err(busyCodes[calls++]);
+      calls++;
+      return 'root/slot-0';
+    },
+  });
+  assert.equal(dir, 'root/slot-0');
+  assert.equal(calls, busyCodes.length + 1);
+
+  for (const nonBusy of ['ENOENT', 'EIO']) {
+    let seen = 0;
+    await assert.rejects(
+      cleanWithRetry('root', 'slot-0', {
+        delayMs: 0,
+        maxAttempts: 5,
+        clean: () => { seen++; throw err(nonBusy, `boom-${nonBusy}`); },
+      }),
+      new RegExp(`boom-${nonBusy}`),
+    );
+    assert.equal(seen, 1, `${nonBusy} fails immediately without retrying`);
+  }
+
+  let exhausted = 0;
+  await assert.rejects(
+    cleanWithRetry('root', 'slot-0', {
+      delayMs: 0,
+      maxAttempts: 3,
+      clean: () => { exhausted++; throw err('EACCES', 'still held'); },
+    }),
+    /still held/,
+  );
+  assert.equal(exhausted, 3);
 });

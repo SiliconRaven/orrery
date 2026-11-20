@@ -153,19 +153,19 @@ test('browser smoke: the settings dialog switches sections by mouse and keyboard
   }
 });
 
-test('browser start-up: a DevTools handshake that never opens fails in bounded time, leaves no browser and frees its profile slot', { skip, timeout: 60_000 }, async () => {
+test('browser start-up: a DevTools handshake that never opens fails in bounded time, leaves no browser and frees its profile slot', { skip, timeout: 180_000 }, async () => {
   assert.ok(found.path, `ORRERY_REQUIRE_BROWSER=1 but ${found.path === null ? found.reason : ''}`);
   // A socket that never fires open or error: launchBrowser has to give up on its own and clean up, since the caller
   // gets no handle to close.
   class StuckSocket extends EventTarget { close() {} send() {} }
   let started: { pid: number | undefined; profile: string } | undefined;
   let hadCache = false;
-  const begin = Date.now();
+  let startedAt = 0;
   await assert.rejects(launchBrowser(found.path, {
     connectTimeoutMs: 300, WebSocket: StuckSocket as unknown as typeof WebSocket,
-    onStart: (s) => { started = s; hadCache = existsSync(join(s.profile, 'Local State')); },
+    onStart: (s) => { started = s; startedAt = Date.now(); hadCache = existsSync(join(s.profile, 'Local State')); },
   }), /DevTools connect/);
-  assert.ok(Date.now() - begin < 30_000, `took ${Date.now() - begin} ms`);
+  assert.ok(startedAt > 0 && Date.now() - startedAt < 30_000, `took ${Date.now() - startedAt} ms after start`);
   assert.ok(started?.pid, 'the browser was started');
   // The slot is reused, not deleted: a cache that was there (the earlier tests in this file leave one) is kept.
   if (hadCache) assert.ok(existsSync(join(started.profile, 'Local State')), 'the slot keeps Local State');

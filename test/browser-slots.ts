@@ -95,13 +95,24 @@ export function cleanSlot(root: string, name: string): string {
   return dir;
 }
 
+export interface CleanRetryOptions {
+  clean?: (root: string, name: string) => string;
+  delayMs?: number;
+  maxAttempts?: number;
+}
+
 /** cleanSlot, retrying for a few seconds while a just-exited browser's helper processes still hold files. */
-async function cleanWithRetry(root: string, name: string): Promise<string> {
+export async function cleanWithRetry(
+  root: string,
+  name: string,
+  { clean = cleanSlot, delayMs = 100, maxAttempts = 50 }: CleanRetryOptions = {},
+): Promise<string> {
   for (let attempt = 0; ; attempt++) {
-    try { return cleanSlot(root, name); } catch (error) {
-      const busy = code(error) === 'EBUSY' || code(error) === 'EPERM' || code(error) === 'ENOTEMPTY';
-      if (!busy || attempt >= 30) throw error;
-      await sleep(100);
+    try { return clean(root, name); } catch (error) {
+      const errCode = code(error);
+      const busy = errCode === 'EBUSY' || errCode === 'EPERM' || errCode === 'ENOTEMPTY' || errCode === 'EACCES';
+      if (!busy || attempt + 1 >= maxAttempts) throw error;
+      if (delayMs > 0) await sleep(delayMs);
     }
   }
 }

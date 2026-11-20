@@ -3,7 +3,8 @@
 // windows or navigate the page or itself away (a canary server on another port must see no request at all), while its
 // own scripts, module scripts, styles and images load under the frame policy. Both positions render in the three themes
 // at 1440 and 375 px; the placeholders appear (not running, load timeout, files missing, turned off); turning the switch
-// off removes an open frame at once. Uses the shared profile slots; run this file alone (--test-concurrency=1).
+// off removes an open frame at once. Uses the shared profile slots (test/browser-slots.ts), so single-file and
+// concurrent runs are cross-process locked.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -66,6 +67,7 @@ test('browser: plugin UI frames are isolated, render at both positions in every 
   const app = await startTestHub({ dir: setup() });
   let browser: Browser | null = null;
   let step = 'setup';
+  rmSync(join(SHOTS, 'failure.png'), { force: true });
   const shot = async (name: string) => {
     const { data } = await browser!.page.send('Page.captureScreenshot', { format: 'png' });
     mkdirSync(SHOTS, { recursive: true });
@@ -195,6 +197,7 @@ test('browser: plugin UI frames are isolated, render at both positions in every 
         await shot(`${theme}-${width}-titlebar`);
         await page.evaluate(closePanel);
         await page.click(`document.getElementById('open-workbench')`, 'the workbench');
+        await page.waitFor(`document.querySelector('dialog.workbench[open] [data-wb-plugin-tab="ui-demo"]')`, 'the workbench plugin tab');
         await page.click(`document.querySelector('[data-wb-plugin-tab="ui-demo"]')`, 'the example tab');
         await page.waitFor(iframe('ui-demo', 'workbench'), 'the workbench frame');
         await waitFor(() => inFrame<boolean>(page, iframe('ui-demo', 'workbench'), `document.getElementById('count').textContent === '1'`), 'the tab ready', 15_000);
@@ -287,6 +290,7 @@ test('browser: plugin UI frames are isolated, render at both positions in every 
     await page.waitFor(iframe('ui-demo', 'titlebar'), 'the panel frame');
     const open = await page.evaluate<string>(`${iframe('ui-demo', 'titlebar')}.src`);
     await page.click(`document.getElementById('open-settings')`, 'settings');
+    await page.waitFor(`document.getElementById('settings-dialog')?.open && document.getElementById('settings-tab-plugins')`, 'the settings dialog');
     await page.click(`document.getElementById('settings-tab-plugins')`, 'the plugins tab');
     const uiSwitch = `document.querySelector('[data-plugin-live="ui-demo"] [data-plugin-switch="ui"]')`;
     await page.waitFor(`${uiSwitch}?.checked === true`, 'the UI switch, on');

@@ -11,7 +11,7 @@ export const NODE_SHA256 = '57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f0
 const archiveName = `node-v${NODE_VERSION}-win-x64.zip`;
 const release = `https://nodejs.org/dist/v${NODE_VERSION}/`;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-export const HUB_INPUTS = ['src', 'shared', 'plugins', 'package.json', 'package-lock.json', 'LICENSE', 'scripts/ship.ts', 'scripts/test-queue.ts'];
+export const HUB_INPUTS = ['src', 'shared', 'plugins', 'package.json', 'package-lock.json', 'LICENSE', 'scripts/ship.ts', 'scripts/test-queue.ts', 'scripts/test-lib.ts'];
 
 export function verifySha256(bytes, expected = NODE_SHA256) {
   const actual = createHash('sha256').update(bytes).digest('hex');
@@ -27,7 +27,7 @@ export async function stageHub(source, destination) {
   const result = spawnSync('git', ['ls-files', '-z', '--', ...HUB_INPUTS], { cwd: source, encoding: 'utf8', windowsHide: true });
   if (result.error || result.status !== 0) throw new Error(`Cannot list tracked Hub inputs: ${result.error?.message ?? result.stderr}`);
   const files = result.stdout.split('\0').filter(Boolean);
-  for (const required of ['src/main.ts', 'package.json', 'package-lock.json', 'LICENSE', 'scripts/ship.ts', 'scripts/test-queue.ts']) {
+  for (const required of ['src/main.ts', 'package.json', 'package-lock.json', 'LICENSE', 'scripts/ship.ts', 'scripts/test-queue.ts', 'scripts/test-lib.ts']) {
     if (!files.includes(required)) throw new Error(`Missing tracked Hub runtime input: ${required}`);
   }
   for (const file of files) {

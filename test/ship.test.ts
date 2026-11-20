@@ -5,11 +5,13 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test, type TestContext } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { acquireLock, docsOnly, parseCommandLine, ship, ShipRefused as ScriptRefused, type ShipOptions, type ShipReport, type Verified } from '../scripts/ship.ts';
+import { acquireLock, docsOnly, parseCommandLine, redactPaths, redactSecrets, ship, ShipRefused as ScriptRefused, type ShipOptions, type ShipReport, type Verified } from '../scripts/ship.ts';
 import type { CollaborationActor, CollaborationCommand, Task, TaskResult } from '../src/core/collaboration-types.ts';
 import { Hub } from '../src/core/hub.ts';
 import { Store } from '../src/core/store.ts';
@@ -634,4 +636,231 @@ test('over MCP: an approving reviewer gets ship.command; the executor of a self-
   await work(self.id, '1234567');
   assert.match((await callA('get_task', { taskId: self.id })).ship.command, /--ticket s1\./);
   assert.equal((await callB('get_task', { taskId: self.id })).ship, undefined, 'other members do not see it');
+});
+
+test('ship failure diagnostics: redacts secrets and host paths, saves logs and screenshots before worktree cleanup, and rotates old runs', async (t) => {
+  assert.equal(
+    redactSecrets('http://127.0.0.1/#token=tok_123&api_key=k99 Authorization: Bearer secret_hdr x-orrery-bridge=br_99 s1.abcdefghij.klmnopqrst'),
+    'http://127.0.0.1/#token=<redacted>&api_key=<redacted> Authorization: Bearer <redacted> x-orrery-bridge=<redacted> <redacted-ticket>',
+  );
+  const sampleBase = join(tmpdir(), 'redact-paths-base');
+  const sampleDiag = join(sampleBase, 'repo', '.tmp', 'ship-failures');
+  const sampleRepo = join(sampleBase, 'repo');
+  const sampleWork = join(sampleBase, 'orrery-ship-1');
+  const sampleHome = join(sampleBase, 'home');
+  const sampleInput = [
+    `diag=${sampleDiag}/r1`,
+    `repo=${sampleRepo.replaceAll('\\', '/')}/test/ship.test.ts`,
+    `url=${pathToFileURL(join(sampleWork, 'test', 'a.test.ts')).href}:12:3`,
+    `home=${sampleHome}/notes`,
+    `other=${sampleHome}-other/keep`,
+  ].join(' ');
+  const redactedSample = redactPaths(sampleInput, {
+    diagnostics: sampleDiag, worktree: sampleWork, repo: sampleRepo, tmp: tmpdir(), home: sampleHome,
+  });
+  assert.ok(!redactedSample.includes(sampleRepo), redactedSample);
+  assert.ok(!redactedSample.includes(sampleWork), redactedSample);
+  assert.ok(!redactedSample.includes(sampleHome + '/notes'), redactedSample);
+  assert.match(redactedSample, /diag=<diagnostics>\/r1/);
+  assert.match(redactedSample, /repo=<repo>\/test\/ship\.test\.ts/);
+  assert.match(redactedSample, /url=<worktree>\/test\/a\.test\.ts:12:3/);
+  assert.match(redactedSample, /home=<home>\/notes/);
+  assert.ok(redactedSample.includes('-other/keep'), 'boundary prevents replacing sibling directories');
+
+  const checkScript = `
+    const fs = require("fs"), os = require("os"), path = require("path"), { pathToFileURL } = require("url");
+    fs.mkdirSync(".tmp/test-logs", { recursive: true });
+    fs.mkdirSync(".tmp/plugin-ui-shots", { recursive: true });
+    const seq = fs.existsSync(process.argv[1]) ? fs.readFileSync(process.argv[1], "utf8").length + 1 : 1;
+    fs.appendFileSync(process.argv[1], "x");
+    fs.writeFileSync(".tmp/test-logs/20261119-00000" + seq + ".log", [
+      "✖ broken case (12.3ms)",
+      "✖ failing tests:",
+      "✖ broken case (12.3ms)",
+      "  Error: expected a === b",
+      "  at " + pathToFileURL(path.join(process.cwd(), "test", "a.test.ts")).href + ":4:2",
+      "  repo=" + process.argv[2] + " home=" + os.homedir(),
+      "  http://127.0.0.1/#token=tok_secret Authorization: Bearer hdr_secret",
+    ].join("\\n"));
+    fs.writeFileSync(".tmp/plugin-ui-shots/failure.png", "PNGFAIL" + seq);
+    fs.writeFileSync(".tmp/plugin-ui-shots/step-1.png", "PNGSTEP" + seq);
+    console.log("tail token check #token=tok_tail Bearer hdr_tail at " + process.cwd() + " home=" + os.homedir());
+    process.exit(1);
+  `;
+  const r = repo(t, checkScript);
+  r.write('.gitignore', '.tmp/\n');
+  r.write('.premerge/checks.json', JSON.stringify({
+    checks: [{ name: 'probe', argv: [process.execPath, '-e', checkScript, r.log, r.root], timeout_seconds: 30 }],
+  }));
+  r.commit('ignore .tmp and configure host-path probe');
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  const logs: string[] = [];
+  const runOnce = () => ship({ ...options(r.root, fakeHub(sha)), log: (line) => logs.push(line) });
+
+  const out = await runOnce();
+  assert.equal(out.merged, false);
+  assert.ok(!out.merged && out.kind === 'checks');
+  assert.ok(out.detail.length <= 4600, `detail within MAX_DETAIL (${out.detail.length})`);
+  assert.match(out.detail, /^probe failed twice:/);
+  assert.match(out.detail, /✖ broken case/);
+  assert.match(out.detail, /saved diagnostics: \.tmp\/ship-failures\//);
+  assert.match(out.detail, /logs \(2\): attempt-1\/test-logs\/20261119-000001\.log, attempt-2\/test-logs\/20261119-000002\.log/);
+  assert.match(out.detail, /failure screenshots: attempt-1\/shots\/plugin-ui-shots\/failure\.png, attempt-2\/shots\/plugin-ui-shots\/failure\.png/);
+  assert.doesNotMatch(out.detail, /tok_secret|hdr_secret|tok_tail|hdr_tail/);
+  assert.equal(out.detail.includes(r.root), false, 'shared detail must not leak repo root');
+  assert.equal(out.detail.includes(tmpdir()), false, 'shared detail must not leak tmpdir');
+  assert.equal(out.detail.includes(homedir()), false, 'shared detail must not leak homedir');
+  const localSavedLine = logs.find((line) => line.startsWith('saved failure diagnostics to '));
+  assert.ok(localSavedLine, 'local log prints full archive path');
+
+  const failuresRoot = join(r.root, '.tmp', 'ship-failures');
+  const runs = readdirSync(failuresRoot);
+  assert.equal(runs.length, 1);
+  const runDir = join(failuresRoot, runs[0]);
+  assert.ok(localSavedLine.endsWith(runDir));
+  const savedLog1 = readFileSync(join(runDir, 'attempt-1', 'test-logs', '20261119-000001.log'), 'utf8');
+  const savedLog2 = readFileSync(join(runDir, 'attempt-2', 'test-logs', '20261119-000002.log'), 'utf8');
+  assert.match(savedLog1, /Error: expected a === b/);
+  assert.match(savedLog2, /Error: expected a === b/);
+  assert.doesNotMatch(savedLog1, /tok_secret|hdr_secret/);
+  assert.doesNotMatch(savedLog2, /tok_secret|hdr_secret/);
+  assert.equal(readFileSync(join(runDir, 'attempt-1', 'shots', 'plugin-ui-shots', 'failure.png'), 'utf8'), 'PNGFAIL1');
+  assert.equal(readFileSync(join(runDir, 'attempt-2', 'shots', 'plugin-ui-shots', 'failure.png'), 'utf8'), 'PNGFAIL2');
+  assert.equal(readFileSync(join(runDir, 'attempt-1', 'shots', 'plugin-ui-shots', 'step-1.png'), 'utf8'), 'PNGSTEP1');
+  assert.equal(readFileSync(join(runDir, 'attempt-2', 'shots', 'plugin-ui-shots', 'step-1.png'), 'utf8'), 'PNGSTEP2');
+  assert.equal(r.g('status', '--porcelain', '--untracked-files=all'), '', 'main worktree stays clean');
+  noLeftovers(r);
+
+  for (let i = 0; i < 11; i++) {
+    const next = await runOnce();
+    assert.equal(next.merged, false);
+  }
+  const kept = readdirSync(failuresRoot).sort();
+  assert.equal(kept.length, 10, 'rotates to at most 10 failure runs');
+  assert.ok(!kept.includes(runs[0]), 'the oldest run was rotated out');
+});
+
+test('ship failure diagnostics: preserves attempt-1 failure screenshot deleted during rerun and cleans staging on pass', async (t) => {
+  const r1DeleteR2Fail = `
+    const fs = require("fs");
+    fs.mkdirSync(".tmp/test-logs", { recursive: true });
+    fs.mkdirSync(".tmp/plugin-ui-shots", { recursive: true });
+    fs.mkdirSync(".tmp/plugin-commands-shots", { recursive: true });
+    const seq = fs.existsSync(process.argv[1]) ? fs.readFileSync(process.argv[1], "utf8").length + 1 : 1;
+    fs.appendFileSync(process.argv[1], "x");
+    if (seq === 1) {
+      fs.writeFileSync(".tmp/test-logs/20261119-100001.log", "✖ marks failed\\n✖ failing tests:\\n✖ marks failed\\n");
+      fs.writeFileSync(".tmp/plugin-ui-shots/failure.png", "ROUND1_MARKS_FAIL");
+    } else {
+      fs.rmSync(".tmp/plugin-ui-shots/failure.png", { force: true });
+      fs.writeFileSync(".tmp/test-logs/20261119-100002.log", "✖ commands failed\\n✖ failing tests:\\n✖ commands failed\\n");
+      fs.writeFileSync(".tmp/plugin-commands-shots/failure.png", "ROUND2_CMDS_FAIL");
+    }
+    process.exit(1);
+  `;
+  const r = repo(t, r1DeleteR2Fail);
+  r.write('.gitignore', '.tmp/\n');
+  r.commit('ignore .tmp');
+  const sha = r.branch('feature', { 'src.txt': 'code\n' });
+  const beforeTmp = new Set(readdirSync(tmpdir()).filter((d) => d.startsWith('orrery-ship-r1-')));
+
+  const out = await ship(options(r.root, fakeHub(sha)));
+  assert.equal(out.merged, false);
+  assert.ok(!out.merged && out.kind === 'checks');
+  assert.match(out.detail, /attempt-1\/shots\/plugin-ui-shots\/failure\.png/);
+  assert.match(out.detail, /attempt-2\/shots\/plugin-commands-shots\/failure\.png/);
+  const runs = readdirSync(join(r.root, '.tmp', 'ship-failures'));
+  assert.equal(runs.length, 1);
+  const runDir = join(r.root, '.tmp', 'ship-failures', runs[0]);
+  assert.equal(readFileSync(join(runDir, 'attempt-1', 'shots', 'plugin-ui-shots', 'failure.png'), 'utf8'), 'ROUND1_MARKS_FAIL');
+  assert.equal(existsSync(join(runDir, 'attempt-2', 'shots', 'plugin-ui-shots', 'failure.png')), false);
+  assert.equal(existsSync(join(runDir, 'attempt-2', 'test-logs', '20261119-100001.log')), false, 'unchanged attempt-1 log not duplicated into attempt-2');
+  assert.equal(readFileSync(join(runDir, 'attempt-2', 'shots', 'plugin-commands-shots', 'failure.png'), 'utf8'), 'ROUND2_CMDS_FAIL');
+  assert.deepEqual(readdirSync(tmpdir()).filter((d) => d.startsWith('orrery-ship-r1-') && !beforeTmp.has(d)), [], 'attempt-1 staging cleaned');
+
+  // If attempt 2 passes, attempt-1 staging is discarded cleanly and no failure directory is kept.
+  const passOnRetry = `
+    const fs = require("fs");
+    fs.mkdirSync(".tmp/test-logs", { recursive: true });
+    fs.mkdirSync(".tmp/plugin-ui-shots", { recursive: true });
+    const seq = fs.existsSync(process.argv[1]) ? fs.readFileSync(process.argv[1], "utf8").length + 1 : 1;
+    fs.appendFileSync(process.argv[1], "x");
+    if (seq === 1) {
+      fs.writeFileSync(".tmp/test-logs/20261119-100003.log", "✖ flaky");
+      fs.writeFileSync(".tmp/plugin-ui-shots/failure.png", "FLAKY");
+      process.exit(1);
+    }
+    process.exit(0);
+  `;
+  const rPass = repo(t, passOnRetry);
+  rPass.write('.gitignore', '.tmp/\n');
+  rPass.commit('ignore .tmp pass on retry');
+  const sha2 = rPass.branch('feature', { 'src.txt': 'code\n' });
+  const merged = await ship(options(rPass.root, fakeHub(sha2)));
+  assert.equal(merged.merged, true);
+  assert.equal(existsSync(join(rPass.root, '.tmp', 'ship-failures')), false);
+  assert.deepEqual(readdirSync(tmpdir()).filter((d) => d.startsWith('orrery-ship-r1-') && !beforeTmp.has(d)), [], 'attempt-1 staging cleaned on pass');
+});
+
+test('ship failure diagnostics: EPERM while deleting attempt-1 staging still removes temp worktree and reports check result', async (t) => {
+  const leaked: string[] = [];
+  t.after(() => {
+    for (const dir of leaked) rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  });
+  const throwingRemove = (dir: string) => {
+    leaked.push(dir);
+    throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+  };
+
+  // (a) Both check attempts fail while deleting attempt-1 staging throws EPERM.
+  const doubleFail = `
+    const fs = require("fs");
+    fs.mkdirSync(".tmp/test-logs", { recursive: true });
+    const seq = fs.existsSync(process.argv[1]) ? fs.readFileSync(process.argv[1], "utf8").length + 1 : 1;
+    fs.appendFileSync(process.argv[1], "x");
+    fs.writeFileSync(".tmp/test-logs/20261119-20000" + seq + ".log", "✖ fail #" + seq + "\\n✖ failing tests:\\n✖ fail #" + seq + "\\n");
+    process.exit(1);
+  `;
+  const rFail = repo(t, doubleFail);
+  rFail.write('.gitignore', '.tmp/\n');
+  rFail.commit('ignore .tmp');
+  const shaFail = rFail.branch('feature', { 'src.txt': 'code\n' });
+  const failHub = fakeHub(shaFail);
+  const failLogs: string[] = [];
+  const outFail = await ship(options(rFail.root, failHub, { log: (line) => failLogs.push(line), removeStaging: throwingRemove }));
+  assert.equal(outFail.merged, false);
+  assert.ok(!outFail.merged && outFail.kind === 'checks');
+  assert.equal(failHub.reports.length, 1);
+  assert.ok('failed' in failHub.reports[0] && failHub.reports[0].failed.kind === 'checks');
+  noLeftovers(rFail);
+  assert.ok(failLogs.some((line) => line.includes('could not remove attempt-1 staging') && line.includes('EPERM')));
+  assert.equal(leaked.length, 1);
+
+  // (b) Attempt 1 fails and attempt 2 passes while deleting attempt-1 staging throws EPERM.
+  const passOnRetry = `
+    const fs = require("fs");
+    fs.mkdirSync(".tmp/test-logs", { recursive: true });
+    const seq = fs.existsSync(process.argv[1]) ? fs.readFileSync(process.argv[1], "utf8").length + 1 : 1;
+    fs.appendFileSync(process.argv[1], "x");
+    if (seq === 1) {
+      fs.writeFileSync(".tmp/test-logs/20261119-200003.log", "✖ flaky");
+      process.exit(1);
+    }
+    process.exit(0);
+  `;
+  const rPass = repo(t, passOnRetry);
+  rPass.write('.gitignore', '.tmp/\n');
+  rPass.commit('ignore .tmp pass');
+  const shaPass = rPass.branch('feature', { 'src.txt': 'code\n' });
+  const passHub = fakeHub(shaPass);
+  const passLogs: string[] = [];
+  const outPass = await ship(options(rPass.root, passHub, { log: (line) => passLogs.push(line), removeStaging: throwingRemove }));
+  assert.equal(outPass.merged, true);
+  assert.ok(outPass.merged);
+  assert.equal(rPass.g('rev-parse', 'main'), outPass.mergeCommit);
+  assert.equal(passHub.reports.length, 1);
+  assert.ok('mergeCommit' in passHub.reports[0]);
+  noLeftovers(rPass);
+  assert.ok(passLogs.some((line) => line.includes('could not remove attempt-1 staging') && line.includes('EPERM')));
+  assert.equal(leaked.length, 2);
 });

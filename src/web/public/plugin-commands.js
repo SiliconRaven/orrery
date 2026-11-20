@@ -243,25 +243,72 @@ export function createCommandState({ autoDismissMs = 6000, setTimer = setTimeout
   return state;
 }
 
+const runCards = new WeakMap();
+
 /**
  * The header chip for this cluster's active runs: `details` (hidden when there are none) holding `summary` (the chip:
  * the newest run's title and progress, +N for more) and `panel` (each run, its progress and a 取消 button).
  */
 export function drawRuns({ details, summary, panel }, runs, { onCancel }) {
   details.hidden = !runs.length;
-  if (!runs.length) { details.open = false; return; }
+  if (!runs.length) {
+    details.open = false;
+    runCards.delete(panel);
+    if (panel.children.length) panel.replaceChildren();
+    return;
+  }
   const latest = runs.at(-1);
   const words = `${latest.title}${latest.progress ? ` · ${latest.progress}` : ` · ${STATE_LABEL[latest.state]}`}`;
   summary.replaceChildren(icon('clock', 'ico-xs'), h('span', { class: 'plugin-run-text' }, words), ...(runs.length > 1 ? [h('span', {}, `+${runs.length - 1}`)] : []));
   summary.setAttribute('title', `${runs.length} 个插件命令正在运行：${words}`);
-  panel.replaceChildren(...runs.map((run) => h('div', { class: 'plugin-run' },
-    h('div', { class: 'plugin-run-head' }, h('b', {}, run.title), h('span', { class: 'muted' }, `${run.pluginName} · ${STATE_LABEL[run.state]}`)),
-    run.progress ? h('p', { class: 'plugin-run-progress' }, run.progress) : null,
-    typeof run.fraction === 'number' ? h('div', { class: 'plugin-run-bar', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100,
-      'aria-valuenow': Math.round(run.fraction * 100), style: `--fraction: ${Math.round(run.fraction * 100)}%` }) : null,
-    h('div', { class: 'row end' }, h('button', { type: 'button', class: 'small danger', disabled: run.state !== 'running',
-      title: run.state === 'starting' ? '命令还在启动，稍后再取消' : null, onclick: () => onCancel(run) },
-    run.state === 'cancelling' ? '正在取消…' : '取消')))));
+  // Reuse each run's card and cancel button across progress frames so an in-progress click is never dropped.
+  let cards = runCards.get(panel);
+  if (!cards) { cards = new Map(); runCards.set(panel, cards); }
+  const nextIds = new Set(runs.map((run) => run.runId));
+  for (const [id, entry] of cards) if (!nextIds.has(id)) { entry.el.remove(); cards.delete(id); }
+  const ordered = runs.map((run) => {
+    let entry = cards.get(run.runId);
+    if (!entry) {
+      const title = h('b', {}, run.title);
+      const state = h('span', { class: 'muted' });
+      const progress = h('p', { class: 'plugin-run-progress', hidden: true });
+      const barSlot = h('div', { hidden: true });
+      const btn = h('button', { type: 'button', class: 'small danger', onclick: () => entry.onCancel(entry.run) });
+      const el = h('div', { class: 'plugin-run' }, h('div', { class: 'plugin-run-head' }, title, state), progress, barSlot, h('div', { class: 'row end' }, btn));
+      entry = { el, title, state, progress, barSlot, bar: null, btn, run, onCancel };
+      cards.set(run.runId, entry);
+    }
+    entry.run = run;
+    entry.onCancel = onCancel;
+    if (entry.title.textContent !== run.title) entry.title.textContent = run.title;
+    const stateText = `${run.pluginName} · ${STATE_LABEL[run.state]}`;
+    if (entry.state.textContent !== stateText) entry.state.textContent = stateText;
+    entry.progress.hidden = !run.progress;
+    const progressText = run.progress ?? '';
+    if (entry.progress.textContent !== progressText) entry.progress.textContent = progressText;
+    const hasFraction = typeof run.fraction === 'number';
+    entry.barSlot.hidden = !hasFraction;
+    if (hasFraction) {
+      const pct = Math.round(run.fraction * 100);
+      if (!entry.bar) {
+        entry.bar = h('div', { class: 'plugin-run-bar', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100 });
+        entry.barSlot.replaceChildren(entry.bar);
+      }
+      entry.bar.setAttribute('aria-valuenow', String(pct));
+      entry.bar.setAttribute('style', `--fraction: ${pct}%`);
+    } else if (entry.bar) {
+      entry.bar = null;
+      entry.barSlot.replaceChildren();
+    }
+    entry.btn.disabled = run.state !== 'running';
+    const label = run.state === 'cancelling' ? '正在取消…' : '取消';
+    if (entry.btn.textContent !== label) entry.btn.textContent = label;
+    if (run.state === 'starting') entry.btn.setAttribute('title', '命令还在启动，稍后再取消');
+    else entry.btn.removeAttribute?.('title');
+    return entry.el;
+  });
+  const sameOrder = panel.children.length === ordered.length && ordered.every((el, i) => panel.children[i] === el);
+  if (!sameOrder) panel.replaceChildren(...ordered);
 }
 
 /** The corner notices of the shown cluster; each has a close button. */

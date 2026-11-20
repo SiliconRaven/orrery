@@ -571,6 +571,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
   renderMarkdown = (value) => [value], workspaceChanged = () => {}, openImage = () => {}, uploadFile, stalled = null, pluginUi = null }) {
   let pluginIds = null;   // Before the registry is known, keep the existing task and coordinator views.
   let collectionTabs = [];
+  let renderedPluginTabs = null;
   const tasksEnabled = () => pluginIds === null || pluginIds.includes('tasks');
   const coordinatorEnabled = () => pluginIds === null || pluginIds.includes('coordinator');
   const title = h('h2', {}, lt("任务工作台"));
@@ -2448,6 +2449,7 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       rail: content.querySelector('.wb-rp-rail')?.scrollLeft ?? 0 };
     // A plugin tab that is no longer offered (its grant ended, another cluster) falls back to the task list.
     const pluginTabs = !view.overview ? (pluginUi?.workbenchTabs(view.clusterId) ?? []) : [];
+    renderedPluginTabs = view.overview ? null : JSON.stringify([view.clusterId, pluginTabs.map((tab) => [tab.id, tab.name])]);
     if (view.tab.startsWith('plugin:') && !pluginTabs.some((tab) => `plugin:${tab.id}` === view.tab)) view.tab = 'tasks';
     const pluginTab = !view.overview && view.tab.startsWith('plugin:') ? view.tab.slice('plugin:'.length) : null;
     content.classList.toggle('wb-split', !view.overview && view.tab === 'tasks');
@@ -2582,8 +2584,12 @@ export function createWorkbench({ api, getMembers, getHistoryMembers, getCluster
       noticeDialog(lt("该群聊已移入回收站，可恢复后继续使用。"), lt("群聊已删除"));
     },
     clustersChanged() { if (view.overview && dialog.open) scheduleRefresh(); },
-    /** The plugin UIs this cluster offers changed (pluginUi read them): the tab bar follows. */
-    pluginTabsChanged(clusterId) { if (dialog.open && !view.overview && view.clusterId === clusterId) render(); },
+    /** The plugin UIs this cluster offers changed (pluginUi read them): redraw only if the tab bar actually changed. */
+    pluginTabsChanged(clusterId) {
+      if (!dialog.open || view.overview || view.clusterId !== clusterId) return;
+      const tabs = pluginUi?.workbenchTabs(clusterId) ?? [];
+      if (JSON.stringify([clusterId, tabs.map((tab) => [tab.id, tab.name])]) !== renderedPluginTabs) render();
+    },
     /** The visible stalled-member hints changed: redraw through the gate. */
     stalledChanged() { if (dialog.open) render(); },
     openTask: open,

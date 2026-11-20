@@ -3,11 +3,11 @@
 // the task detail (two, after orrery's own labels). Each mark carries the host's third-party icon and an accessible name
 // starting with 第三方插件：; hovering it or focusing it by keyboard shows the plugin's name and the tip; plugin strings that
 // look like HTML stay text; clicking a mark does nothing (a task card stays closed); marks follow the plugin live. All
-// three places in the three themes at 1440 and 375 px. Uses the shared profile slots; run this file alone
-// (--test-concurrency=1).
+// three places in the three themes at 1440 and 375 px. Uses the shared profile slots (test/browser-slots.ts), so
+// single-file and concurrent runs are cross-process locked.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../src/core/store.ts';
 import { REPO_ROOT } from '../src/main.ts';
@@ -56,6 +56,7 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
   const app = await startTestHub({ dir: setup() });
   let browser: Browser | null = null;
   let step = 'setup';
+  rmSync(join(SHOTS, 'marks-failure.png'), { force: true });
   const shot = async (name: string) => {
     const { data } = await browser!.page.send('Page.captureScreenshot', { format: 'png' });
     mkdirSync(SHOTS, { recursive: true });
@@ -78,6 +79,32 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
 
     browser = await launchBrowser(found.path!, { redact: [TEST_TOKEN] });
     const page = browser.page;
+    await page.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `(() => {
+        const real = window.fetch.bind(window);
+        globalThis.__inFlight = 0;
+        globalThis.__seenUrls = [];
+        window.fetch = async (input, init) => {
+          globalThis.__inFlight++;
+          const url = typeof input === 'string' ? input : input?.url ?? '';
+          try { return await real(input, init); }
+          finally {
+            globalThis.__seenUrls.push(url);
+            globalThis.__inFlight--;
+          }
+        };
+      })();`,
+    });
+    const seenCount = () => page.evaluate<number>('globalThis.__seenUrls.length');
+    const waitSettled = (fragment: string, after: number, what: string) => page.waitFor(
+      `globalThis.__inFlight === 0 && globalThis.__seenUrls.slice(${after}).some((u) => u.includes(${JSON.stringify(fragment)}))`,
+      what,
+    );
+    const waitClusterSettled = async (after = 0) => {
+      await waitSettled('/api/usage?cluster=c1', after, 'cluster usage settled');
+      await waitSettled('/api/clusters/c1/plugin-ui', after, 'cluster plugin-ui settled');
+      await waitSettled('/api/stalled', after, 'cluster stalled watch settled');
+    };
     const size = (width: number) => page.send('Emulation.setDeviceMetricsOverride', { width, height: width < 600 ? 812 : 900, deviceScaleFactor: 1, mobile: false });
     const slot = (target: string, id: string, within = 'document') =>
       `[...((${within})?.querySelectorAll('.pui-marks[data-pui-marks="${target}"]') ?? [])].find((s) => s.dataset.puiId === ${JSON.stringify(id)} && s.offsetParent)`;
@@ -93,6 +120,7 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
     const item = `[...document.querySelectorAll('#cluster-list .cluster-item')].find((b) => b.querySelector('.name')?.textContent === '标记群')`;
     await page.waitFor(item, 'the cluster');
     await page.click(item, 'the cluster');
+    await waitClusterSettled(0);
 
     step = 'a message: two marks sorted by plugin name, the rest behind +N';
     const msg3 = slot('message', 'msg-3');
@@ -187,10 +215,25 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
     await page.waitFor(`document.getElementById('members-toggle').getAttribute('aria-expanded') === 'false'`, 'the member panel closed');
 
     step = 'a task: on its card after the labels, and in the detail; clicking a mark does not open the task';
-    await page.evaluate(`document.getElementById('open-workbench').click()`);
-    await page.waitFor(`document.querySelector('dialog.workbench[open]')`, 'the workbench opened');
     const card = `[...document.querySelectorAll('.workbench-task')].find((c) => c.textContent.includes('修好构建'))`;
-    await page.waitFor(card, 'the task card');
+    const openWorkbench = async (pointer = false) => {
+      const before = await seenCount();
+      await page.waitFor(`document.getElementById('open-workbench') && !document.getElementById('open-workbench').hidden`, 'the workbench button');
+      if (pointer) await page.click(`document.getElementById('open-workbench')`, 'the workbench');
+      else await page.evaluate(`document.getElementById('open-workbench').click()`);
+      await page.waitFor(`document.querySelector('dialog.workbench[open]')`, 'the workbench opened');
+      await waitSettled('/api/clusters/c1/workspace', before, 'the workbench workspace loaded');
+      await page.waitFor(card, 'the task card');
+    };
+    const openTaskDetail = async (pointer = true) => {
+      const before = await seenCount();
+      const title = `${card}.querySelector('.wb-task-title')`;
+      await page.waitFor(title, 'the task title');
+      if (pointer) await page.click(title, 'the task card');
+      else await page.evaluate(`${title}.click()`);
+      await waitSettled(`/api/clusters/c1/tasks/${task.id}`, before, 'the task detail loaded');
+    };
+    await openWorkbench(false);
     const onCard = slot('task', task.id, card);
     await page.waitFor(`${marksIn(onCard)}.length === 2`, 'the task card marks');
     assert.equal(await page.evaluate(`${onCard}.parentElement.classList.contains('wb-task-labels') && ${onCard}.previousElementSibling?.textContent === '前端'`), true, 'after the labels');
@@ -209,7 +252,7 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
     await key('Escape', 27);
     await page.waitFor(`!${onCard}.querySelector('.pui-marks-all')`, 'Esc closed the card list');
     assert.equal(await page.evaluate(`document.querySelector('dialog.workbench').open`), true, 'the workbench stays open');
-    await page.click(`${card}.querySelector('.wb-task-title')`, 'the task card');
+    await openTaskDetail(true);
     const detailRow = `[...document.querySelectorAll('dialog.workbench .wb-row')].find((r) => r.querySelector('.wb-row-key')?.textContent === '标签')`;
     const inDetail = slot('task', task.id, detailRow);
     await page.waitFor(`${marksIn(inDetail)}.length === 2`, 'the task detail marks');
@@ -221,6 +264,7 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
       await size(width);
       await page.navigate(`${app.url}/?width=${width}#c=c1`);
       await page.waitFor(`${marksIn(msg3)}.length === 2`, 'the message marks at this width');
+      await waitClusterSettled(0);
       for (const theme of ['light', 'dark', 'orrery']) {
         await page.evaluate(`globalThis.orreryTheme.set('${theme}')`);
         await page.evaluate(`${msg3}.scrollIntoView({ block: 'center' })`);
@@ -233,10 +277,10 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
         // On a phone the open panel covers the toggle: closed the way its own close control does, by the toggle's handler.
         await page.evaluate(`document.getElementById('members-toggle').click()`);
         await page.waitFor(`document.getElementById('members-toggle').getAttribute('aria-expanded') === 'false'`, 'the member panel closed');
-        await page.click(`document.getElementById('open-workbench')`, 'the workbench');
+        await openWorkbench(true);
         await page.waitFor(`${marksIn(onCard)}.length === 2`, 'the task card marks');
         await shot(`${theme}-${width}-task-card`);
-        await page.click(`${card}.querySelector('.wb-task-title')`, 'the task card');
+        await openTaskDetail(true);
         await page.waitFor(`${marksIn(inDetail)}.length === 2`, 'the task detail marks');
         await page.evaluate(`${inDetail}.scrollIntoView({ block: 'center' })`);
         await shot(`${theme}-${width}-task-detail`);
@@ -272,11 +316,14 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
     await page.waitFor(aliceGamma, 'the Gamma mark on Alice');
     await warningsOnly(true);
     await page.waitFor(`!globalThis.keptMessage.isConnected`, 'the message taken out by the filter');
+    const beforeUiOff = await seenCount();
     await app.api('PATCH', '/api/plugins/mark-gamma/lifecycle', { ui: false });   // its marks are cleared while the message is out
     await page.waitFor(`!(${aliceGamma})`, 'the page heard the clearing');
+    await waitSettled('/api/clusters/c1/plugin-ui', beforeUiOff, 'ui:false plugin-ui reload settled');
     await warningsOnly(false);
     await page.waitFor(`globalThis.keptMessage.isConnected`, 'the same element back');
     await page.waitFor(`!globalThis.keptMessage.querySelector('.pui-mark') && globalThis.keptMessage.querySelector('.pui-marks').hidden`, 'no stale mark on it');
+    const beforeUiOn = await seenCount();
     await app.api('PATCH', '/api/plugins/mark-gamma/lifecycle', { ui: true });
     await warningsOnly(true);
     await page.waitFor(`!globalThis.keptMessage.isConnected`, 'taken out again');
@@ -286,12 +333,15 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
     await warningsOnly(false);
     await page.waitFor(`globalThis.keptMessage.isConnected`, 'back again');
     await page.waitFor(`globalThis.keptMessage.querySelector('.pui-mark-text')?.textContent === '离开时设的'`, 'the mark set meanwhile is shown');
+    // Wait for the 150 ms debounced plugin-state reload from ui:true before intercepting GET /plugin-ui.
+    await waitSettled('/api/clusters/c1/plugin-ui', beforeUiOn, 'ui:true plugin-ui reload settled');
 
     step = 'a list read before a frame never overwrites what the frame did: a late answer, the next read delayed, then failing';
     // Each read of c1's list goes to the Hub at once (so its answer is the Hub's state when it was sent) and is handed to
     // the page only when the test releases it: pass, or fail as a network error would.
     await page.evaluate(`(() => {
       globalThis.listings = [];
+      globalThis.__beforeListingsFetch = window.fetch;
       const original = window.fetch;
       window.fetch = async (input, init) => {
         if ((init?.method ?? 'GET') !== 'GET' || !String(input).endsWith('/api/clusters/c1/plugin-ui')) return original(input, init);
@@ -326,7 +376,11 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
     await page.evaluate(`new Promise((resolve) => setTimeout(() => resolve(true), 0))`);   // the rejection is handled in microtasks before this
     assert.match(await page.evaluate<string>(bobMarks), /^mark-gamma:.*飞行中$/, 'unchanged after the failed read');
     // Reads that answer after the last frame are applied: the page and the Hub agree.
-    await page.evaluate(`(() => { const original = globalThis.listings; globalThis.listings = { push: (resolve) => resolve('pass'), get length() { return 0; } }; return Boolean(original); })()`);
+    await page.evaluate(`(() => {
+      window.fetch = globalThis.__beforeListingsFetch;
+      while (globalThis.listings.length) globalThis.listings.shift()('pass');
+      return true;
+    })()`);
     await app.api('PATCH', '/api/plugins/mark-alpha/lifecycle', { autoRestart: false });
     await mark(app, 'mark-gamma', 'member', 'c1-Bob', null);
     await page.waitFor(`${bobMarks} === ''`, 'cleared through the stream with reads passing');
@@ -375,6 +429,7 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
       await size(width);
       await page.navigate(`${app.url}/?tips=${width}#c=c1`);
       await page.waitFor(`${markOf(msg3, 'mark-beta')}`, 'the message marks');
+      await waitClusterSettled(0);
       await page.evaluate(TIP_CHECK);
       // The member panel stays open across a reload; on a phone it covers the chat.
       await page.evaluate(`(() => { const t = document.getElementById('members-toggle'); if (t.getAttribute('aria-expanded') === 'true') t.click(); return true; })()`);
@@ -393,11 +448,11 @@ test('browser: plugin marks on messages, members and tasks', { skip, timeout: 24
       await shot(`tip-${width}-list`);
       await page.evaluate(`document.getElementById('members-toggle').click()`);
       await page.waitFor(`document.getElementById('members-toggle').getAttribute('aria-expanded') === 'false'`, 'the member panel closed');
-      await page.evaluate(`document.getElementById('open-workbench').click()`);
+      await openWorkbench(false);
       await page.waitFor(`${markOf(onCard, 'mark-beta')}`, 'the task card mark');
       await tipInside(markOf(onCard, 'mark-beta'), `${width} task card`);
       await shot(`tip-${width}-task-card`);
-      await page.evaluate(`${card}.querySelector('.wb-task-title').click()`);
+      await openTaskDetail(false);
       await page.waitFor(`${markOf(inDetail, 'mark-beta')}`, 'the task detail mark');
       await tipInside(markOf(inDetail, 'mark-beta'), `${width} task detail`);
       await shot(`tip-${width}-task-detail`);

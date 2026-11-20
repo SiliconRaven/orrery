@@ -72,7 +72,7 @@ reopen  -> pending
 
 ## ship 与发布
 
-审查通过后，由成员用自己的权限运行 `scripts/ship.ts` 把被审提交合进目标分支（仓库的 `git config orrery.shipBranch`，未配置时为 `main`），Hub 不写 git。命令由 `task_action review` 的通过结果或 `get_task` 给出（谁运行见上面三档验收）；它带 Hub 签发的票据，脚本在锁内、临时 worktree 里 `merge --no-ff`，跑仓库 `.premerge/checks.json` 声明的检查（只改文档时跳过，失败自动重跑一次），通过才快进目标分支，只有目标是 `main` 时才自动推送。冲突或检查失败时目标分支不动，任务退回执行者，群里说明原因，可展开查看失败详情。Hub 收到结果后用只读 git 核实再记为已合并。
+审查通过后，由成员用自己的权限运行 `scripts/ship.ts` 把被审提交合进目标分支（仓库的 `git config orrery.shipBranch`，未配置时为 `main`），Hub 不写 git。命令由 `task_action review` 的通过结果或 `get_task` 给出（谁运行见上面三档验收）；它带 Hub 签发的票据，脚本在锁内、临时 worktree 里 `merge --no-ff`，跑仓库 `.premerge/checks.json` 声明的检查（只改文档时跳过，失败自动重跑一次；重跑前会暂存首轮 `.tmp/test-logs/*.log` 与 `.tmp/*-shots/` 截图，若两次都失败，会在删除临时 worktree 前按 `attempt-1/`、`attempt-2/` 保留到 `.tmp/ship-failures/`，最多留最近 10 次并脱敏令牌/票据，同时在本地标准错误输出保存路径，在共享失败详情里附上失败摘要、相对路径及脱敏路径前缀），通过才快进目标分支，只有目标是 `main` 时才自动推送。冲突或检查失败时目标分支不动，任务退回执行者，群里说明原因，可展开查看失败详情。Hub 收到结果后用只读 git 核实再记为已合并。
 
 `node scripts/ship.ts --release --user-approved …` 把 ship 的目标分支合进 `main`（发布），用同一把锁和同样的检查，不经过 Hub；只应在用户明确要求发布时运行。
 

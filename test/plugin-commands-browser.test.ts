@@ -6,7 +6,7 @@
 // ORRERY_REQUIRE_BROWSER=1.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { REPO_ROOT } from '../src/main.ts';
 import { Store } from '../src/core/store.ts';
@@ -38,9 +38,10 @@ test('browser: "/" lists commands, the form runs one, notices and the run chip s
   const app = await startTestHub({ dir: setup() });
   let browser: Browser | null = null;
   let step = 'setup';
+  const directory = join(REPO_ROOT, '.tmp', 'plugin-commands-shots');
+  rmSync(join(directory, 'failure.png'), { force: true });
   const screenshot = async (name: string) => {
     const shot = await browser!.page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
-    const directory = join(REPO_ROOT, '.tmp', 'plugin-commands-shots');
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, `${name}.png`), Buffer.from(shot.data, 'base64'));
   };
@@ -94,12 +95,15 @@ test('browser: "/" lists commands, the form runs one, notices and the run chip s
     await page.click(`[...${form}.querySelectorAll('button')].find((b) => b.textContent === '运行')`, 'run');
     await page.waitFor(`!document.getElementById('plugin-runs').hidden && document.getElementById('plugin-run-chip').textContent.includes('计时环节')`, 'the chip');
     await page.click(`document.getElementById('plugin-run-chip')`, 'the chip');
-    await page.click(`[...document.querySelectorAll('#plugin-run-panel button')].find((b) => b.textContent === '取消')`, 'cancel');
+    const cancelBtn = `[...document.querySelectorAll('#plugin-run-panel button')].find((b) => b.textContent === '取消' && !b.disabled)`;
+    await page.waitFor(cancelBtn, 'cancel button enabled');
+    await page.click(cancelBtn, 'cancel');
     await page.waitFor(notice('已按要求停止'), 'the cancelled notice');
     await page.waitFor(`document.getElementById('plugin-runs').hidden`, 'the chip goes');
 
     step = 'another cluster shows none of it';
     await page.type(input, '/session', 'another long run');
+    await page.waitFor(`${menuRows}.length === 1`, 'the long command again');
     await page.evaluate(key('Enter'));
     await page.waitFor(form, 'its form');
     await page.click(`[...${form}.querySelectorAll('button')].find((b) => b.textContent === '运行')`, 'run');
@@ -143,6 +147,7 @@ test('browser: "/" lists commands, the form runs one, notices and the run chip s
 
     step = 'mobile run controls';
     await page.type(input, '/session', 'the long command');
+    await page.waitFor(`${menuRows}.length === 1`, 'the mobile long command');
     await page.evaluate(key('Enter'));
     await page.waitFor(form, 'its form');
     await page.evaluate(`${form}.querySelector('input[type=number]').value = '50'`);
@@ -152,12 +157,14 @@ test('browser: "/" lists commands, the form runs one, notices and the run chip s
     await page.click(`document.getElementById('plugin-run-chip')`, 'open the run panel');
     assert.ok(await page.evaluate(`(() => { const r = document.getElementById('plugin-run-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()`), 'the run panel stays inside the viewport');
     await screenshot('orrery-375-running');
-    await page.click(`[...document.querySelectorAll('#plugin-run-panel button')].find((b) => b.textContent === '取消')`, 'cancel');
+    await page.waitFor(cancelBtn, 'mobile cancel button enabled');
+    await page.click(cancelBtn, 'cancel');
     await page.waitFor(`document.getElementById('plugin-runs').hidden`, 'the run ended');
     await screenshot('orrery-375-result');
 
     step = 'command drafts survive composition and a Hub update';
     await page.type(input, '/greet', 'another command');
+    await page.waitFor(`${menuRows}.length === 1`, 'the greet command');
     await page.evaluate(key('Enter'));
     await page.waitFor(form, 'the draft form');
     await page.type(`${form}.querySelector('input[type=text]')`, '保留的参数', 'a parameter draft');

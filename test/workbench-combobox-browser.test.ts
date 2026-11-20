@@ -100,6 +100,7 @@ test('browser: the Git branch picker scrolls 150 branches, stays on screen, and 
     const item = `[...document.querySelectorAll('#cluster-list .cluster-item')].find((b) => b.querySelector('.name')?.textContent === 'branches')`;
     await page.waitFor(item, 'the cluster');
     await page.click(item, 'the cluster');
+    await page.waitFor(`document.getElementById('open-workbench') && !document.getElementById('open-workbench').hidden`, 'the workbench button');
     await page.click(`document.getElementById('open-workbench')`, 'the workbench button');
     const card = `[...document.querySelectorAll('.workbench-task')].find((c) => c.textContent.includes('Pick a branch'))`;
     await page.waitFor(card, 'the task card');

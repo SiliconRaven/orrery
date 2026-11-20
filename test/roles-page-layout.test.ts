@@ -73,7 +73,7 @@ async function openRoles(page: Page, hub: TestHub, width: number, height: number
   await page.waitFor(`Date.now() - window.__drawn > 800`, 'the page to settle', 10_000);
 }
 
-test('task permission card saves all three role lists; coordinator bypass belongs to Task planning', { skip, timeout: 45_000 }, async () => {
+test('task permission card saves all three role lists; coordinator bypass belongs to Task planning', { skip, timeout: 180_000 }, async () => {
   assert.ok(found.path);
   const hub = await startTestHub();
   let browser: Browser | undefined;

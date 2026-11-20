@@ -410,6 +410,9 @@ test('the run chip and the notices', () => {
   buttons[1].fire('click');
   assert.deepEqual(cancelled, ['2']);
   assert.equal(panel.find((e) => e.attributes.role === 'progressbar')!.attributes['aria-valuenow'], '50');
+  const run2Btn = buttons[1];
+  pc.drawRuns(els, [run('1', 'running', '第 1 步'), run('2', 'running', '还剩 4 分钟')], { onCancel: (r: any) => cancelled.push(r.runId) });
+  assert.equal(panel.all().filter((e) => e.tagName === 'BUTTON')[1], run2Btn, 'progress updates keep the existing cancel button element');
   pc.drawRuns(els, [run('3', 'cancelling', null)], { onCancel: () => {} });
   assert.match(summary.textContent, /环节3 · 正在取消/);
 

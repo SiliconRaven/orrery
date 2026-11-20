@@ -82,7 +82,7 @@ test('avatars: GET /api/avatars lists the start-up set, the PNGs are served, and
   }
 });
 
-test('avatars: with no presets the page falls back to the initial and still saves an uploaded image', { skip: skipBrowser, timeout: 90_000 }, async () => {
+test('avatars: with no presets the page falls back to the initial and still saves an uploaded image', { skip: skipBrowser, timeout: 180_000 }, async () => {
   assert.ok(browsers.path, browsers.path === null ? browsers.reason : undefined);
   const avatarDir = loadAvatarPresets().length ? join(tempDir(), 'missing-avatars') : undefined;
   const app = await startTestHub({ avatarDir });

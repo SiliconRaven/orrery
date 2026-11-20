@@ -8,7 +8,7 @@
 // temporary home and Hub processes; the browser comes from the shared profile slots (test/browser-slots.ts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readPluginsFile, writePluginsFile } from '../src/config.ts';
 import { Store } from '../src/core/store.ts';
@@ -197,6 +197,7 @@ test('browser: full-trust page modules load only when listed, and a Hub restart 
   let spawned = null as { stop(): Promise<void> } | null;
   let browser: Browser | null = null;
   let step = 'setup';
+  rmSync(join(SHOTS, 'failure.png'), { force: true });
   const shot = async (name: string) => {
     const { data } = await browser!.page.send('Page.captureScreenshot', { format: 'png' });
     mkdirSync(SHOTS, { recursive: true });
