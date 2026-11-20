@@ -199,6 +199,17 @@ export function officialPackageFile(pkg: VerifiedOfficialPackage, path: string):
   return bytes;
 }
 
+/**
+ * A repo-owned payload directory as the built-in copy runs it: the manifest its files would be signed with, hashed now.
+ * Unsigned: only the Hub's own registry names such a directory, never local state or a download.
+ */
+export function sourceOfficialPackage(directory: string, metadata: unknown): VerifiedOfficialPackage {
+  const root = directoryOf(directory);
+  const files = Object.fromEntries([...officialDirectoryFiles(root)].map(([path, bytes]) => [path, `sha256:${sha256(bytes)}`]));
+  const manifest = parseOfficialManifest({ ...record(metadata, 'Official release metadata'), files });
+  return { directory: root, manifest, digest: sha256(Buffer.from(JSON.stringify(manifest))) };
+}
+
 export function verifyOfficialPackage(directory: string, keys: OfficialKeys,
   expected: { id?: string; version?: string; digest?: string } = {}): VerifiedOfficialPackage {
   const root = directoryOf(directory);

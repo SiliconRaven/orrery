@@ -1,7 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@6.45.1/schema.json",
   "ignore": [
-    "src/web/public/vendor/**"
+    "src/plugins/starmap/package/web/vendor/**"
   ],
   "ignoreBinaries": [
     "tasklist",
@@ -15,7 +15,7 @@
         "src/web/public/app.js!",
         "src/web/public/theme.js!",
         "src/web/public/official-plugins/bookmarks.js!",
-        "src/web/public/official-plugins/starmap.js!",
+        "src/plugins/starmap/package/web/index.js!",
         "src/web/public/plugin-host/v1.js!",
         "scripts/sync-mcp-tools.ts",
         "plugins/antigravity-orrery/sidecar.mjs!",
@@ -52,7 +52,10 @@
         "examples/hub-plugins/**/*.mjs",
         "test/**/*.{ts,js,mjs,cjs}",
         "shared/**/*.js"
-      ]
+      ],
+      "paths": {
+        "/plugin-host/v1.js": ["src/web/public/plugin-host/v1.js"]
+      }
     },
     "desktop": {
       "entry": [

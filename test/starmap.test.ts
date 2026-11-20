@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { emptyTranscriptPage, type TranscriptPage, type TranscriptRequest } from '../src/core/native-transcript.ts';
+import { emptyTranscriptPage, TRANSCRIPT_MAX_ITEMS, type TranscriptPage, type TranscriptRequest } from '../src/core/native-transcript.ts';
 import { rawFetch, startTestHub, tempDir } from './helpers.ts';
 
 const transcriptPath = (clusterId: string, memberId: string) => `/api/clusters/${clusterId}/members/${memberId}/transcript`;
@@ -23,8 +23,10 @@ test('Star map starts off, preserves legacy settings and persists an explicit en
     path = transcriptPath(cluster.id, member.id);
     const before = await first.api('GET', '/api/plugins');
     const initial = before.installed.find((plugin: { id: string }) => plugin.id === 'starmap');
-    assert.deepEqual([initial.enabled, initial.pendingEnabled, initial.iconUrl], [false, false, '/official-plugins/starmap.svg']);
-    assert.ok(!before.frontend.includes('starmap'));
+    assert.deepEqual([initial.enabled, initial.pendingEnabled, initial.iconUrl, initial.officialUpdate.source],
+      [false, false, '/api/plugins/starmap/icon', 'bundled']);
+    assert.equal((await fetch(first.url + initial.iconUrl)).headers.get('content-type'), 'image/svg+xml', 'settings can show the icon while off');
+    assert.ok(!before.officialFrontend.some((entry: { id: string }) => entry.id === 'starmap'));
     assert.ok(!before.plugins.some((plugin: { id: string }) => plugin.id === 'bookmarks'));
     assert.equal((await fetch(first.url + path)).status, 404);
     const after = await first.api('PUT', '/api/plugins/starmap', { enabled: true });
@@ -35,9 +37,14 @@ test('Star map starts off, preserves legacy settings and persists an explicit en
   } finally { await first.close(); }
 
   const second = await startTestHub({ dir });
+  let entry: string;
   try {
     const running = await second.api('GET', '/api/plugins');
-    assert.ok(running.frontend.includes('starmap'));
+    // The built-in copy's web module comes from its package payload, the same way a signed package's does.
+    entry = running.officialFrontend.find((row: { id: string }) => row.id === 'starmap').entry;
+    assert.match(entry, /^\/official-plugin-web\/starmap\/[0-9a-f]{64}\/index\.js$/);
+    assert.ok(!running.frontend.includes('starmap'));
+    assert.equal((await rawFetch(second.url + entry)).status, 200);
     assert.equal((await second.api('GET', path)).status, 'unsupported');
   } finally { await second.close(); }
 
@@ -46,6 +53,7 @@ test('Star map starts off, preserves legacy settings and persists an explicit en
   const conflict = await startTestHub({ dir });
   try {
     assert.equal((await fetch(conflict.url + path)).status, 404);
+    assert.equal((await rawFetch(conflict.url + entry)).status, 404, 'no page module while off');
     await conflict.api('PUT', '/api/plugins/starmap', { enabled: true });
     assert.deepEqual(JSON.parse(readFileSync(fileAt(dir), 'utf8')), { ...legacy, enabled: ['starmap'] });
   } finally { await conflict.close(); }
@@ -67,7 +75,7 @@ test('Star map starts off, preserves legacy settings and persists an explicit en
   } finally { await restored.close(); }
 });
 
-test('Star map checks authentication, active membership and pagination before reading; pages are never cached', async () => {
+test('Star map checks authentication and active membership before reading the bound conversation', async () => {
   const dir = tempDir();
   seedSettings(dir, { disabled: [], enabled: ['starmap'] });
   const app = await startTestHub({ dir });
@@ -98,27 +106,15 @@ test('Star map checks authentication, active membership and pagination before re
       assert.equal(response.status, 400);
       assert.deepEqual(await response.json(), { error: 'unknown member in cluster' });
     }
-    for (const query of ['cursor=', 'limit=', 'limit=1.5', 'limit=0', 'limit=201', 'limit=not-a-number',
-      'direction=invalid', 'limit=3&limit=4', 'sessionId=private-path']) {
-      const response = await fetch(app.url + path + '?' + query);
-      assert.equal(response.status, 400);
-      assert.deepEqual(await response.json(), { error: 'invalid transcript query parameters' });
-    }
     assert.equal(calls.length, 0);
 
+    // The route's query checks, paging and no-store are the package's (test/starmap-package.test.ts); the Hub core keeps
+    // the bound session, the page statuses and what reaches the browser.
     const seq = app.store.lastEventSeq();
-    const page = await fetch(app.url + path + '?direction=before&limit=2');
-    assert.equal(page.status, 200);
-    assert.equal(page.headers.get('cache-control'), 'no-store');
-    const body = await page.json();
+    const body = await app.api('GET', path);
     assert.deepEqual(body.items, [{ id: 'one', kind: 'assistant', text }]);
-    assert.equal(body.status, 'ok');
     assert.notEqual(body.after, 'adapter-after', 'only an opaque Hub cursor leaves the Hub');
-    assert.deepEqual(calls[0], { session: reader.workerSessionId, request: { direction: 'before', cursor: undefined, limit: 2 } });
-    assert.equal((await app.api('GET', path + '?direction=after&cursor=' + encodeURIComponent(body.after))).status, 'ok');
-    assert.equal(calls[1].request.cursor, 'adapter-after');
-    assert.deepEqual(await app.api('GET', path + '?cursor=opaque-invalid'), emptyTranscriptPage('reset'));
-    assert.equal(calls.length, 2, 'a refused cursor does not reach the native reader');
+    assert.deepEqual(calls[0], { session: reader.workerSessionId, request: { direction: undefined, cursor: undefined, limit: TRANSCRIPT_MAX_ITEMS } });
     for (const status of ['missing', 'unsupported', 'archived', 'refused', 'reset'] as const) {
       next = emptyTranscriptPage(status);
       assert.deepEqual(await app.api('GET', path), next);

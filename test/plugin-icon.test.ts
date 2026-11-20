@@ -140,10 +140,12 @@ test('plugin manifest: icon and details never make a plugin unavailable; long de
   assert.equal(parseExternalManifest({ ...manifest, details: 'x'.repeat(MAX_DETAILS) }).detailsTruncated, undefined);
 });
 
-test('official plugins: each has an icon file served from official-plugins/ and a details text; a wrong icon name is refused', () => {
+test('official plugins: each has an icon file served from official-plugins/ or its package and a details text; a wrong icon name is refused', () => {
   for (const plugin of officialPlugins) {
-    assert.equal(plugin.icon, `${plugin.id}.svg`);
-    const file = join(REPO_ROOT, 'src/web/public/official-plugins', plugin.icon!);
+    // A built-in copy that runs from a package payload names its icon in the release metadata (served at /api/plugins/<id>/icon).
+    const source = plugin.packageSource;
+    if (!source) assert.equal(plugin.icon, `${plugin.id}.svg`);
+    const file = source ? join(source.directory, (source.metadata as { icon: string }).icon) : join(REPO_ROOT, 'src/web/public/official-plugins', plugin.icon!);
     assert.ok(existsSync(file), file);
     assert.match(readFileSync(file, 'utf8'), /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*>/);
     assert.doesNotMatch(readFileSync(file, 'utf8'), /<script|on\w+=|href=/i);

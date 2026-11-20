@@ -1,11 +1,12 @@
-// The star map scene's pure parts (src/web/public/official-plugins/starmap/data.js, themes.js): what the Hub's data
+// The star map scene's pure parts (src/plugins/starmap/package/web/data.js, themes.js): what the Hub's data
 // becomes in the sky, the satellites, the local 知道了 record, the cluster list search, the live state (snapshot plus
 // stream, unread counts) and the key routing. The WebGL scene is not unit-tested.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import './plugin-host-hook.ts';
 
-const data = await import(new URL('../src/web/public/official-plugins/starmap/data.js', import.meta.url).href);
-const themes = await import(new URL('../src/web/public/official-plugins/starmap/themes.js', import.meta.url).href);
+const data = await import(new URL('../src/plugins/starmap/package/web/data.js', import.meta.url).href);
+const themes = await import(new URL('../src/plugins/starmap/package/web/themes.js', import.meta.url).href);
 
 const cluster = (id: string, name: string, category = '', createdAt = `2026-11-0${id.length}T00:00:00Z`) =>
   ({ id, name, category, createdAt, pinnedAt: null, archivedAt: null, userReadMessageId: null });

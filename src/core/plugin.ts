@@ -234,6 +234,9 @@ export interface OfficialPlugin extends PluginManifest {
   webModule?: string;
   /** Repo-owned icon in web/public/official-plugins/, named `<id>.svg`. A third-party plugin's icon is `iconPath`. */
   icon?: string;
+  /** A built-in copy that runs from a repo-owned official package payload (docs/official-plugin-updates.md): its
+   *  directory and release metadata (the manifest without `files`). Its web/ and icon are served like a signed package's. */
+  packageSource?: { directory: string; metadata: unknown };
   /** SQL, oldest first; a plugin's schema version is how many have run. Run for every registered plugin, even a disabled one. */
   migrations?: string[];
   actions?: Record<string, PluginAction>;

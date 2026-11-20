@@ -4,9 +4,8 @@
 // a frame is drawn only when something changed or moves (requestRender), never in a free-running loop.
 // Data comes only from the existing APIs and the page's event stream (ctx.onEvent); the only thing kept is this
 // browser's theme and its 知道了 record (localStorage). Every text from the Hub goes in as text (h(), textContent).
-import { onLanguageChange, t } from '../../i18n.js';
-import { fmtTime, h, icon, lt, noticeDialog } from '../../ui.js';
-import { openTrash } from '../../trash.js';
+import { fmtTime, h, icon, noticeDialog, openTrash } from '/plugin-host/v1.js';
+import { lt, onLanguageChange, t } from './words.js';
 import {
   applySkyEvent, createSkyState, dismissedStore, harnessInfo, hashStr, keyAction, layoutSky, loadSnapshot, orbitFractions, rng,
   SAT_ICON, SATELLITE_COLOR, setMessages, skyKey, skyModel,

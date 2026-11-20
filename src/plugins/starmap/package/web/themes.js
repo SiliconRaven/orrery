@@ -4,7 +4,7 @@
 //   群星 Astra · deep indigo with violet and teal veils, a blue-white star; medium motion
 //   炽阳 Sol   · deep blue warmed around a big orange-gold sun with a corona, brass and amber; the liveliest
 // prefers-reduced-motion still wins over any theme (no orbit, no twinkle, no breathing). `label`, `sub` and `note` are
-// msgids (shared/i18n), translated where they are shown; `en` is a name and stays as it is.
+// msgids (i18n/en.json), translated where they are shown; `en` is a name and stays as it is.
 
 export const THEME_KEY = 'orrery.starmapTheme';
 export const THEME_ORDER = ['luna', 'astra', 'sol'];

@@ -1,7 +1,7 @@
 // The star map's cluster list (/ or Ctrl+K): search clusters, groups and members (data.js searchSky), choose one and the
 // camera flies to its star system; the recycle bin is the last line. Text goes in as text; a match is wrapped in <mark>.
-import { t } from '../../i18n.js';
-import { h, icon, lt } from '../../ui.js';
+import { h, icon } from '/plugin-host/v1.js';
+import { lt, t } from './words.js';
 import { harnessInfo, searchSky } from './data.js';
 
 /** `text` as nodes with the first case-insensitive match of `q` (already lower-cased) in a <mark>. */

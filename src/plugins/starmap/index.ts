@@ -1,44 +1,18 @@
+// The built-in star map runs from the same payload that `npm run plugin:pack-official` signs (docs/starmap.md「制品」):
+// package/ holds its Hub entry and web module, release.json its manifest without `files`.
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { TRANSCRIPT_MAX_ITEMS } from '../../core/native-transcript.ts';
 import type { OfficialPlugin } from '../../core/plugin.ts';
+import createPlugin from './package/hub/index.mts';
 
-const transcriptParams = new Set(['cursor', 'direction', 'limit']);
+const metadata = JSON.parse(readFileSync(new URL('./release.json', import.meta.url), 'utf8'));
 
 export const starmap: OfficialPlugin = {
-  id: 'starmap',
-  version: '0.10.0-beta.2',
-  name: '星图',
-  description: '在星图中按需查看成员当前绑定的原生对话。',
-  details: '启用后，可在星图中读取成员已绑定的原生对话正文。正文按页读取，不写入 Hub 数据。',
+  // What the entry reads of the host a signed package gets (official-plugin-updates.ts, host API 1).
+  ...createPlugin({ transcriptMaxItems: TRANSCRIPT_MAX_ITEMS }),
+  id: metadata.id,
+  version: metadata.version,
   defaultEnabled: false,
-  icon: 'starmap.svg',
-  webModule: 'starmap',
-  routes: [{
-    method: 'GET',
-    pattern: /^\/api\/clusters\/([^/]+)\/members\/([^/]+)\/transcript$/,
-    noStore: true,
-    handle: ({ hub, params: [clusterId, memberId], url }) => {
-      // getMember excludes removed memberships and clusters in the recycle bin.
-      if (hub.store.getMember(memberId)?.clusterId !== clusterId) {
-        throw new Error('unknown member in cluster');
-      }
-      const query = url.searchParams;
-      if ([...query.keys()].some((key) => !transcriptParams.has(key) || query.getAll(key).length !== 1)) {
-        throw new Error('invalid transcript query parameters');
-      }
-      const cursor = query.get('cursor') ?? undefined;
-      const direction = query.get('direction') ?? undefined;
-      const rawLimit = query.get('limit');
-      if (cursor === '' || (direction !== undefined && direction !== 'before' && direction !== 'after')) {
-        throw new Error('invalid transcript query parameters');
-      }
-      let limit: number | undefined;
-      if (rawLimit !== null) {
-        limit = Number(rawLimit);
-        if (!/^\d+$/.test(rawLimit) || !Number.isSafeInteger(limit) || limit < 1 || limit > TRANSCRIPT_MAX_ITEMS) {
-          throw new Error('invalid transcript query parameters');
-        }
-      }
-      return hub.memberTranscript(memberId, { cursor, direction, limit });
-    },
-  }],
+  packageSource: { directory: fileURLToPath(new URL('./package/', import.meta.url)), metadata },
 };

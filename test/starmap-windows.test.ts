@@ -6,8 +6,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { REPO_ROOT } from '../src/main.ts';
+import './plugin-host-hook.ts';
 
-const dir = join(REPO_ROOT, 'src/web/public/official-plugins/starmap');
+const dir = join(REPO_ROOT, 'src/plugins/starmap/package/web');
 const T = await import(pathToFileURL(join(dir, 'transcript.js')).href);
 const W = await import(pathToFileURL(join(dir, 'windows.js')).href);
 
@@ -272,7 +273,7 @@ test('manager: opens a Hub chat once, raises it again, sends, follows the stream
     const root = new FakeNode('div', doc);
     const windows = W.createWindows({ root, ctx: f.ctx });
     assert.equal(doc.head.children.length, 1, 'the stylesheet is linked once');
-    assert.match(doc.head.children[0].getAttribute('href')!, /\/official-plugins\/starmap\/windows\.css$/);
+    assert.match(doc.head.children[0].getAttribute('href')!, /\/starmap\/package\/web\/windows\.css$/);
     W.createWindows({ root: new FakeNode('div', doc), ctx: fakeContext(() => ({})).ctx }).closeAll();
     assert.equal(doc.head.children.length, 1);
 
@@ -631,5 +632,7 @@ test('rendering safety: the window files never parse HTML, load no URL from cont
     assert.ok(line.startsWith("href: n.href, target: '_blank', rel: 'noopener noreferrer'") || line.startsWith("href', new URL('./windows.css', import.meta.url).href"),
       `unexpected href: ${line}`);
   }
-  assert.match(windows, /import \{ markdownBlocks \} from '\.\.\/\.\.\/markdown\.js';/);
+  // Markdown comes only from the host's public helper, which re-exports markdown.js itself.
+  assert.match(windows, /^import \{[^}]*\bmarkdownBlocks\b[^}]*\} from '\/plugin-host\/v1\.js';/m);
+  assert.match(readFileSync(join(REPO_ROOT, 'src/web/public/plugin-host/v1.js'), 'utf8'), /^export \{ markdownBlocks \} from '\.\.\/markdown\.js';/m);
 });

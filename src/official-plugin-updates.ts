@@ -8,7 +8,9 @@ import { z } from 'zod';
 import { TRANSCRIPT_MAX_ITEMS } from './core/native-transcript.ts';
 import { PluginHost, pluginEnabledBySettings, shortError, type OfficialPlugin } from './core/plugin.ts';
 import { MAX_ARCHIVE_BYTES, unpackPlugin } from './plugin-install-archive.ts';
-import { officialPackageFile, verifyOfficialPackage, type OfficialKeys, type VerifiedOfficialPackage } from './official-plugin-package.ts';
+import {
+  officialPackageFile, sourceOfficialPackage, verifyOfficialPackage, type OfficialKeys, type VerifiedOfficialPackage,
+} from './official-plugin-package.ts';
 import { selectOfficialVersions, type OfficialChoice, type OfficialVariants } from './official-plugin-selection.ts';
 import { compareVersions } from './update-check.ts';
 
@@ -140,6 +142,12 @@ function descriptor(raw: unknown, choice: Choice): OfficialPlugin {
   } as OfficialPlugin;
 }
 
+function dictionary(pkg: VerifiedOfficialPackage, path: string): Record<string, unknown> {
+  const strings: unknown = JSON.parse(officialPackageFile(pkg, path).toString('utf8'));
+  if (!object(strings) || Object.values(strings).some((value) => typeof value !== 'string')) throw error('OFFICIAL_PACKAGE_INVALID', '官方包的英文词表无效。');
+  return strings;
+}
+
 async function loadChoice(choice: Choice): Promise<OfficialPlugin> {
   const pkg = choice.pkg!;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -171,6 +179,8 @@ export class OfficialPluginUpdates {
   private running = new Map<string, Choice>();
   private activePlugins = new Map<string, OfficialPlugin>();
   private english = new Map<string, Record<string, unknown>>();
+  /** Built-in copies that run from a repo payload: their web/ is served like a signed package's while selected. */
+  private readonly sources = new Map<string, { pkg: VerifiedOfficialPackage; english?: Record<string, unknown> }>();
   private releases: Release[] = [];
   private preview?: Preview;
   private confirmation?: { prepareId: string; result: Confirmation };
@@ -220,6 +230,22 @@ export class OfficialPluginUpdates {
     return { id: plugin.id, version: plugin.version, plugin, requires: (plugin.requires ?? []).map((id) => ({ id, minVersion: '0.0.0-0' })) };
   }
 
+  /** The built-in copy as a candidate. One that runs from a repo payload is one only when the payload reads back whole. */
+  private bundled(plugin: OfficialPlugin): Choice | undefined {
+    if (plugin.packageSource) {
+      try {
+        const pkg = sourceOfficialPackage(plugin.packageSource.directory, plugin.packageSource.metadata);
+        if (pkg.manifest.id !== plugin.id || pkg.manifest.version !== plugin.version) throw error('OFFICIAL_PACKAGE_INVALID', '内置副本与其发布元数据不一致。');
+        const english = pkg.manifest.web?.english;
+        this.sources.set(plugin.id, { pkg, english: english ? dictionary(pkg, english) : undefined });
+      } catch (cause) {
+        this.rejected = reportOf(plugin.id, cause);
+        return undefined;
+      }
+    }
+    return this.bundle(plugin);
+  }
+
   private cached(id: string, ref: Ref): VerifiedOfficialPackage {
     const folder = join(this.root, id);
     if (!directory(this.root) || !directory(folder)) throw error('OFFICIAL_PACKAGE_INVALID', '本地官方包文件夹不存在。');
@@ -246,7 +272,9 @@ export class OfficialPluginUpdates {
   async boot(): Promise<OfficialPlugin[]> {
     const switches = this.options.switches();
     const original = [...this.builtins.values()];
-    if (!Object.keys(this.saved.active).length && !Object.keys(this.saved.previous ?? {}).length && !this.saved.pending) {
+    const bundles = new Map(original.map((p) => [p.id, this.bundled(p)]));
+    if (!Object.keys(this.saved.active).length && !Object.keys(this.saved.previous ?? {}).length && !this.saved.pending
+      && [...bundles.values()].every(Boolean)) {
       this.running = new Map(original.map((p) => [p.id, this.bundle(p)]));
       this.activePlugins = new Map(original.map((p) => [p.id, p]));
       return original;
@@ -274,7 +302,7 @@ export class OfficialPluginUpdates {
     };
     const variants: OfficialVariants<Choice>[] = original.map((plugin) => {
       const id = plugin.id;
-      const bundled = (plugin.migrations?.length ?? 0) >= (migrations.get(id) ?? 0) ? this.bundle(plugin) : undefined;
+      const bundled = (plugin.migrations?.length ?? 0) >= (migrations.get(id) ?? 0) ? bundles.get(id) : undefined;
       const active = candidate(id, this.saved.active[id], true);
       const previous = candidate(id, this.saved.previous?.[id], false);
       return { id, enabled: this.enabled(plugin, switches), original: this.saved.active[id] ? active : bundled, active, previous, bundled };
@@ -300,11 +328,7 @@ export class OfficialPluginUpdates {
           const pkg = c.pkg;
           if (pkg && !imported.has(c)) {
             const plugin = await loadChoice(c);
-            if (pkg.manifest.web?.english) {
-              const strings: unknown = JSON.parse(officialPackageFile(pkg, pkg.manifest.web.english).toString('utf8'));
-              if (!object(strings) || Object.values(strings).some((value) => typeof value !== 'string')) throw error('OFFICIAL_PACKAGE_INVALID', '官方包的英文词表无效。');
-              translations.set(c, strings);
-            }
+            if (pkg.manifest.web?.english) translations.set(c, dictionary(pkg, pkg.manifest.web.english));
             imported.set(c, plugin);
           }
           loaded.push(imported.get(c) ?? c.plugin);
@@ -532,10 +556,17 @@ export class OfficialPluginUpdates {
     return '/official-plugin-web/' + pkg.manifest.id + '/' + pkg.digest + '/' + path.slice(4).split('/').map(encodeURIComponent).join('/');
   }
 
+  /** The selected copy's web files: the signed package, or the payload a built-in copy runs from. */
+  private web(id: string) {
+    const c = this.running.get(id);
+    return c?.pkg ?? (c ? this.sources.get(id)?.pkg : undefined);
+  }
+
   card(id: string) {
     const c = this.running.get(id);
     if (!c) return undefined;
-    const raw = this.english.get(id);
+    const raw = c.pkg ? this.english.get(id) : this.sources.get(id)?.english;
+    const web = this.web(id);
     const display = this.activePlugins.get(id);
     const english = raw && display ? Object.fromEntries(['name', 'description', 'details'].flatMap((key) => {
       const value = display[key as 'name' | 'description' | 'details'];
@@ -548,12 +579,12 @@ export class OfficialPluginUpdates {
         error: this.saved.lastFailure?.id === id ? this.saved.lastFailure : undefined,
         english,
       },
-      ...(c.pkg?.manifest.icon ? { iconUrl: '/api/plugins/' + id + '/icon' } : {}),
+      ...(web?.manifest.icon ? { iconUrl: '/api/plugins/' + id + '/icon' } : {}),
     };
   }
 
   frontend(id: string) {
-    const pkg = this.running.get(id)?.pkg;
+    const pkg = this.web(id);
     const web = pkg?.manifest.web;
     return pkg && web ? { id, entry: this.webUrl(pkg, web.entry), ...(web.english ? { english: this.webUrl(pkg, web.english) } : {}) } : undefined;
   }
@@ -566,14 +597,14 @@ export class OfficialPluginUpdates {
   }
 
   webFile(id: string, digest: string, path: string) {
-    const pkg = this.running.get(id)?.pkg;
+    const pkg = this.web(id);
     if (!pkg?.manifest.web || pkg.digest !== digest) return null;
     try { return this.payload(pkg, 'web/' + path.split('/').map(decodeURIComponent).join('/')); }
     catch { return null; }
   }
 
   icon(id: string) {
-    const pkg = this.running.get(id)?.pkg;
+    const pkg = this.web(id);
     const path = pkg?.manifest.icon;
     if (!pkg || !path || !['.svg', '.png', '.webp', '.ico'].includes(extname(path).toLowerCase())) return null;
     return this.payload(pkg, path);

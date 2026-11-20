@@ -2,7 +2,7 @@
 // sky, which system notices are satellites, the local "知道了" record, the cluster list search and the live state kept
 // from /api/state and the event stream. No DOM and no three.js: test/starmap-scene.test.ts runs all of it in node, and
 // the chat windows import satellitesOf from here so a chat line and its satellite agree.
-import { clusterUnread, isSystemMessage, memberStatus, systemMark } from '../../ui.js';
+import { clusterUnread, isSystemMessage, memberStatus, systemMark } from '/plugin-host/v1.js';
 
 // ---- groups, clusters and members as the sky ----
 

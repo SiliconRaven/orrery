@@ -3,10 +3,11 @@
 // Everything from the Hub (message bodies, transcript text, names) reaches the page through h() as text nodes and
 // attribute values; Markdown goes through markdown.js, whose links are http(s) only. Nothing here loads an image or
 // other URL from that content, and nothing is parsed as HTML (test/starmap-windows.test.ts checks the source).
-import { t } from '../../i18n.js';
-import { markdownBlocks } from '../../markdown.js';
-import { systemClass } from '../../system-kinds.js';
-import { avatarEl, confirmDialog, fmtTime, h, harnessApp, icon, isSystemMessage, lt, messageAuthorName, plainTextRecord, systemAvatar, userAvatar } from '../../ui.js';
+import {
+  avatarEl, confirmDialog, fmtTime, h, harnessApp, icon, isSystemMessage, markdownBlocks, messageAuthorName, plainTextRecord, systemAvatar,
+  systemClass, userAvatar,
+} from '/plugin-host/v1.js';
+import { lt, t } from './words.js';
 import {
   allCardsOpen, applyPage, bindingChange, deliveryCaption, eventMessage, HUB_PAGE, hasOlder, isCard, isGoneError, isMemberActivity, MAX_CHAIN, mergeMessages,
   messagesPath, nextWant, oneLine, prependMessages, readTarget, requestFor, toggleAllCards, transcriptEntries, transcriptPath,

@@ -23,14 +23,18 @@ export function checkBoundaries(sources: Source[]): string[] {
   const violations: string[] = [];
   for (const { path, code } of sources) {
     const area = path.includes('/') ? path.split('/')[0] : path;   // 'core' | 'adapters' | 'bridge' | 'mcp' | 'web' | 'main.ts' | 'config.ts' | 'launcher.ts'
-    const browser = path.startsWith('web/public/');
+    // An official package payload (plugins/<id>/package/): what `npm run plugin:pack-official` signs and the built-in copy runs.
+    const payload = /^plugins\/[a-z][a-z0-9-]*\/package\/(?:hub|web)\//.exec(path)?.[0];
+    const browser = path.startsWith('web/public/') || Boolean(payload?.endsWith('/web/'));
     const specs = browser ? browserImports(code) : [...code.matchAll(IMPORT_RE)].map((m) => m[1] ?? m[2]);
     for (const spec of specs) {
       if (!browser && spec.startsWith('node:')) continue;
       const relativeImport = spec.startsWith('.');
       const target = relativeImport ? posix.normalize(posix.join(posix.dirname(path), spec)) : null;
       let ok: boolean;
-      if (browser) {
+      // Its own half of the payload only; its web half may also use the public host helpers.
+      if (payload) ok = target?.startsWith(payload) === true || (browser && spec === '/plugin-host/v1.js');
+      else if (browser) {
         ok = target !== null && target.startsWith('web/public/')
           // This pure table is served explicitly at /core/system-kinds.js; only its public re-export may reach it.
           || (path === 'web/public/system-kinds.js' && spec === '../../core/system-kinds.js')
@@ -90,7 +94,7 @@ export function checkBoundaries(sources: Source[]): string[] {
 
 function srcFiles(dir: string): Source[] {
   return readdirSync(dir, { recursive: true, encoding: 'utf8' })
-    .filter((f) => f.endsWith('.ts') || /^web[\\/]public[\\/].*\.js$/.test(f))
+    .filter((f) => f.endsWith('.ts') || /^(?:web[\\/]public|plugins[\\/][^\\/]+[\\/]package[\\/]web)[\\/].*\.js$/.test(f))
     .map((f) => ({ path: relative(dir, join(dir, f)).replaceAll('\\', '/'), code: readFileSync(join(dir, f), 'utf8') }));
 }
 
@@ -99,6 +103,7 @@ test('10: src/ follows the dependency rules', () => {
   assert.ok(files.length >= 8, 'found the source files');
   assert.ok(files.some((f) => f.path === 'web/public/app.js'), 'includes browser scripts');
   assert.ok(files.some((f) => f.path === 'web/public/official-plugins/bookmarks.js'), 'includes browser plugin scripts');
+  assert.ok(files.some((f) => f.path === 'plugins/starmap/package/web/scene.js'), 'includes official package web modules');
   assert.deepEqual(checkBoundaries(files), []);
 });
 
@@ -121,6 +126,11 @@ test('browser dependency rules reject Node, backend, desktop and computed import
     { path: 'web/public/plugin-slots.js', code: 'import(`/plugin-web/${id}`);' },
     { path: 'web/public/plugin-slots.js', code: "import('/plugin-web/demo/');" },
     { path: 'web/public/plugin-slots.js', code: 'import(`/plugin-ui/${id}/`);' },
+    { path: 'plugins/starmap/package/web/scene.js', code: "import { t } from '../../../../web/public/i18n.js';" },
+    { path: 'plugins/starmap/package/web/scene.js', code: "import { hub } from '../hub/index.mts';" },
+    { path: 'plugins/starmap/package/web/scene.js', code: "import('https://cdn.example/three.js');" },
+    { path: 'plugins/starmap/package/hub/index.mts', code: "import { TRANSCRIPT_MAX_ITEMS } from '../../../../core/native-transcript.ts';" },
+    { path: 'plugins/starmap/package/hub/index.mts', code: "import { z } from 'zod';" },
   ];
   for (const source of bad) assert.equal(checkBoundaries([source]).length, 1, source.code);
   assert.deepEqual(checkBoundaries([
@@ -130,6 +140,8 @@ test('browser dependency rules reject Node, backend, desktop and computed import
     { path: 'web/public/plugin-slots.js', code: 'const load = (id) => import(`./official-plugins/${id}.js`);' },
     { path: 'web/public/plugin-slots.js', code: 'const loadTrusted = (id) => import(`/plugin-web/${id}/`);' },
     { path: 'web/public/plugin-slots.js', code: 'const loadOfficial = (officialEntry) => import(officialEntry);' },
+    { path: 'plugins/starmap/package/web/scene.js', code: "import { h } from '/plugin-host/v1.js';\nimport { t } from './words.js';\nimport('./vendor/three/three.module.min.js');" },
+    { path: 'plugins/starmap/package/hub/index.mts', code: "import { readFile } from 'node:fs/promises';" },
   ]), []);
 });
 
@@ -212,7 +224,7 @@ test('launcher 8: the launcher uses configuration and local discovery, with no H
 });
 
 test('the vendored three.js stays the exact reviewed set: no extra files, no outside links, one rewritten import', () => {
-  const dir = join(REPO_ROOT, 'src', 'web', 'public', 'vendor');
+  const dir = join(REPO_ROOT, 'src', 'plugins', 'starmap', 'package', 'web', 'vendor');
   const files = readdirSync(dir, { recursive: true, encoding: 'utf8' }).map((f) => f.replaceAll('\\', '/')).filter((f) => !statSync(join(dir, f)).isDirectory()).sort();
   assert.deepEqual(files, ['three/LICENSE', 'three/README.md', 'three/addons/OrbitControls.js', 'three/three.module.min.js']);
   for (const f of files.filter((f) => f.endsWith('.js'))) {
