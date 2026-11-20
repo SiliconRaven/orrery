@@ -15,7 +15,7 @@ import { nativeFactories } from '../src/adapters/index.ts';
 import { REPO_ROOT } from '../src/main.ts';
 import { ARM_LIMIT, NOT_MEMBER_TEXT, tail, ticketFor, ticketSession, waitCommand, WAIT_SCRIPT, zcodeCaller } from '../src/mcp/zcode.ts';
 import type { BridgePort, Member, NativeDeliverContext } from '../src/core/types.ts';
-import { freePort, startTestHub, tempDir, waitFor, openSse, writeRegistry } from './helpers.ts';
+import { retryAddrInUse, startTestHub, tempDir, waitFor, openSse, writeRegistry } from './helpers.ts';
 
 const WAIT = join(REPO_ROOT, 'plugins', 'zcode-orrery', 'wait.mjs');
 const waitModule = await import(pathToFileURL(WAIT).href);
@@ -419,9 +419,9 @@ function runWait(registry: string, ticket: string, ...extraArgs: string[]) {
 
 test('wait.mjs: prints the envelope verbatim (quotes, newlines, & | < > ^ % $()), acks, exits 0; survives a Hub restart without exiting', async () => {
   const dir = tempDir();
-  const port = await freePort();
   const z = fakeZcode();
-  let app = await zHub({ z, port, dir });
+  let app = await zHub({ z, dir });
+  const port = Number(new URL(app.url).port);
   let wait: ReturnType<typeof runWait> | undefined;
   try {
     const { cluster, z1 } = await zCluster(app);
@@ -435,7 +435,7 @@ test('wait.mjs: prints the envelope verbatim (quotes, newlines, & | < > ^ % $())
 
     // The Hub restarts (same home, database and port): wait.mjs keeps waiting and connects to the new one.
     await app.close();
-    app = await zHub({ z, port, dir });
+    app = await retryAddrInUse(() => zHub({ z, port, dir }));
     // A pooled connection to the old Hub may be reset once: retry.
     await waitFor(async () => (await statusOf(app, z1.id).catch(() => null)) === 'idle', 'reconnected after the restart', 15_000);
     assert.equal(wait.child.exitCode, null, 'did not exit (exiting would start a turn)');

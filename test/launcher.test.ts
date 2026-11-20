@@ -13,8 +13,8 @@ import {
   apiTokenOf, createShortcut, DIALOG_SCRIPT, ensureDeps, getHealth, childEnv, hubSpawner, hubUrl, launch, openInBrowser, pageUrl, probe, runPowerShell, SHORTCUT_SCRIPT, showErrorDialog,
   type HealthResult, type LaunchDeps, type PowerShellRunner, type SpawnedHub,
 } from '../src/launcher.ts';
-import { REPO_ROOT } from '../src/main.ts';
-import { freePort, startTestHub, tempDir, TEST_TOKEN, waitFor } from './helpers.ts';
+import { listenLoopback, REPO_ROOT } from '../src/main.ts';
+import { freePort, startTestHub, tempDir, TEST_TOKEN, waitFor, withFreePort } from './helpers.ts';
 import type { MockScript } from './mock.ts';
 
 function hubEnv(dir: string, port: number): Record<string, string | undefined> {
@@ -39,6 +39,23 @@ function realDeps(env: Record<string, string | undefined>) {
     now: Date.now,
   };
   return { deps, opened, errors, spawned };
+}
+
+// Only the retry wrappers below use this. A parallel test Hub does not say EADDRINUSE: the launcher reports the other
+// Hub, a 401, or a start that never answered. Tests that expect those failures do not call portTaken.
+const portTaken = (text: string) =>
+  /EADDRINUSE|被别的程序占用|另一个数据目录|正在使用端口|不接受本机的 API 令牌|没有启动完|没有回答/.test(text);
+
+/** Start one real Hub on a reserved port, and try another port when that one was taken. */
+async function bootHub(makeEnv: (port: number) => Record<string, string | undefined>) {
+  return withFreePort(async (port) => {
+    const env = makeEnv(port);
+    const started = realDeps(env);
+    const code = await launch(started.deps);
+    if (code !== 0 && portTaken(started.errors.join('\n'))) throw Object.assign(new Error(started.errors.join('\n')), { code: 'EADDRINUSE' });
+    assert.equal(code, 0, started.errors.join('\n'));
+    return { port, env, started };
+  });
 }
 
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -126,8 +143,8 @@ test('launcher 1: probe says "none" for every kind of missing, stale or foreign 
 });
 
 test('launcher 1: a same-data Hub on another port (hub.json names it) is opened; nothing is spawned', async () => {
-  const q = await freePort();
-  const app = await startTestHub({ port: q });
+  const app = await startTestHub();
+  const q = Number(new URL(app.url).port);
   try {
     let p = await freePort();
     while (p === q) p = await freePort();
@@ -153,11 +170,12 @@ test('launcher 1: another data directory fails without starting a Hub', async ()
 });
 
 test('launcher 1: getHealth tells a closed port from a silent one (2 s timeout)', async () => {
-  const port = await freePort();
-  assert.deepEqual(await getHealth(port), { kind: 'refused' });
+  let health: HealthResult = { kind: 'silent' };
+  for (let i = 0; i < 5 && health.kind !== 'refused'; i++) health = await getHealth(await freePort());
+  assert.deepEqual(health, { kind: 'refused' });
   const sockets: Socket[] = [];
   const silent = createNetServer((s) => { sockets.push(s); });
-  await new Promise<void>((ok) => silent.listen(0, '127.0.0.1', ok));
+  await listenLoopback(silent, 0);
   try {
     const start = Date.now();
     assert.deepEqual(await getHealth((silent.address() as { port: number }).port), { kind: 'silent' });
@@ -170,13 +188,10 @@ test('launcher 1: getHealth tells a closed port from a silent one (2 s timeout)'
 
 test('launcher 3: starts one Hub and opens it; a second run reuses it; two launchers at once end with one Hub', async () => {
   const dir = tempDir();
-  const port = await freePort();
-  const env = hubEnv(dir, port);
+  const { port, env, started: a } = await bootHub((port) => hubEnv(dir, port));
   const url = pageUrl(hubUrl(port), TEST_TOKEN);
   const all: SpawnedHub[] = [];
   try {
-    const a = realDeps(env);
-    assert.equal(await launch(a.deps), 0, a.errors.join('\n'));
     all.push(...a.spawned);
     assert.deepEqual(a.opened, [url]);
     assert.equal(a.spawned.length, 1);
@@ -215,7 +230,7 @@ test('launcher 5: a port held by another program is reported; the holder keeps r
     const holder: Server = kind === 'answers'
       ? createHttpServer((_req, res) => res.end('hello')) as unknown as Server
       : createNetServer((s) => { sockets.push(s); });
-    await new Promise<void>((ok) => holder.listen(0, '127.0.0.1', ok));
+    await listenLoopback(holder, 0);
     const port = (holder.address() as { port: number }).port;
     const r = realDeps(hubEnv(dir, port));
     if (kind === 'silent') {
@@ -248,12 +263,9 @@ test('launcher 5: a port held by another program is reported; the holder keeps r
 
 test('launcher 7: launching while the Hub is exiting waits for it, then starts a new one', async () => {
   const dir = tempDir();
-  const port = await freePort();
-  const env = hubEnv(dir, port);
+  const { port, env, started: a } = await bootHub((port) => hubEnv(dir, port));
   const all: SpawnedHub[] = [];
   try {
-    const a = realDeps(env);
-    assert.equal(await launch(a.deps), 0, a.errors.join('\n'));
     all.push(...a.spawned);
     const old = a.spawned[0];
     const first = old.pid!;
@@ -586,9 +598,9 @@ test('launcher: a browser that cannot be opened is an error (PowerShell code 1 o
 });
 
 test('launcher: relative ORRERY_HOME / ORRERY_DB from another directory reach the Hub as the same absolute paths', async () => {
+  await withFreePort(async (port) => {
   const base = join(tempDir(), 'caller dir');
   mkdirSync(base, { recursive: true });
-  const port = await freePort();
   const env = { ...process.env, ORRERY_PORT: String(port), ORRERY_HOME: 'home', ORRERY_DB: join('data', 'h.db') };
   const before = process.cwd();
   let r: ReturnType<typeof realDeps> | undefined;
@@ -600,7 +612,9 @@ test('launcher: relative ORRERY_HOME / ORRERY_DB from another directory reach th
     assert.deepEqual([child.ORRERY_HOME, child.ORRERY_DB, child.ORRERY_PORT],
       [join(base, 'home'), join(base, 'data', 'h.db'), String(port)]);
     assert.equal(child.PATH ?? child.Path, process.env.PATH ?? process.env.Path, 'the rest is inherited');
-    assert.equal(await launch(r.deps), 0, r.errors.join('\n'));
+    const code = await launch(r.deps);
+    if (code !== 0 && portTaken(r.errors.join('\n'))) throw Object.assign(new Error(r.errors.join('\n')), { code: 'EADDRINUSE' });
+    assert.equal(code, 0, r.errors.join('\n'));
     const token = readFileSync(join(base, 'home', 'api-token'), 'utf8').trim();   // no ORRERY_API_TOKEN here: the Hub made one
     assert.deepEqual(r.opened, [pageUrl(hubUrl(port), token)]);
     assert.ok(existsSync(join(base, 'home', 'hub.json')));
@@ -611,9 +625,10 @@ test('launcher: relative ORRERY_HOME / ORRERY_DB from another directory reach th
     const token = r ? apiTokenOf(r.deps.config) : undefined;   // config paths are absolute: safe after chdir
     for (const s of r?.spawned ?? []) await stopHub(port, s, token);
   }
+  });
 });
 
-test('launcher 7: a same-data Hub still closing on another port is waited for; no second Hub until its close() resolves', async () => {
+test('launcher 7: a same-data Hub still closing on another port is waited for; no second Hub until its close() resolves', async () => withFreePort(async (p) => {
   const dir = tempDir();
   const gate = Promise.withResolvers<void>();
   let entered = false;
@@ -624,10 +639,8 @@ test('launcher 7: a same-data Hub still closing on another port is waited for; n
     signal.addEventListener('abort', () => { aborted = true; }, { once: true });
     await gate.promise;
   };
-  const q = await freePort();
-  let p = await freePort();
-  while (p === q) p = await freePort();
-  const a = await startTestHub({ dir, port: q, mock: { script } });
+  const a = await startTestHub({ dir, mock: { script } });
+  const q = Number(new URL(a.url).port);
   const env = { ...hubEnv(dir, p), ORRERY_DB: join(dir, 'test.db') };
   const r = realDeps(env);
   const spawnedAt: number[] = [];
@@ -635,6 +648,7 @@ test('launcher 7: a same-data Hub still closing on another port is waited for; n
   r.deps.spawnHub = (log) => { spawnedAt.push(Date.now()); return spawnHub(log); };
   let closedAt = 0;
   try {
+    if (p === q) throw Object.assign(new Error('the running Hub was given the reserved port'), { code: 'EADDRINUSE' });
     const { cluster } = await a.cluster('c', ['A']);
     a.hub.sendFromUser(cluster.id, '@A hold');
     const id: string = await waitFor(() => entered && (a.store.db.prepare("SELECT id FROM deliveries WHERE state = 'running'").get() as { id: string } | undefined)?.id, 'A running') as string;
@@ -647,7 +661,9 @@ test('launcher 7: a same-data Hub still closing on another port is waited for; n
     assert.deepEqual({ ...delivery() }, { state: 'running', attempts: 1 }, 'not redone while A is closing');
     gate.resolve();
     await closing;
-    assert.equal(await launching, 0, r.errors.join(' | '));
+    const launchResult = await launching;
+    if (launchResult !== 0 && portTaken(r.errors.join(' | '))) throw Object.assign(new Error(r.errors.join(' | ')), { code: 'EADDRINUSE' });
+    assert.equal(launchResult, 0, r.errors.join(' | '));
     assert.equal(spawnedAt.length, 1);
     assert.ok(spawnedAt[0] >= closedAt, 'B starts only after A has closed');
     assert.deepEqual(r.opened, [pageUrl(hubUrl(p), TEST_TOKEN)]);
@@ -656,9 +672,9 @@ test('launcher 7: a same-data Hub still closing on another port is waited for; n
     await a.close();
     for (const s of r.spawned) await stopHub(p, s);
   }
-});
+}));
 
-test('launcher 7: a health check that gets no answer while the old Hub is closing does not count as gone', async () => {
+test('launcher 7: a health check that gets no answer while the old Hub is closing does not count as gone', async () => withFreePort(async (p) => {
   const dir = tempDir();
   const gate = Promise.withResolvers<void>();
   let entered = false;
@@ -669,10 +685,8 @@ test('launcher 7: a health check that gets no answer while the old Hub is closin
     signal.addEventListener('abort', () => { aborted = true; }, { once: true });
     await gate.promise;
   };
-  const q = await freePort();
-  let p = await freePort();
-  while (p === q) p = await freePort();
-  const a = await startTestHub({ dir, port: q, mock: { script } });
+  const a = await startTestHub({ dir, mock: { script } });
+  const q = Number(new URL(a.url).port);
   const env = { ...hubEnv(dir, p), ORRERY_DB: join(dir, 'test.db') };
   const r = realDeps(env);
   // stopping → no answer (injected) → stopping again: the silent check must not open the way for a second Hub.
@@ -689,6 +703,7 @@ test('launcher 7: a health check that gets no answer while the old Hub is closin
   r.deps.spawnHub = (log) => { spawnedAt.push(Date.now()); return spawnHub(log); };
   let closedAt = 0;
   try {
+    if (p === q) throw Object.assign(new Error('the running Hub was given the reserved port'), { code: 'EADDRINUSE' });
     const { cluster } = await a.cluster('c', ['A']);
     a.hub.sendFromUser(cluster.id, '@A hold');
     const id: string = await waitFor(() => entered && (a.store.db.prepare("SELECT id FROM deliveries WHERE state = 'running'").get() as { id: string } | undefined)?.id, 'A running') as string;
@@ -702,7 +717,9 @@ test('launcher 7: a health check that gets no answer while the old Hub is closin
     assert.deepEqual({ ...delivery() }, { state: 'running', attempts: 1 }, 'not redone while A is closing');
     gate.resolve();
     await closing;
-    assert.equal(await launching, 0, r.errors.join(' | '));
+    const launchResult = await launching;
+    if (launchResult !== 0 && portTaken(r.errors.join(' | '))) throw Object.assign(new Error(r.errors.join(' | ')), { code: 'EADDRINUSE' });
+    assert.equal(launchResult, 0, r.errors.join(' | '));
     assert.equal(spawnedAt.length, 1);
     assert.ok(spawnedAt[0] >= closedAt, 'B starts only after A has closed');
     assert.deepEqual(r.opened, [pageUrl(hubUrl(p), TEST_TOKEN)]);
@@ -711,7 +728,7 @@ test('launcher 7: a health check that gets no answer while the old Hub is closin
     await a.close();
     for (const s of r.spawned) await stopHub(p, s);
   }
-});
+}));
 
 test('launcher --ensure: the address is written instead of opening a browser, the error instead of a dialog', async () => {
   const c = fakeConfig();
@@ -742,14 +759,15 @@ function runLauncher(args: string[], env: Record<string, string | undefined>): P
 }
 
 test('launcher --ensure (real processes): starts a Hub and prints its address; a second run reuses it; failures are one JSON line', async () => {
+  await withFreePort(async (port) => {
   const dir = tempDir();
-  const port = await freePort();
   // No ORRERY_API_TOKEN: the Hub makes <home>/api-token and the launcher reads it from there.
   const env = { ...hubEnv(dir, port), ORRERY_API_TOKEN: undefined };
   let pid: number | undefined;
   let token: string | undefined;
   try {
     const first = await runLauncher(['--ensure'], env);
+    if (first.code !== 0 && portTaken(first.stdout)) throw Object.assign(new Error(first.stdout), { code: 'EADDRINUSE' });
     token = readFileSync(join(dir, 'home', 'api-token'), 'utf8').trim();
     assert.notEqual(token, TEST_TOKEN);
     const line = `${JSON.stringify({ url: `${hubUrl(port)}/#token=${token}` })}\n`;
@@ -773,4 +791,5 @@ test('launcher --ensure (real processes): starts a Hub and prints its address; a
   assert.equal(zero.code, 1);
   assert.equal(zero.stdout.split('\n').filter(Boolean).length, 1);
   assert.match(JSON.parse(zero.stdout).error, /ORRERY_PORT 为 0/);
+  });
 });

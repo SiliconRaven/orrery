@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import { CHAIN_LIMIT_ERROR } from '../src/core/delivery-timeline.ts';
 import { REPO_ROOT } from '../src/main.ts';
-import { freePort, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { startTestHub, tempDir, waitFor } from './helpers.ts';
 
 async function mcpJsonRpc(app: Awaited<ReturnType<typeof startTestHub>>, session: string, method: string, params: Record<string, unknown>, harness = 'mock') {
   const { secret } = JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8'));
@@ -52,7 +52,6 @@ test('receipts and queue warnings stay out of unread, keep deliveries empty, and
   });
   const app = await startTestHub({
     dir,
-    port: await freePort(),
     nativeAdapters: { mock: native },
     limits: { recheckMs: 600_000, startupGraceMs: 0, queueWarnMs: 1 },
   });
@@ -138,7 +137,7 @@ test('categorized unread breakdown, parallel annotations across categories, dedu
     return 'completed';
   });
 
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: adapter } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: adapter } });
   try {
     const { cluster, members: [a, b] } = await app.hub.createCluster('cat', [
       { harness: 'mock', mode: 'native', sessionId: 'sa', name: 'A' },
@@ -242,7 +241,7 @@ test('categorized unread breakdown, parallel annotations across categories, dedu
 test('broadcast from Hub/MCP: explicit @name inside @all (normal and fyi=true), plain @all, fyi+replyTo override, and three sender rules', async () => {
   const dir = tempDir();
   const offlineSet = new Set(['na', 'nb', 'nc']);
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: makeNative(dir, ['na', 'nb', 'nc'], offlineSet) } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: makeNative(dir, ['na', 'nb', 'nc'], offlineSet) } });
   try {
     const nat = await app.hub.createCluster('bcast-nat', [
       { harness: 'mock', mode: 'native', sessionId: 'na', name: 'A' },
@@ -370,7 +369,7 @@ test('broadcast from Hub/MCP: explicit @name inside @all (normal and fyi=true), 
 test('read_messages category filter + AND intersection + skip_unread category skipping + MCP response metadata', async () => {
   const dir = tempDir();
   const offlineSet = new Set(['sa', 'sb']);
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: makeNative(dir, ['sa', 'sb'], offlineSet) } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: makeNative(dir, ['sa', 'sb'], offlineSet) } });
   try {
     const { cluster, members: [a, b] } = await app.hub.createCluster('mcp-read', [
       { harness: 'mock', mode: 'native', sessionId: 'sa', name: 'A' },
@@ -435,7 +434,7 @@ test('read_messages category filter + AND intersection + skip_unread category sk
 test('pre-join messages never count as unread for newly added or replacement members, and rebind / restore preserve unread_after_rowid', async () => {
   const dir = tempDir();
   const offlineSet = new Set(['sa', 'sb', 'sb-2', 'sa2']);
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: makeNative(dir, ['sa', 'sb', 'sb-2', 'sa2'], offlineSet) } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: makeNative(dir, ['sa', 'sb', 'sb-2', 'sa2'], offlineSet) } });
   try {
     const { cluster, members: [a] } = await app.hub.createCluster('join-cutoff', [
       { harness: 'mock', mode: 'native', sessionId: 'sa', name: 'A' },
@@ -486,7 +485,7 @@ test('pre-join messages never count as unread for newly added or replacement mem
 
 test('MCP server, Claude bridge, and DSH plugin declare read_messages and skip_unread category schemas and descriptions consistently', async () => {
   const dir = tempDir();
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: makeNative(dir, ['s1'], new Set(['s1'])) } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: makeNative(dir, ['s1'], new Set(['s1'])) } });
   try {
     const { cluster } = await app.hub.createCluster('decl', [{ harness: 'mock', mode: 'native', sessionId: 's1', name: 'A' }]);
     assert.ok(cluster.id);

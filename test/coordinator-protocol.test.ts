@@ -7,14 +7,14 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import { COORDINATOR_RULES } from '../src/plugins/coordinator/coordinator-rules.ts';
 import type { CollaborationActor, CollaborationCommand, CollaborationResult, Task } from '../src/core/collaboration-types.ts';
-import { freePort, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { startTestHub, tempDir, waitFor } from './helpers.ts';
 import { collaborationLinks, collaborationTasks } from '../src/plugins/tasks/store.ts';
 
 async function fixture() {
   const dir = tempDir();
   const sessions = ['a', 'b', 'c'].map((id) => ({ id, title: id, model: null, cwd: dir, updatedAt: null }));
   const native = createMockNativeAdapter({ harness: 'claude', sessions });
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { claude: native } });
+  const app = await startTestHub({ dir, nativeAdapters: { claude: native } });
   const { cluster, members: [a, b, c] } = await app.hub.createCluster('protocol', sessions.map((s) => ({
     harness: 'claude', mode: 'native', sessionId: s.id, name: s.id.toUpperCase(),
   })));

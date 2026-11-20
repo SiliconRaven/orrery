@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 /** The repository root, from this module's own location (not the current directory). */
 export const REPO_ROOT = resolve(import.meta.dirname, '..');
 
-const DEFAULT_PORT = 4317;
+export const DEFAULT_PORT = 4317;
 
 export interface Config {
   home: string;     // bridge secret, API token, hub.json, hub.log

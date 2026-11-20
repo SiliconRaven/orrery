@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cacheToolFingerprints, fingerprintTools } from '../src/mcp/tool-fingerprint.ts';
-import { freePort, startTestHub } from './helpers.ts';
+import { startTestHub } from './helpers.ts';
 
 test('fingerprints include all transmitted definitions and normalize object and tool order', () => {
   const a = { name: 'alpha', description: 'first', inputSchema: { type: 'object', properties: { x: { type: 'string' } } } };
@@ -35,7 +35,7 @@ test('fingerprints are lazy, shared per instance, and retried after failure', as
 });
 
 test('Hub reports the fingerprints of its actual MCP lists for each profile', async () => {
-  const app = await startTestHub({ port: await freePort() });
+  const app = await startTestHub();
   try {
     const { secret } = JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8'));
     const report = await app.api('GET', '/api/tool-versions');

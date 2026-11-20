@@ -16,30 +16,44 @@ import { REPO_ROOT } from '../src/main.ts';
 import { findBrowser, launchBrowser, type Browser } from './browser.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { freePort, insertMessageWithEvent, startTestHub, tempDir, TEST_TOKEN, waitFor } from './helpers.ts';
+import { insertMessageWithEvent, retryAddrInUse, startTestHub, tempDir, TEST_TOKEN, waitFor } from './helpers.ts';
 
 /**
  * The same Hub (port, home, database) as startTestHub gave, as its own process: the page tells a restarted Hub by its
  * process id, which an in-process test Hub shares with the test. Stopped through its own /api/shutdown.
  */
 async function spawnHub(dir: string, port: number, env: Record<string, string> = {}): Promise<{ stop(): Promise<void> }> {
-  const child: ChildProcess = spawn(process.execPath, ['src/main.ts'], { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true,
-    env: { ...process.env, ORRERY_PORT: String(port), ORRERY_HOME: join(dir, 'home'), ORRERY_DB: join(dir, 'test.db'),
-      ORRERY_SKILLS_DIR: join(dir, 'skills'), KIMI_CODE_HOME: join(dir, 'kimi'), ORRERY_MOCK: '1', ORRERY_API_TOKEN: TEST_TOKEN, ORRERY_SAFE_MODE: '', ...env } });
-  let out = '';
-  child.stdout!.on('data', (c) => { out += c; });
-  const exited = new Promise<void>((ok) => child.once('exit', () => ok()));
-  try {
-    await waitFor(() => out.includes('listening on'), 'the Hub process to start', 20_000);
-  } catch (error) {
-    child.kill();   // this child only: it must not keep the test's port
-    throw error;
-  }
-  return { async stop() {
-    await fetch(`http://127.0.0.1:${port}/api/shutdown`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {});
-    await Promise.race([exited, sleep(20_000)]);
-    if (child.exitCode === null) child.kill();
-  } };
+  return retryAddrInUse(async () => {
+    const child: ChildProcess = spawn(process.execPath, ['src/main.ts'], { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+      env: { ...process.env, ORRERY_PORT: String(port), ORRERY_HOME: join(dir, 'home'), ORRERY_DB: join(dir, 'test.db'),
+        ORRERY_SKILLS_DIR: join(dir, 'skills'), KIMI_CODE_HOME: join(dir, 'kimi'), ORRERY_MOCK: '1', ORRERY_API_TOKEN: TEST_TOKEN, ORRERY_SAFE_MODE: '', ...env } });
+    let out = '';
+    let err = '';
+    child.stdout!.on('data', (c) => { out += c; });
+    child.stderr!.on('data', (c) => { err += c; process.stderr.write(c); });
+    const exited = new Promise<void>((ok) => child.once('exit', () => ok()));
+    let settled = false;
+    const up = waitFor(() => {
+      if (settled) return 'stop';
+      return out.includes('listening on') ? 'up' : false;
+    }, 'the Hub process to start', 20_000).then((v) => v === 'up', () => false);
+    const dead = exited.then(() => false);
+    try {
+      if (await Promise.race([up, dead])) {
+        return { async stop() {
+          await fetch(`http://127.0.0.1:${port}/api/shutdown`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {});
+          await Promise.race([exited, sleep(20_000)]);
+          if (child.exitCode === null) child.kill();
+        } };
+      }
+      child.kill();
+      await Promise.race([exited, sleep(500)]);
+      if (/EADDRINUSE/.test(err)) throw Object.assign(new Error(err), { code: 'EADDRINUSE' });
+      throw new Error(`the Hub process to start\n${err || out}`);
+    } finally {
+      settled = true;
+    }
+  });
 }
 
 const found = findBrowser();
@@ -177,8 +191,8 @@ function setup(): { dir: string; home: string; entryOf: (id: string) => string }
 test('browser: full-trust page modules load only when listed, and a Hub restart detaches a revoked, switched-off or safe-mode one in place', { skip, timeout: 600_000 }, async () => {
   assert.ok(found.path, 'ORRERY_REQUIRE_BROWSER=1 but no supported browser');
   const { dir, home, entryOf } = setup();
-  const port = await freePort();   // fixed: the page follows a Hub restart on the same address
-  const app = await startTestHub({ dir, port });
+  const app = await startTestHub({ dir });
+  const port = Number(new URL(app.url).port);   // fixed: the page follows a Hub restart on the same address
   let appOpen = true;
   let spawned = null as { stop(): Promise<void> } | null;
   let browser: Browser | null = null;

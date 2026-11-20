@@ -5,14 +5,14 @@ import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import { parseEnvelopes } from './mock.ts';
 import type { CollaborationCommand } from '../src/core/collaboration-types.ts';
 import type { Message } from '../src/core/types.ts';
-import { freePort, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { startTestHub, tempDir, waitFor } from './helpers.ts';
 import { linkCollaborationMessage } from '../src/plugins/tasks/store.ts';
 
 test('task envelope groups interleaved verified notices while preserving IDs, text, attachments and current task state', async () => {
   const dir = tempDir();
   const sessions = ['a', 'b'].map((id) => ({ id, title: id, model: null, cwd: dir, updatedAt: null }));
   const native = createMockNativeAdapter({ sessions });
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: native } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: native } });
   try {
     const { cluster, members: [a] } = await app.hub.createCluster('envelope', sessions.map((s) => ({
       harness: 'mock', mode: 'native', sessionId: s.id, name: s.id.toUpperCase(),

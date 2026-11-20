@@ -11,7 +11,7 @@ import { Hub } from '../src/core/hub.ts';
 import { PluginHost, type OfficialPlugin, type PluginPrepare } from '../src/core/plugin.ts';
 import { Store } from '../src/core/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
-import { freePort, startTestHub, tempDir, waitFor, type TestHub } from './helpers.ts';
+import { startTestHub, tempDir, waitFor, type TestHub } from './helpers.ts';
 
 const plugin = (id: string, extra: Partial<OfficialPlugin> = {}): OfficialPlugin => ({ id, version: '1.0.0', ...extra });
 const faultsOf = async (app: TestHub, id: string): Promise<{ phase: string; error: string }[]> =>
@@ -32,7 +32,7 @@ test('a service that throws or rejects in construction, start, sweep, close or o
       close() { throw new Error('close boom'); } }) }),
     plugin('good', { service: () => ({ sweep() { seen.goodSweeps++; }, onEvent() { seen.goodEvents++; }, close() { seen.goodClosed = true; } }) }),
   ];
-  const app = await startTestHub({ port: await freePort(), plugins, limits: { idleSweepMs: 20 } });
+  const app = await startTestHub({ plugins, limits: { idleSweepMs: 20 } });
   let closed = false;
   try {
     await waitFor(() => seen.goodSweeps >= 3 && seen.noisySweeps >= 3, 'sweeps of the working services');
@@ -77,7 +77,7 @@ test("member tools: a plugin whose tools() throws, or whose tool name is taken, 
     plugin('tool-clash', { tools: (api) => { api.query('clash_ok', 'never listed either', 'collections', {}); api.query('send_message', 'taken', 'collections', {}); } }),
     plugin('tool-good', { tools: (api) => { api.query('good_tool', 'my collections', 'collections', api.page); } }),
   ];
-  const app = await startTestHub({ port: await freePort(), plugins });
+  const app = await startTestHub({ plugins });
   try {
     await app.hub.createCluster('c', [{ harness: 'mock', mode: 'native', sessionId: 's1', name: 'A' }]);
     const names = (await mcp(app, 'tools/list')).tools.map((t: { name: string }) => t.name);
@@ -95,7 +95,7 @@ test("member tools: a plugin whose tools() throws, or whose tool name is taken, 
 test("member tools: an in-process plugin cannot take a restricted plugin's p_ name, and a restricted tool that cannot be registered never fails the build", async () => {
   const plugins = [...officialPlugins,
     plugin('squatter', { tools: (api) => { api.query('squat_ok', 'never listed', 'collections', {}); api.query('p_notes_note', 'a restricted name', 'collections', {}); } })];
-  const app = await startTestHub({ port: await freePort(), plugins });
+  const app = await startTestHub({ plugins });
   try {
     await app.hub.createCluster('c', [{ harness: 'mock', mode: 'native', sessionId: 's1', name: 'A' }]);
     let names = (await mcp(app, 'tools/list')).tools.map((t: { name: string }) => t.name);
@@ -130,7 +130,7 @@ test('a promise where the host expects an answer now is refused, never half-used
       queries: { 'async.read': (async () => ({ items: [] })) as never },
       messageFields: { asyncField: (async () => 'later') as never },
     })];
-  const app = await startTestHub({ port: await freePort(), plugins });
+  const app = await startTestHub({ plugins });
   try {
     for (const id of ['async-service', 'rejecting-service']) {
       assert.match((await faultsOf(app, id))[0]?.error ?? '', /service\(\) returned a promise; it must answer synchronously/, id);
@@ -170,7 +170,7 @@ test('a hook inside a core transaction that throws rolls the whole operation bac
     memberRemoved: () => { throw new Error('keeps its rows'); },
     clusterPurging: () => { throw new Error('cannot purge'); },
   })];
-  const app = await startTestHub({ port: await freePort(), plugins });
+  const app = await startTestHub({ plugins });
   try {
     const { cluster, members } = await app.cluster('c', ['A', 'B']);
     const res = await fetch(`${app.url}/api/clusters/${cluster.id}/members/${members[1].id}`, { method: 'DELETE',
@@ -243,7 +243,7 @@ test('prepare: the web API runs the prepare step like the members\' tools; no en
     prepare: { 'prep.do': async () => { seen.prepares++; if (fail) throw new Error('git is gone'); return 'facts'; } },
     prepareRequired: ['prep.do'],
   })];
-  const app = await startTestHub({ port: await freePort(), plugins });
+  const app = await startTestHub({ plugins });
   try {
     const { cluster } = await app.cluster('c', ['A']);
     const post = (operationId: string) => fetch(`${app.url}/api/clusters/${cluster.id}/collaboration`, { method: 'POST',
@@ -445,10 +445,10 @@ test('backup: two in the same second get distinct names; a copy that fails leave
 test('backup: the Hub backs up into <home>/backups before upgrading an existing database', async () => {
   const dir = tempDir();
   const extra = plugin('extra', { migrations: ['CREATE TABLE extra_one (x)'] });
-  const first = await startTestHub({ dir, port: await freePort() });
+  const first = await startTestHub({ dir });
   await first.close();
   assert.equal(existsSync(join(dir, 'home', 'backups')), false, 'a new database: no backup');
-  const again = await startTestHub({ dir, port: await freePort(), plugins: [...officialPlugins, extra] });
+  const again = await startTestHub({ dir, plugins: [...officialPlugins, extra] });
   try {
     const files = readdirSync(join(dir, 'home', 'backups'));
     assert.equal(files.length, 1);

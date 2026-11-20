@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveConfig } from '../src/config.ts';
 import { REPO_ROOT } from '../src/main.ts';
-import { bearer, freePort, mcpStatus, rawFetch, startTestHub, tempDir, TEST_TOKEN } from './helpers.ts';
+import { bearer, mcpStatus, rawFetch, startTestHub, tempDir, TEST_TOKEN } from './helpers.ts';
 
 const json = { 'content-type': 'application/json' };
 
@@ -124,7 +124,7 @@ test('api token: ORRERY_API_TOKEN overrides the file; a short or unsafe one stop
   const secretValue = 'too-short-but-secret';
   const r = spawnSync(process.execPath, [join(REPO_ROOT, 'src', 'main.ts')], {
     cwd: REPO_ROOT, encoding: 'utf8', timeout: 20_000,
-    env: { ...process.env, ORRERY_API_TOKEN: secretValue, ORRERY_PORT: String(await freePort()), ORRERY_HOME: join(dir, 'home'), ORRERY_DB: join(dir, 'h.db'), ORRERY_MOCK: '1' },
+    env: { ...process.env, ORRERY_API_TOKEN: secretValue, ORRERY_PORT: '0', ORRERY_HOME: join(dir, 'home'), ORRERY_DB: join(dir, 'h.db'), ORRERY_MOCK: '1' },
   });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /ORRERY_API_TOKEN must be at least 32 characters/);

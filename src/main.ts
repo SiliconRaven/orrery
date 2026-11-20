@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { type Server as NetServer, type AddressInfo } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { registries } from './adapters/index.ts';
 import { automaticUpgradeBackup } from './backup.ts';
 import { SIGNATURE_HEADER } from './bridge-protocol.ts';
-import { API_TOKEN_RE, dbModeOf, defaultRegistryDir, disabledPluginsOf, HUB_CLOSE_PLUGIN_GRACE_MS, intEnv, readPluginsFile, REPO_ROOT, resolveConfig, safeModeOf, skillsDirOf, updateChecksOf,
+import { API_TOKEN_RE, dbModeOf, DEFAULT_PORT, defaultRegistryDir, disabledPluginsOf, HUB_CLOSE_PLUGIN_GRACE_MS, intEnv, readPluginsFile, REPO_ROOT, resolveConfig, safeModeOf, skillsDirOf, updateChecksOf,
   writePluginsFile } from './config.ts';
 import { AppExtensions } from './core/app-extensions.ts';
 import { loadAvatarPresets } from './core/avatars.ts';
@@ -167,6 +167,52 @@ function checkRequest(req: IncomingMessage, path: string, port: number): { statu
   return null;
 }
 
+export const EPHEMERAL_BIND_ATTEMPTS = 5;
+
+/**
+ * Bind `requested`, or when it is 0 bind an ephemeral port that is not `userPort`.
+ * An explicit port is attempted once: EADDRINUSE stays the single-instance lock.
+ */
+export async function bindAvoidingUserPort(
+  requested: number,
+  bind: (port: number) => Promise<number>,
+  release: () => Promise<void>,
+  userPort = DEFAULT_PORT,
+  attempts = EPHEMERAL_BIND_ATTEMPTS,
+): Promise<number> {
+  if (requested !== 0) return bind(requested);
+  for (let i = 0; i < attempts; i++) {
+    const bound = await bind(0);
+    if (bound !== userPort) return bound;
+    await release();
+  }
+  throw new Error(`ephemeral bind returned port ${userPort} ${attempts} times; refusing the user Hub port`);
+}
+
+function listenOnce(server: NetServer, port: number): Promise<number> {
+  return new Promise((ok, fail) => {
+    const onError = (err: Error) => {
+      server.off('listening', onListening);
+      fail(err);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      ok((server.address() as AddressInfo).port);
+    };
+    server.once('error', onError);
+    server.listen(port, '127.0.0.1', onListening);
+  });
+}
+
+function closeServer(server: NetServer): Promise<void> {
+  return new Promise((ok, fail) => server.close((err) => (err ? fail(err) : ok())));
+}
+
+/** Listen on 127.0.0.1. Port 0 never keeps 4317. An explicit port is not retried. */
+export function listenLoopback(server: NetServer, requested: number): Promise<number> {
+  return bindAvoidingUserPort(requested, (port) => listenOnce(server, port), () => closeServer(server));
+}
+
 export async function startHub(opts: StartOptions) {
   const home = resolve(opts.home ?? join(homedir(), '.orrery'));
   const dbPath = resolve(opts.dbPath);
@@ -216,9 +262,9 @@ export async function startHub(opts: StartOptions) {
     });
   });
   // The port is the single-instance lock: a second Hub on the same port fails here, before it touches the secret,
-  // the database (the Hub constructor requeues 'running' deliveries) or hub.json.
-  await new Promise<void>((ok, fail) => server.once('error', fail).listen(opts.port, '127.0.0.1', ok));
-  port = (server.address() as AddressInfo).port;
+  // the database (the Hub constructor requeues 'running' deliveries) or hub.json. Port 0 is not a lock; if the
+  // OS hands back the user's 4317, listen again so a test never takes that Hub's port.
+  port = await listenLoopback(server, opts.port);
   const url = `http://127.0.0.1:${port}`;
   let store: Store | undefined;
   let discoveryWritten = false;

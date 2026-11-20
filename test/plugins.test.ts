@@ -15,7 +15,7 @@ import { fingerprintTools } from '../src/mcp/tool-fingerprint.ts';
 import { bookmarksOf } from '../src/plugins/bookmarks/index.ts';
 import { saveCoordinator } from '../src/plugins/coordinator/store.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
-import { freePort, rawFetch, startTestHub, tempDir, waitFor, type TestHub } from './helpers.ts';
+import { rawFetch, startTestHub, tempDir, waitFor, type TestHub } from './helpers.ts';
 
 const plugin = (id: string, extra: Partial<OfficialPlugin> = {}): OfficialPlugin => ({ id, version: '1.0.0', ...extra });
 const versionOf = (store: Store, id: string) =>
@@ -211,7 +211,7 @@ const toolsOf = async (app: TestHub) => {
 };
 
 test('tools: enabled, the two bookmark tools are exactly the ones from before the plugin system', async () => {
-  const app = await startTestHub({ port: await freePort() });
+  const app = await startTestHub();
   try {
     const two = (await toolsOf(app)).filter((tool) => tool.name === 'list_bookmarks' || tool.name === 'bookmark_message');
     assert.equal(two.length, 2);
@@ -224,10 +224,10 @@ test('tools: enabled, the two bookmark tools are exactly the ones from before th
 });
 
 test('disabled: no tools, no route, no field, and a Hub still runs a cluster chat', async () => {
-  const enabled = await startTestHub({ port: await freePort() });
+  const enabled = await startTestHub();
   const enabledNames = (await toolsOf(enabled)).map((tool) => tool.name);
   await enabled.close();
-  const app = await startTestHub({ port: await freePort(), disabledPlugins: ['bookmarks'] });
+  const app = await startTestHub({ disabledPlugins: ['bookmarks'] });
   try {
     assert.deepEqual((await toolsOf(app)).map((tool) => tool.name).sort(),
       enabledNames.filter((name) => name !== 'list_bookmarks' && name !== 'bookmark_message').sort());
@@ -249,7 +249,7 @@ test('disabled: no tools, no route, no field, and a Hub still runs a cluster cha
 
 test('disabled: existing bookmarks stay, and deleting a cluster with bookmarks still works', async () => {
   const dir = tempDir();
-  const first = await startTestHub({ dir, port: await freePort() });
+  const first = await startTestHub({ dir });
   let path: string, cluster: { id: string }, sent: { id: string };
   try {
     ({ cluster } = await first.cluster('p', ['alice']));
@@ -258,7 +258,7 @@ test('disabled: existing bookmarks stay, and deleting a cluster with bookmarks s
     await first.api('POST', `${path}/collaboration`, { action: 'bookmark.set', operationId: 'star', messageId: sent.id, labels: ['kept'] });
   } finally { await first.close(); }
 
-  const disabled = await startTestHub({ dir, port: await freePort(), disabledPlugins: ['bookmarks'] });
+  const disabled = await startTestHub({ dir, disabledPlugins: ['bookmarks'] });
   try {
     const raw = disabled.store.db.prepare('SELECT labels_json FROM collaboration_bookmarks WHERE message_id = ?').get(sent.id) as { labels_json: string };
     assert.equal(raw.labels_json, '["kept"]', 'the row survives while the plugin is off');
@@ -267,7 +267,7 @@ test('disabled: existing bookmarks stay, and deleting a cluster with bookmarks s
     await disabled.api('POST', `${path}/restore`, {});
   } finally { await disabled.close(); }
 
-  const again = await startTestHub({ dir, port: await freePort() });
+  const again = await startTestHub({ dir });
   try {
     assert.deepEqual(bookmarksOf(again.store, sent.id).map((b) => b.labels), [['kept']], 'enabling it again finds them');
   } finally { await again.close(); }
@@ -343,7 +343,7 @@ const onlyBookmarks = officialPlugins.filter((plugin) => plugin.id === 'bookmark
 
 test('api: GET lists what is installed; PUT only changes the next start, which then honours it', async () => {
   const dir = tempDir();
-  const first = await startTestHub({ dir, port: await freePort(), plugins: onlyBookmarks });
+  const first = await startTestHub({ dir, plugins: onlyBookmarks });
   try {
     const before = await first.api('GET', '/api/plugins');
     assert.deepEqual(before.installed, [{ id: 'bookmarks', version: '0.10.0-beta.2', requires: [], name: '收藏', description: onlyBookmarks[0].description,
@@ -359,7 +359,7 @@ test('api: GET lists what is installed; PUT only changes the next start, which t
     assert.deepEqual(fileOf(dir), { disabled: ['bookmarks'] }, 'the refused requests wrote nothing');
   } finally { await first.close(); }
 
-  const second = await startTestHub({ dir, port: await freePort(), plugins: onlyBookmarks });
+  const second = await startTestHub({ dir, plugins: onlyBookmarks });
   try {
     const now = await second.api('GET', '/api/plugins');
     assert.deepEqual(now.plugins, [], 'plugins.json is applied at the start');
@@ -370,7 +370,7 @@ test('api: GET lists what is installed; PUT only changes the next start, which t
 });
 
 test('api: both plugin routes need the API token', async () => {
-  const app = await startTestHub({ port: await freePort() });
+  const app = await startTestHub();
   try {
     assert.equal((await rawFetch(`${app.url}/api/plugins`)).status, 401);
     const put = await rawFetch(`${app.url}/api/plugins/bookmarks`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: '{"enabled":false}' });
@@ -382,7 +382,7 @@ test('api: both plugin routes need the API token', async () => {
 test('the environment variable adds to the file and wins: that plugin cannot be switched on from the page', async () => {
   const dir = tempDir();
   withPluginsFile(dir, '{"disabled":["a"]}');
-  const app = await startTestHub({ dir, port: await freePort(), plugins: [plugin('a'), plugin('b'), plugin('c')], disabledPlugins: ['b'] });
+  const app = await startTestHub({ dir, plugins: [plugin('a'), plugin('b'), plugin('c')], disabledPlugins: ['b'] });
   try {
     const { plugins, installed } = await app.api('GET', '/api/plugins');
     assert.deepEqual(plugins.map((p: { id: string }) => p.id), ['c'], 'the union of the two');
@@ -395,7 +395,7 @@ test('the environment variable adds to the file and wins: that plugin cannot be 
 });
 
 test('api: refuses a change that would break a dependency, naming it', async () => {
-  const app = await startTestHub({ port: await freePort(), plugins: [plugin('tasks', { name: '任务' }), plugin('coordinator', { name: '协调员', requires: ['tasks'] })] });
+  const app = await startTestHub({ plugins: [plugin('tasks', { name: '任务' }), plugin('coordinator', { name: '协调员', requires: ['tasks'] })] });
   try {
     await assert.rejects(app.api('PUT', '/api/plugins/tasks', { enabled: false }), /400.*“协调员”依赖它/);
     await app.api('PUT', '/api/plugins/coordinator', { enabled: false });
@@ -407,17 +407,17 @@ test('api: refuses a change that would break a dependency, naming it', async () 
 test('start-up: a damaged plugins.json stops the Hub with the reason; an id this version does not have is skipped and kept', async () => {
   const damaged = tempDir();
   withPluginsFile(damaged, 'oops');
-  await assert.rejects(startTestHub({ dir: damaged, port: await freePort() }), /plugins\.json is not valid JSON/);
+  await assert.rejects(startTestHub({ dir: damaged }), /plugins\.json is not valid JSON/);
 
   const dir = tempDir();
   withPluginsFile(dir, '{"disabled":["from-another-version"]}');
-  const app = await startTestHub({ dir, port: await freePort(), plugins: onlyBookmarks });
+  const app = await startTestHub({ dir, plugins: onlyBookmarks });
   try {
     assert.deepEqual((await app.api('GET', '/api/plugins')).plugins, [{ id: 'bookmarks', version: '0.10.0-beta.2' }]);
     await app.api('PUT', '/api/plugins/bookmarks', { enabled: false });
     assert.deepEqual(fileOf(dir), { disabled: ['from-another-version', 'bookmarks'] });
   } finally { await app.close(); }
-  await assert.rejects(startTestHub({ port: await freePort(), disabledPlugins: ['typo'] }), /cannot disable unknown plugin typo/);
+  await assert.rejects(startTestHub({ disabledPlugins: ['typo'] }), /cannot disable unknown plugin typo/);
 });
 
 const TASK_TOOLS = ['list_tasks', 'list_labels', 'manage_labels', 'get_task', 'get_task_context', 'create_task', 'task_action', 'raise_attention', 'resolve_attention', 'set_task_summary', 'link_message_tasks',
@@ -448,7 +448,7 @@ test('a slot only one plugin may fill is refused when two do', () => {
 });
 
 test('tools: enabled, the task tools match the versioned definitions', async () => {
-  const app = await startTestHub({ port: await freePort() });
+  const app = await startTestHub();
   try {
     const tools = (await toolsOf(app)).filter((tool) => TASK_TOOLS.includes(tool.name));
     assert.equal(tools.length, TASK_TOOLS.length);
@@ -461,7 +461,7 @@ test('tools: enabled, the task tools match the versioned definitions', async () 
 test('tasks disabled: the Hub starts, chat and pause work, the task surfaces are gone, the data stays', async () => {
   const dir = tempDir();
   const native = [{ harness: 'mock', sessionId: 's1', name: 'A' }, { harness: 'mock', sessionId: 's2', name: 'B' }];
-  const first = await startTestHub({ dir, port: await freePort() });
+  const first = await startTestHub({ dir });
   let path: string, clusterId: string, taskId: string, linkedId: string, memberB: string;
   try {
     const { cluster, members } = await first.hub.createCluster('plain', native);
@@ -472,7 +472,7 @@ test('tasks disabled: the Hub starts, chat and pause work, the task surfaces are
     linkedId = (await first.api('POST', `${path}/messages`, { body: 'linked', taskIds: [taskId] })).id;
   } finally { await first.close(); }
 
-  const off = await startTestHub({ dir, port: await freePort(), disabledPlugins: ['tasks', 'coordinator'] });
+  const off = await startTestHub({ dir, disabledPlugins: ['tasks', 'coordinator'] });
   try {
     assert.equal(off.store.tasks, null);
     assert.equal(off.store.coordinator, null, 'tasks and the coordinator are off together');
@@ -509,7 +509,7 @@ test('tasks disabled: the Hub starts, chat and pause work, the task surfaces are
     assert.equal((off.store.db.prepare('SELECT COUNT(*) AS n FROM collaboration_tasks').get() as { n: number }).n, 1, 'the row survives while the plugin is off');
   } finally { await off.close(); }
 
-  const again = await startTestHub({ dir, port: await freePort() });
+  const again = await startTestHub({ dir });
   try {
     assert.deepEqual((await again.api('GET', `${path}/workspace`)).tasks.map((task: { id: string }) => task.id), [taskId], 'enabling it again finds the task');
     assert.deepEqual((await again.messages(clusterId)).find((message) => message.id === linkedId)!.taskIds, [taskId], 'and the link');
@@ -518,9 +518,9 @@ test('tasks disabled: the Hub starts, chat and pause work, the task surfaces are
 });
 
 test('coordinator: the real registry refuses switching tasks off while the coordinator depends on it', async () => {
-  await assert.rejects(startTestHub({ port: await freePort(), disabledPlugins: ['tasks'] }),
+  await assert.rejects(startTestHub({ disabledPlugins: ['tasks'] }),
     /plugin coordinator cannot be enabled: it requires tasks, which is disabled; enable it or also disable coordinator/);
-  const app = await startTestHub({ port: await freePort() });
+  const app = await startTestHub();
   try {
     await assert.rejects(app.api('PUT', '/api/plugins/tasks', { enabled: false }), /400.*“协调员”依赖它/);
     assert.deepEqual((await app.api('PUT', '/api/plugins/coordinator', { enabled: false })).installed.find((p: { id: string }) => p.id === 'coordinator').pendingEnabled, false);
@@ -535,7 +535,7 @@ test('coordinator: the real registry refuses switching tasks off while the coord
 test('coordinator disabled: unaddressed messages stay in the record, tasks and pause keep working, the policy waits', async () => {
   const dir = tempDir();
   const native = [{ harness: 'mock', sessionId: 's1', name: 'A' }, { harness: 'mock', sessionId: 's2', name: 'B' }];
-  const first = await startTestHub({ dir, port: await freePort() });
+  const first = await startTestHub({ dir });
   let path: string, clusterId: string, a: string, b: string, enabledTools: string[];
   try {
     const { cluster, members } = await first.hub.createCluster('plain', native);
@@ -548,7 +548,7 @@ test('coordinator disabled: unaddressed messages stay in the record, tasks and p
     await first.api('POST', `${path}/collaboration`, { action: 'cluster.pause', operationId: 'resume', paused: false });
   } finally { await first.close(); }
 
-  const off = await startTestHub({ dir, port: await freePort(), disabledPlugins: ['coordinator'] });
+  const off = await startTestHub({ dir, disabledPlugins: ['coordinator'] });
   try {
     assert.equal(off.store.coordinator, null);
     assert.ok(off.store.tasks, 'tasks stay on');
@@ -597,7 +597,7 @@ test('coordinator disabled: unaddressed messages stay in the record, tasks and p
     assert.throws(() => run(asB, { action: 'cluster.pause', paused: true }, 'member-pause'), /not permitted/);
   } finally { await off.close(); }
 
-  const again = await startTestHub({ dir, port: await freePort() });
+  const again = await startTestHub({ dir });
   try {
     const policy = (await again.api('GET', `${path}/workspace`)).coordinator;
     assert.deepEqual([policy.memberId, policy.enabled, policy.standingInstructions.map((i: { text: string }) => i.text)], [a, true, ['keep this']], 'enabling it again finds the policy');

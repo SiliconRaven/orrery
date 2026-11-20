@@ -9,7 +9,7 @@ import { request } from 'node:http';
 import { join } from 'node:path';
 import { Store } from '../src/core/store.ts';
 import { REPO_ROOT } from '../src/main.ts';
-import { bearer, freePort, holdScript, startTestHub, tempDir, TEST_TOKEN, waitFor, type TestHub } from './helpers.ts';
+import { bearer, holdScript, startTestHub, tempDir, TEST_TOKEN, waitFor, withFreePort, type TestHub } from './helpers.ts';
 
 /** Spawns `node src/main.ts` (what `npm start` runs) on these paths. */
 function startMain(env: Record<string, string>) {
@@ -39,8 +39,6 @@ const postShutdown = (url: string, headers: Record<string, string> = { 'content-
 // So the time limit is in two parts: a generous one for getting to the end of the script (it only catches a hang), and a
 // tight one from there to the exit, which takes no work and so does not depend on load: that one catches a leaked handle.
 test('startup: a discovery write failure releases the Hub, database and port without masking the error', { timeout: 120_000 }, async () => {
-  const dir = tempDir();
-  const port = await freePort();
   // A child contains any leaked handles if this regresses. The directory at hub.json makes the rename fail.
   const script = `
     import assert from 'node:assert/strict';
@@ -84,29 +82,33 @@ test('startup: a discovery write failure releases the Hub, database and port wit
     // What still keeps the process alive, if anything: named in the failure when it does not exit.
     console.log('RELEASED ' + JSON.stringify(process.getActiveResourcesInfo()));
   `;
-  const child = spawn(process.execPath, ['--input-type=module', '-e', script, dir, String(port)], {
-    cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  await withFreePort(async (port) => {
+    const dir = tempDir();
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script, dir, String(port)], {
+      cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+    let output = '';
+    let timer = setTimeout(() => child.kill(), 100_000);   // a hang before the end of the script
+    child.stdout.on('data', (c) => {
+      output += c;
+      // The script is done: with nothing left open the process exits at once, however busy the machine is.
+      if (output.includes('RELEASED ')) { clearTimeout(timer); timer = setTimeout(() => child.kill(), 10_000); }
+    });
+    child.stderr.on('data', (c) => { output += c; });
+    try {
+      const [code, signal] = await once(child, 'exit');
+      if (code !== 0 && output.includes('EADDRINUSE')) throw Object.assign(new Error(output), { code: 'EADDRINUSE' });
+      assert.equal(code, 0, `child exited ${code ?? signal}${output.includes('RELEASED ') ? ' (did not exit on its own after releasing everything)' : ''}: ${output}`);
+    } finally {
+      clearTimeout(timer);
+    }
   });
-  let output = '';
-  let timer = setTimeout(() => child.kill(), 100_000);   // a hang before the end of the script
-  child.stdout.on('data', (c) => {
-    output += c;
-    // The script is done: with nothing left open the process exits at once, however busy the machine is.
-    if (output.includes('RELEASED ')) { clearTimeout(timer); timer = setTimeout(() => child.kill(), 10_000); }
-  });
-  child.stderr.on('data', (c) => { output += c; });
-  try {
-    const [code, signal] = await once(child, 'exit');
-    assert.equal(code, 0, `child exited ${code ?? signal}${output.includes('RELEASED ') ? ' (did not exit on its own after releasing everything)' : ''}: ${output}`);
-  } finally {
-    clearTimeout(timer);
-  }
 });
 
 test('launcher 2: a second Hub on the same port and database fails with EADDRINUSE before touching any data', async () => {
   const hold = holdScript();
-  const port = await freePort();
-  const app = await startTestHub({ port, mock: { script: hold.script } });
+  const app = await startTestHub({ mock: { script: hold.script } });
+  const port = Number(new URL(app.url).port);
   try {
     const { cluster } = await app.cluster('one', ['A']);
     app.hub.sendFromUser(cluster.id, '@A hold');

@@ -8,7 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { keepTestTemp, removeTestDir, sleepSync, TEST_TEMP_PREFIX } from '../scripts/test-temp.ts';
 import { signBridgeRequest } from '../src/bridge-protocol.ts';
 import { dbModeOf } from '../src/config.ts';
-import { startHub, type StartOptions } from '../src/main.ts';
+import { listenLoopback, startHub, type StartOptions } from '../src/main.ts';
 import { createMockNativeAdapter, MOCK_MODEL, type MockNativeAdapter, type MockNativeOptions } from '../src/adapters/mock/native.ts';
 import type { Store } from '../src/core/store.ts';
 import type { Cluster, Delivery, HubEvent, Member, Message } from '../src/core/types.ts';
@@ -98,13 +98,50 @@ export function insertMessageWithEvent(store: Store, message: Message, recipient
   });
 }
 
-/** A free port that is not the user's 4317. */
+const addrInUse = (error: unknown) =>
+  typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'EADDRINUSE';
+
+/**
+ * A free loopback port that is not the user's 4317. The socket is closed before return, so something else can take
+ * it before the caller binds: bind at once, or use withFreePort / retryAddrInUse when the bind can lose that race.
+ */
 export async function freePort(): Promise<number> {
   const s = createServer();
-  await new Promise<void>((ok) => s.listen(0, '127.0.0.1', ok));
-  const port = (s.address() as { port: number }).port;
-  await new Promise<void>((ok) => s.close(() => ok()));
-  return port === 4317 ? freePort() : port;
+  try {
+    return await listenLoopback(s, 0);
+  } finally {
+    if (s.listening) await new Promise<void>((ok) => s.close(() => ok()));
+  }
+}
+
+/** Call `run` with a port reserved immediately beforehand. EADDRINUSE tries another port, up to `attempts` times. */
+export async function withFreePort<T>(run: (port: number) => Promise<T>, attempts = 5): Promise<T> {
+  let last: unknown;
+  for (let i = 0; i < attempts; i++) {
+    const port = await freePort();
+    try {
+      return await run(port);
+    } catch (error) {
+      last = error;
+      if (!addrInUse(error)) throw error;
+    }
+  }
+  throw last;
+}
+
+/** Repeat `run` when a port it already chose was taken. Any other error propagates on the first attempt. */
+export async function retryAddrInUse<T>(run: () => Promise<T>, attempts = 5): Promise<T> {
+  let last: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await run();
+    } catch (error) {
+      last = error;
+      if (!addrInUse(error)) throw error;
+      await sleep(20 * (i + 1));
+    }
+  }
+  throw last;
 }
 
 /** One project holding two existing sessions (s1, s2), and an empty second project. */
@@ -262,9 +299,12 @@ export async function startTestHub(
   let endpoint: { url: string; secret: string } | null = null;
   const native = scriptedNative({ ...fixture(dir), model: MOCK_MODEL, ...opts.mock }, () => endpoint);
   const app = await startHub({
-    dbPath: join(dir, 'test.db'), port: 0, home: join(dir, 'home'),
+    dbPath: join(dir, 'test.db'), home: join(dir, 'home'),
     registryDir,
-    apiToken: TEST_TOKEN, dbMode: dbModeOf(process.env), ...opts, nativeAdapters: { mock: native, ...opts.nativeAdapters },
+    apiToken: TEST_TOKEN, dbMode: dbModeOf(process.env), ...opts,
+    // After ...opts, so a caller that omits port keeps the atomic bind (opts.port from freePort() used to win, then lose the race).
+    port: opts.port ?? 0,
+    nativeAdapters: { mock: native, ...opts.nativeAdapters },
     // No start-up grace unless a test asks for one: an offline native member's deliveries end 'offline' at once.
     // No system-notice wait window either: a busy member still batches everything queued, and the tests that exercise
     // the window pass their own noticeWindowMs. The same for the member-message window (messageWindowMs).

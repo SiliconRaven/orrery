@@ -5,14 +5,14 @@ import { join } from 'node:path';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import type { CollaborationCommand, CollaborationResult } from '../src/core/collaboration-types.ts';
 import type { Message } from '../src/core/types.ts';
-import { freePort, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { startTestHub, tempDir, waitFor } from './helpers.ts';
 import { collaborationLinks, collaborationTask, linkCollaborationMessage } from '../src/plugins/tasks/store.ts';
 
 async function fixture() {
   const dir = tempDir();
   const sessions = ['a', 'b', 'c'].map((id) => ({ id, title: id, model: null, cwd: dir, updatedAt: null }));
   const native = createMockNativeAdapter({ sessions });
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: native } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: native } });
   const { cluster, members: [a, b, c] } = await app.hub.createCluster('notices', sessions.map((s) => ({
     harness: 'mock', mode: 'native', sessionId: s.id, name: s.id.toUpperCase(),
   })));
@@ -289,7 +289,7 @@ test('superseded deliveries survive restart and cannot bypass the chain limit', 
     assert.equal(delivery(old, a.id).state, 'superseded');
     const dir = app.dir;
     await app.close(); closed = true;
-    reopened = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: native },
+    reopened = await startTestHub({ dir, nativeAdapters: { mock: native },
       limits: { maxTurnsPerChain: 0 } });
     const store = reopened.store;
     await waitFor(() => store.withDeliveries([store.getMessage(latest.id)!])[0].deliveries[0].state === 'failed', 'guard after restart');

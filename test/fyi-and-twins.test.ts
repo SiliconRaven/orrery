@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createMockNativeAdapter } from '../src/adapters/mock/native.ts';
 import { REPO_ROOT } from '../src/main.ts';
-import { freePort, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { startTestHub, tempDir, waitFor } from './helpers.ts';
 
 async function mcpCall(app: Awaited<ReturnType<typeof startTestHub>>, session: string, name: string, args: Record<string, unknown>, harness = 'mock') {
   const { secret } = JSON.parse(readFileSync(join(app.home, 'hub.json'), 'utf8'));
@@ -41,7 +41,7 @@ function makeNative(dir: string, sessionIds: string[], offline = new Set<string>
 test('fyi flag persists across DB/API/read_messages and get_deliveries returns { fyi, deliveries }', async () => {
   const dir = tempDir();
   const { adapter } = makeNative(dir, ['sa', 'sb']);
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: adapter } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: adapter } });
   try {
     const { cluster } = await app.hub.createCluster('fyi', [
       { harness: 'mock', mode: 'native', sessionId: 'sa', name: 'A' },
@@ -78,7 +78,7 @@ test('fyi flag persists across DB/API/read_messages and get_deliveries returns {
 test('fyi + replyTo overrides fyi and wakes only the explicitly addressed active asker while preserving fyi=true', async () => {
   const dir = tempDir();
   const { adapter, delivered } = makeNative(dir, ['sa', 'sb', 'sc']);
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: adapter } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: adapter } });
   try {
     const { cluster, members: [a, b, c] } = await app.hub.createCluster('reply-override', [
       { harness: 'mock', mode: 'native', sessionId: 'sa', name: 'A' },
@@ -157,7 +157,7 @@ test('coordinator auto-disables on member removal and on startup, without re-emi
   const { adapter } = makeNative(dir, ['sc', 'sb', 'sc2']);
   let clusterId = '';
   let coordId = '';
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: adapter } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: adapter } });
   try {
     const created = await app.hub.createCluster('coord-remove', [
       { harness: 'mock', mode: 'native', sessionId: 'sc', name: 'coord' },
@@ -204,7 +204,7 @@ test('coordinator auto-disables on member removal and on startup, without re-emi
     raw.prepare('UPDATE members SET removed_at = ? WHERE id = ?').run('2026-11-13T00:00:00Z', legacyId);
     raw.close();
 
-    const restarted = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: adapter } });
+    const restarted = await startTestHub({ dir, nativeAdapters: { mock: adapter } });
     try {
       const afterStart = restarted.store.coordinator!.policy(clusterId)!;
       assert.equal(afterStart.enabled, false);
@@ -215,7 +215,7 @@ test('coordinator auto-disables on member removal and on startup, without re-emi
       await restarted.close();
 
       // Second restart: already disabled -> must NOT emit again or bump generation.
-      const third = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: adapter } });
+      const third = await startTestHub({ dir, nativeAdapters: { mock: adapter } });
       try {
         assert.equal(third.store.coordinator!.policy(clusterId)!.generation, genAfterFirst);
         assert.equal(third.store.listMessages(clusterId, 100).filter((m) => m.body.includes('协调员 coord 已被移出')).length, 2);
@@ -235,7 +235,7 @@ test('twin removed members: active-first filters and （已移出） suffix only
   const dir = tempDir();
   const offline = new Set<string>(['s-ghost', 's-b1', 's-keep']);
   const { adapter, delivered } = makeNative(dir, ['s-old', 's-ghost', 's-reader', 's-new', 's-r2', 's-b1', 's-b2', 's-keep', 's-rem', 's-dana2'], offline);
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: adapter } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: adapter } });
   try {
     const { cluster, members: [oldTwin, ghost, reader] } = await app.hub.createCluster('twins', [
       { harness: 'mock', mode: 'native', sessionId: 's-old', name: 'codex' },
@@ -342,7 +342,6 @@ test('removed author envelope warns against waking twin/removed senders in singl
 
   const app = await startTestHub({
     dir,
-    port: await freePort(),
     nativeAdapters: { mock: base.adapter, kimi: repliesAdapter },
   });
   try {

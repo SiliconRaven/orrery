@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_ROLES } from '../src/core/default-roles.ts';
 import type { CollaborationActor, CollaborationCommand } from '../src/core/collaboration-types.ts';
-import { freePort, startTestHub } from './helpers.ts';
+import { startTestHub } from './helpers.ts';
 
 test('a new cluster creates the default roles atomically without assigning them', async () => {
-  const app = await startTestHub({ port: await freePort() });
+  const app = await startTestHub();
   try {
     const { cluster, members } = await app.hub.createCluster('defaults', [
       { harness: 'mock', mode: 'native', sessionId: 's1', name: 'A' },
@@ -20,7 +20,7 @@ test('a new cluster creates the default roles atomically without assigning them'
 });
 
 test('a role-write failure rolls back the cluster, members and earlier default roles', async () => {
-  const app = await startTestHub({ port: await freePort() });
+  const app = await startTestHub();
   const save = app.store.saveCollaborationRole;
   let clusterId = '';
   let writes = 0;
@@ -44,7 +44,7 @@ test('a role-write failure rolls back the cluster, members and earlier default r
 });
 
 test('explicit completion fills only missing defaults or blank descriptions in old clusters', async () => {
-  const app = await startTestHub({ port: await freePort() });
+  const app = await startTestHub();
   try {
     const cluster = { id: 'legacy', name: 'legacy', category: '', createdAt: new Date().toISOString() };
     app.store.insertCluster(cluster, []);
@@ -70,7 +70,7 @@ test('explicit completion fills only missing defaults or blank descriptions in o
 });
 
 test('manual completion obeys coordinator permissions, generations and suggestion mode', async () => {
-  const app = await startTestHub({ port: await freePort() });
+  const app = await startTestHub();
   try {
     app.hub.setPaused(true);
     const { cluster, members: [a, b] } = await app.hub.createCluster('permissions', [

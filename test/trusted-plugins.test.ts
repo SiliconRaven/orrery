@@ -14,7 +14,7 @@ import { readPluginIcon } from '../src/core/plugin-icon.ts';
 import { trustedPluginOf } from '../src/core/trusted-plugins.ts';
 import { REPO_ROOT } from '../src/main.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
-import { freePort, rawFetch, startTestHub, tempDir, TEST_TOKEN, type TestHub } from './helpers.ts';
+import { rawFetch, startTestHub, tempDir, TEST_TOKEN, type TestHub } from './helpers.ts';
 
 type Card = { id: string; enabled: boolean; pendingEnabled: boolean; origin?: string; trust?: { state: string; entry: string | null; confirmed: boolean; error: string | null };
   trustConflict?: string };
@@ -64,7 +64,7 @@ test('unconfirmed: nothing is imported and no migration runs; confirming binds t
   const home = join(dir, 'home');
   const plugin = writePlugin(dir, 'demo', notesBody(join(dir, 'plugin-demo', 'marker.txt')));
   register(home, [plugin.manifest]);
-  let app = await startTestHub({ dir, port: await freePort() });
+  let app = await startTestHub({ dir });
   try {
     assert.deepEqual(plugin.marker(), [], 'the entry was never imported');
     assert.equal(tableExists(app, 'x_demo_notes'), false);
@@ -86,7 +86,7 @@ test('unconfirmed: nothing is imported and no migration runs; confirming binds t
     assert.deepEqual(plugin.marker(), [], 'confirming imports nothing either');
   } finally { await app.close(); }
 
-  app = await startTestHub({ dir, port: await freePort() });
+  app = await startTestHub({ dir });
   try {
     assert.deepEqual(plugin.marker().slice(0, 2), ['imported', 'called 1 function'], 'imported once, with { hostApi: 1, z }');
     assert.ok(plugin.marker().includes('service started'));
@@ -104,7 +104,7 @@ test('the trust API needs the user\'s login and refuses a plugin frame\'s origin
   const home = join(dir, 'home');
   const plugin = writePlugin(dir, 'demo', '{}');
   register(home, [plugin.manifest]);
-  const app = await startTestHub({ dir, port: await freePort() });
+  const app = await startTestHub({ dir });
   try {
     const body = JSON.stringify({ trusted: true, entry: plugin.entry });
     const headers = { 'content-type': 'application/json' };
@@ -124,7 +124,7 @@ test('revoked, safe mode, or confirmed for another path: the plugin does not run
   const a = writePlugin(dir, 'demo', '{ migrations: ["CREATE TABLE x_demo_t (x)"] }');
   register(home, [a.manifest]);
   confirm(home, [{ id: 'demo', entry: a.entry }]);
-  let app = await startTestHub({ dir, port: await freePort(), safeMode: true });
+  let app = await startTestHub({ dir, safeMode: true });
   try {
     assert.deepEqual(a.marker(), [], 'safe mode imports nothing');
     assert.equal(versionOf(app, 'demo'), undefined);
@@ -133,7 +133,7 @@ test('revoked, safe mode, or confirmed for another path: the plugin does not run
     assert.equal(listing.installed.find((p: Card) => p.id === 'demo').trust.state, 'safe-mode');
   } finally { await app.close(); }
 
-  app = await startTestHub({ dir, port: await freePort() });
+  app = await startTestHub({ dir });
   try {
     assert.equal(a.marker().filter((l) => l.startsWith('called')).length, 1);
     assert.equal(versionOf(app, 'demo'), 1);
@@ -142,7 +142,7 @@ test('revoked, safe mode, or confirmed for another path: the plugin does not run
     assert.deepEqual(readPluginsFile(home).trusted ?? [], []);
   } finally { await app.close(); }
 
-  app = await startTestHub({ dir, port: await freePort() });
+  app = await startTestHub({ dir });
   try {
     assert.equal(a.marker().filter((l) => l.startsWith('called')).length, 1, 'revoked: not run again');
     assert.equal((await cardOf(app, 'demo')).trust!.state, 'unconfirmed');
@@ -153,7 +153,7 @@ test('revoked, safe mode, or confirmed for another path: the plugin does not run
   writeFileSync(other, `import { appendFileSync } from 'node:fs'; appendFileSync(${JSON.stringify(join(dir, 'other-marker.txt'))}, 'x'); export default () => ({});`);
   confirm(home, [{ id: 'demo', entry: a.entry }]);
   writeFileSync(a.manifest, JSON.stringify({ id: 'demo', version: '1.0.0', hostApi: 1, hubEntry: 'hub/other.mjs' }));
-  app = await startTestHub({ dir, port: await freePort() });
+  app = await startTestHub({ dir });
   try {
     assert.equal(existsSync(join(dir, 'other-marker.txt')), false, 'the new entry was not imported');
     const card = await cardOf(app, 'demo');
@@ -168,7 +168,7 @@ test('confirmed but switched off: only the migrations and the two cleanup hooks 
   register(home, [plugin.manifest]);
   confirm(home, [{ id: 'demo', entry: plugin.entry }]);
   writePluginsFile(home, { disabled: ['demo'] });
-  const app = await startTestHub({ dir, port: await freePort() });
+  const app = await startTestHub({ dir });
   try {
     assert.equal(versionOf(app, 'demo'), 1, 'the migrations ran');
     assert.equal(plugin.marker().includes('service started'), false, 'no service');
@@ -225,7 +225,7 @@ test('a plugin that fails to load or to fit is skipped alone, with its dependent
   const all = [good, broken, needsBroken, api2, clash, single, outside, bridge, schema];
   register(home, all.map((p) => p.manifest));
   confirm(home, all.map((p, i) => ({ id: ['good', 'broken', 'needs-broken', 'api-two', 'bookmarks', 'second-tasks', 'outside', 'bridgy', 'schema'][i], entry: p.entry })));
-  const app = await startTestHub({ dir, port: await freePort() });
+  const app = await startTestHub({ dir });
   try {
     assert.deepEqual(await app.api('GET', '/api/x/good/ok'), { ok: true }, 'the good one runs');
     const reason = async (id: string) => (await cardOf(app, id)).trust?.error ?? '';
@@ -273,7 +273,7 @@ test('migration steps cannot commit themselves, hide in the temp schema or take 
   confirm(home, all.map((p, i) => ({ id: ids[i], entry: p.entry })).filter((c) => c.id !== 'pa-b'));
   writePluginsFile(home, { disabled: ['off-one'] });
   const started = Date.now();
-  const app = await startTestHub({ dir, port: await freePort(), trustedLoadTimeoutMs: 300 });
+  const app = await startTestHub({ dir, trustedLoadTimeoutMs: 300 });
   try {
     const reason = async (id: string) => (await cardOf(app, id)).trust?.error ?? '';
     assert.match(await reason('committer'), /迁移第 1 步失败，已回滚.*not authorized.*不能提交或开始事务/);
@@ -363,9 +363,9 @@ test('purging a cluster says which unloaded plugins may still hold its data', as
   const plugin = writePlugin(dir, 'demo', '{ migrations: ["CREATE TABLE x_demo_rows (cluster_id TEXT)"] }');
   register(home, [plugin.manifest]);
   confirm(home, [{ id: 'demo', entry: plugin.entry }]);
-  (await startTestHub({ dir, port: await freePort() }).then(async (app) => { await app.close(); }));
+  (await startTestHub({ dir }).then(async (app) => { await app.close(); }));
   confirm(home, []);
-  const app = await startTestHub({ dir, port: await freePort() });
+  const app = await startTestHub({ dir });
   try {
     const { cluster } = await app.cluster('gone', ['A']);
     await app.api('DELETE', `/api/clusters/${cluster.id}`, {});
@@ -381,9 +381,9 @@ test('a purge blocked by a foreign key of an unloaded plugin deletes nothing and
   const plugin = writePlugin(dir, 'refs', '{ migrations: ["CREATE TABLE x_refs_rows (cluster_id TEXT NOT NULL REFERENCES clusters(id))"] }');
   register(home, [plugin.manifest]);
   confirm(home, [{ id: 'refs', entry: plugin.entry }]);
-  (await startTestHub({ dir, port: await freePort() }).then(async (app) => { await app.close(); }));
+  (await startTestHub({ dir }).then(async (app) => { await app.close(); }));
   confirm(home, []);   // revoked: its table stays, its clusterPurging does not run
-  const app = await startTestHub({ dir, port: await freePort() });
+  const app = await startTestHub({ dir });
   try {
     const { cluster } = await app.cluster('held', ['A']);
     app.store.db.prepare('INSERT INTO x_refs_rows VALUES (?)').run(cluster.id);   // a row the plugin wrote while it ran
@@ -428,12 +428,12 @@ for (const disruption of ['safe mode', 'revoked', 'load failure'] as const) {
     const dir = tempDir();
     const home = join(dir, 'home');
     const backups = join(home, 'backups');
-    (await startTestHub({ dir, port: await freePort() }).then(async (app) => { await app.close(); }));   // an existing database
+    (await startTestHub({ dir }).then(async (app) => { await app.close(); }));   // an existing database
     const grow = growingPlugin(dir, 'grow');
     grow.failing();
     register(home, [grow.manifest]);
     confirm(home, [{ id: 'grow', entry: grow.entry }]);
-    const start = async (opts: { safeMode?: boolean } = {}) => (await startTestHub({ dir, port: await freePort(), ...opts })).close();
+    const start = async (opts: { safeMode?: boolean } = {}) => (await startTestHub({ dir, ...opts })).close();
     const auto = () => readdirSync(backups).filter((name) => name.endsWith('-pre-upgrade.db')).sort();
     const marker = () => existsSync(join(backups, 'pre-upgrade-baseline.txt'));
     await start();   // step 1 commits, step 2 fails: the first backup, of the state before step 1, is the baseline
@@ -460,7 +460,7 @@ test('backup: a missing full-trust manifest preserves the baseline of a partiall
   const home = join(dir, 'home');
   const backups = join(home, 'backups');
   const marker = join(backups, 'pre-upgrade-baseline.txt');
-  const start = async () => startTestHub({ dir, port: await freePort() });
+  const start = async () => startTestHub({ dir });
   await (await start()).close();
   const first = growingPlugin(dir, 'first');
   const second = growingPlugin(dir, 'second');
@@ -519,19 +519,19 @@ test('backup: a plugin revoked for good with a migration record keeps the baseli
   const dir = tempDir();
   const home = join(dir, 'home');
   const backups = join(home, 'backups');
-  (await startTestHub({ dir, port: await freePort() }).then(async (app) => { await app.close(); }));
+  (await startTestHub({ dir }).then(async (app) => { await app.close(); }));
   const grow = growingPlugin(dir, 'grow');
   grow.failing();
   register(home, [grow.manifest]);
   confirm(home, [{ id: 'grow', entry: grow.entry }]);
-  (await startTestHub({ dir, port: await freePort() }).then(async (app) => { await app.close(); }));
+  (await startTestHub({ dir }).then(async (app) => { await app.close(); }));
   const auto = () => readdirSync(backups).filter((name) => name.endsWith('-pre-upgrade.db')).sort();
   const original = auto()[0];
   confirm(home, []);   // revoked for good; its plugin_migrations row stays
   // Later upgrades of something else: each start has a new step to run, so each makes a backup.
   for (let steps = 1; steps <= 7; steps++) {
     const other: OfficialPlugin = { id: 'other', version: '1.0.0', migrations: Array.from({ length: steps }, (_, i) => `CREATE TABLE other_${i} (x)`) };
-    (await startTestHub({ dir, port: await freePort(), plugins: [...officialPlugins, other] }).then(async (app) => { await app.close(); }));
+    (await startTestHub({ dir, plugins: [...officialPlugins, other] }).then(async (app) => { await app.close(); }));
   }
   assert.ok(existsSync(join(backups, 'pre-upgrade-baseline.txt')), 'the marker stays while grow’s record remains');
   assert.ok(auto().includes(original), 'the baseline is kept');
@@ -544,10 +544,10 @@ test('a purge that a loaded plugin’s hook refuses keeps that plugin’s error;
   const archived = writePlugin(dir, 'archived-notes', '{ migrations: ["CREATE TABLE x_archived_notes_rows (note TEXT)"] }');   // empty, no foreign key
   register(home, [archived.manifest]);
   confirm(home, [{ id: 'archived-notes', entry: archived.entry }]);
-  (await startTestHub({ dir, port: await freePort() }).then(async (app) => { await app.close(); }));
+  (await startTestHub({ dir }).then(async (app) => { await app.close(); }));
   confirm(home, []);   // revoked
   const current: OfficialPlugin = { id: 'current-notes', version: '1.0.0', clusterPurging: () => { throw new Error('the archive service is down'); } };
-  const app = await startTestHub({ dir, port: await freePort(), plugins: [...officialPlugins, current] });
+  const app = await startTestHub({ dir, plugins: [...officialPlugins, current] });
   try {
     const { cluster } = await app.cluster('kept', ['A']);
     await app.api('DELETE', `/api/clusters/${cluster.id}`, {});
@@ -593,7 +593,7 @@ test('webModule in a full-trust manifest is refused before the import; webEntry 
   register(home, [module.manifest, top.manifest, beside.manifest, escape.manifest]);
   confirm(home, [{ id: 'with-module', entry: module.entry }, { id: 'web-top', entry: top.entry }, { id: 'web-beside', entry: beside.entry },
     { id: 'web-escape', entry: escape.entry }]);
-  const app = await startTestHub({ dir, port: await freePort() });
+  const app = await startTestHub({ dir });
   try {
     const withModule = await cardOf(app, 'with-module');
     assert.equal(withModule.trust!.state, 'failed');
@@ -621,7 +621,7 @@ test('the web folder and the Hub entry are compared by their spelling on disk', 
   writeFileSync(join(folder, 'orrery-plugin.json'), JSON.stringify({ id: 'case', version: '1.0.0', hostApi: 1, hubEntry: 'web/hub.js', webEntry: 'WEB/index.js' }));
   register(home, [join(folder, 'orrery-plugin.json')]);
   confirm(home, [{ id: 'case', entry: realpathSync.native(join(folder, 'web', 'hub.js')) }]);
-  const app = await startTestHub({ dir, port: await freePort() });
+  const app = await startTestHub({ dir });
   try {
     const card = await cardOf(app, 'case');
     assert.equal(card.trust!.state, 'failed');
@@ -649,7 +649,7 @@ test('/plugin-web/ serves a loaded plugin\'s page module folder read-only: no tr
   linkSync(join(shown.folder, 'hub', 'index.mjs'), join(web, 'entry.js'));   // the Hub entry under another name (a hard link)
   register(home, [shown.manifest]);
   confirm(home, [{ id: 'shown', entry: shown.entry }]);
-  const app = await startTestHub({ dir, port: await freePort() });
+  const app = await startTestHub({ dir });
   try {
     const entry = await rawFetch(`${app.url}/plugin-web/shown/`);   // no login, like the page's own files
     assert.equal(entry.status, 200);
@@ -695,7 +695,7 @@ test('trustedFrontend lists a page module only while its plugin is confirmed, lo
   confirm(home, all);
   const served = async (app: TestHub, id: string) => (await rawFetch(`${app.url}/plugin-web/${id}/`)).status === 200;
   const listed = async (app: TestHub) => (await app.api('GET', '/api/plugins')).trustedFrontend;
-  let app = await startTestHub({ dir, port: await freePort() });
+  let app = await startTestHub({ dir });
   try {
     assert.deepEqual(await listed(app), ['ok-web'], 'loaded and enabled; not unconfirmed, failed to import, failed to migrate or without a module');
     assert.equal((await cardOf(app, 'broken-web')).trust!.state, 'failed');
@@ -705,25 +705,25 @@ test('trustedFrontend lists a page module only while its plugin is confirmed, lo
     await app.close();
 
     writePluginsFile(home, { trusted: all, disabled: ['ok-web'] });   // switched off: imported for its migrations only
-    app = await startTestHub({ dir, port: await freePort() });
+    app = await startTestHub({ dir });
     assert.deepEqual(await listed(app), [], 'switched off');
     await assertUnknown(app, '/plugin-web/ok-web/');
     await app.close();
 
     writePluginsFile(home, { trusted: all, disabled: [] });
-    app = await startTestHub({ dir, port: await freePort(), safeMode: true });
+    app = await startTestHub({ dir, safeMode: true });
     assert.deepEqual(await listed(app), [], 'safe mode');
     await assertUnknown(app, '/plugin-web/ok-web/');
     await app.close();
 
     confirm(home, all.filter((c) => c.id !== 'ok-web'));   // revoked
-    app = await startTestHub({ dir, port: await freePort() });
+    app = await startTestHub({ dir });
     assert.deepEqual(await listed(app), [], 'revoked');
     await assertUnknown(app, '/plugin-web/ok-web/');
     await app.close();
 
     confirm(home, all);
-    app = await startTestHub({ dir, port: await freePort() });
+    app = await startTestHub({ dir });
     assert.deepEqual(await listed(app), ['ok-web'], 'confirmed again');
     assert.equal(await served(app, 'ok-web'), true);
   } finally { await app.close(); }
@@ -736,7 +736,7 @@ test('the example plugin: its table, its routes, its member tool and its purge h
   cpSync(join(REPO_ROOT, 'examples', 'hub-plugins', 'trusted-demo'), folder, { recursive: true });
   register(home, [join(folder, 'orrery-plugin.json')]);
   confirm(home, [{ id: 'trusted-demo', entry: realpathSync.native(join(folder, 'hub', 'index.mjs')) }]);
-  const app = await startTestHub({ dir, port: await freePort() });
+  const app = await startTestHub({ dir });
   try {
     assert.equal(tableExists(app, 'x_trusted_demo_notes'), true);
     const { cluster } = await app.hub.createCluster('demo', [{ harness: 'mock', mode: 'native', sessionId: 's1', name: 'A' }]);
@@ -771,7 +771,7 @@ test('icons work exactly as for restricted plugins, confirmed or not; a bad icon
   writeFileSync(join(text.folder, 'icon.txt'), 'not an image');
   register(home, [on, off, outside, text].map((p) => p.manifest));
   confirm(home, [{ id: 'icon-on', entry: on.entry }, { id: 'icon-outside', entry: outside.entry }, { id: 'icon-text', entry: text.entry }]);
-  const app = await startTestHub({ dir, port: await freePort() });
+  const app = await startTestHub({ dir });
   try {
     type IconCard = Card & { iconUrl: string | null; iconError?: string };
     const card = async (id: string) => (await cardOf(app, id)) as IconCard;

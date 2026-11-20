@@ -12,8 +12,8 @@ import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { createCursorNativeAdapter } from '../src/adapters/cursor/native.ts';
 import type { Member } from '../src/core/types.ts';
-import { REPO_ROOT } from '../src/main.ts';
-import { freePort, registryEnv, relayRegistry, resignedHeaders, startTestHub, tempDir, waitFor, writeRegistry } from './helpers.ts';
+import { listenLoopback, REPO_ROOT } from '../src/main.ts';
+import { freePort, registryEnv, relayRegistry, resignedHeaders, retryAddrInUse, startTestHub, tempDir, waitFor, writeRegistry } from './helpers.ts';
 
 const PLUGIN = join(REPO_ROOT, 'plugins', 'cursor-orrery');
 const S1 = 'aaaaaaaa-1111-4111-8111-111111111111';
@@ -50,8 +50,7 @@ async function recorder(app: PHub) {
       out.end(body);
     });
   });
-  const port = await freePort();
-  await new Promise<void>((ok) => server.listen(port, '127.0.0.1', ok));
+  const port = await listenLoopback(server, 0);
   const registry = join(tempDir(), 'registry');
   relayRegistry(app, registry, `http://127.0.0.1:${port}`);
   return { url: `http://127.0.0.1:${port}`, registry, seen, close: () => new Promise<void>((ok) => { server.closeAllConnections(); server.close(() => ok()); }) };
@@ -196,16 +195,16 @@ test('cursor plugin stop hook: superseded, Hub down, not loopback, its own park 
 });
 
 test('cursor plugin stop hook: the Hub restarting drops the park, the hook reconnects to the new Hub and gets the batch there', async () => {
-  const port = await freePort();
   const dir = tempDir();
-  let app = await pHub({ port, dir });
+  let app = await pHub({ dir });
+  const port = Number(new URL(app.url).port);
   try {
     const { cluster, c1 } = await member(app);
     // The test Hub's own registry: the restarted Hub registers there again (same hubId, new claim).
     const stop = hook('stop.mjs', hookInput(S1), app.registryDir);
     await waitFor(async () => (await statusOf(app, c1.id)) === 'idle', 'parked');
     await app.close();
-    app = await pHub({ port, dir });
+    app = await retryAddrInUse(() => pHub({ port, dir }));
     await waitFor(async () => (await statusOf(app, c1.id)) === 'idle', 'parked again', 8000);
     await app.api('POST', `/api/clusters/${cluster.id}/messages`, { body: '@C1 after the restart' });
     assert.match((await stop.json()).followup_message, /after the restart/);
@@ -277,8 +276,7 @@ test('cursor plugin tool hook: the Hub ran the call but the answer was lost: the
       out.end(Buffer.concat(chunks));
     });
   });
-  const port = await freePort();
-  await new Promise<void>((ok) => server.listen(port, '127.0.0.1', ok));
+  const port = await listenLoopback(server, 0);
   try {
     const { cluster, c1 } = await member(app);
     const placeholder: string = (await import(pathToFileURL(join(PLUGIN, 'lib', 'hub.mjs')).href)).PLACEHOLDER;
@@ -350,8 +348,7 @@ test('cursor plugin MCP program: a Hub that refuses it (401) is asked again slow
     if (status === 401) res.writeHead(401, { 'content-type': 'application/json' }).end('{"error":"unauthorized","reason":"mac"}');
     else res.writeHead(503).end();
   });
-  const port = await freePort();
-  await new Promise<void>((ok) => hub.listen(port, '127.0.0.1', ok));
+  const port = await listenLoopback(hub, 0);
   const run = () => {
     const child = spawn(process.execPath, [join(PLUGIN, 'mcp.mjs')], { env: { ...process.env, ORRERY_REGISTRY: registryFor(`http://127.0.0.1:${port}`),
       ORRERY_CURSOR_MCP_RETRY_MS: '40' }, stdio: ['pipe', 'pipe', 'pipe'] });

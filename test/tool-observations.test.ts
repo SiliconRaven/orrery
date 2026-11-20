@@ -7,7 +7,7 @@ import { Store } from '../src/core/store.ts';
 import { PluginHost } from '../src/core/plugin.ts';
 import { officialPlugins } from '../src/plugins/index.ts';
 import { ToolObservations, TOOL_OBSERVATION_STALE_MS } from '../src/core/tool-observations.ts';
-import { freePort, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { startTestHub, tempDir, waitFor } from './helpers.ts';
 
 const hash = `sha256:${'a'.repeat(64)}`;
 const client = { source: 'client', scope: 'session', profile: 'standard', fingerprint: hash };
@@ -38,7 +38,7 @@ test('real MCP calls observe only authenticated sessions, including invalid argu
   const dir = tempDir();
   const sessions = ['same', 'other'].map((id) => ({ id, title: id, model: null, cwd: dir, updatedAt: null }));
   const native = createMockNativeAdapter({ sessions });
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: native } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: native } });
   let reopened: Awaited<ReturnType<typeof startTestHub>> | undefined;
   let closed = false;
   try {
@@ -78,7 +78,7 @@ test('real MCP calls observe only authenticated sessions, including invalid argu
     app.hub.restoreCluster(second.cluster.id);
     assert.equal(obs(second.members[0].id), null, 'restoring a deleted cluster cannot revive stale observations');
     await app.close(); closed = true;
-    reopened = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: native } });
+    reopened = await startTestHub({ dir, nativeAdapters: { mock: native } });
     assert.equal(reopened.hub.toolVersionReport().find((item) => item.memberId === added.members[0].id)?.observation, null);
   } finally {
     if (!closed) await app.close();
@@ -90,7 +90,7 @@ test('the tool-version report carries the online check and the newest failed del
   const dir = tempDir();
   const sessions = ['on', 'off'].map((id) => ({ id, title: id, model: null, cwd: dir, updatedAt: null }));
   const native = createMockNativeAdapter({ sessions, kind: 'bridge' });
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: native } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: native } });
   try {
     const { cluster, members } = await app.hub.createCluster('health', [
       { harness: 'mock', mode: 'native', sessionId: 'on', name: 'ON' },
@@ -119,7 +119,7 @@ test('the connection line uses the adapter check, not the busy work state', asyn
   const sessions = [{ id: 'busy', title: 'busy', model: null, cwd: dir, updatedAt: null }];
   const gate = Promise.withResolvers<void>();
   const native = createMockNativeAdapter({ sessions, onDeliver: () => gate.promise.then(() => 'completed') });
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: native } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: native } });
   try {
     const { cluster, members } = await app.hub.createCluster('busy', [{ harness: 'mock', mode: 'native', sessionId: 'busy', name: 'B' }]);
     const member = members[0];
@@ -139,7 +139,7 @@ test('a handoff of an older failure does not become the newest failure', async (
   const dir = tempDir();
   const sessions = ['off', 'target'].map((id) => ({ id, title: id, model: null, cwd: dir, updatedAt: null }));
   const native = createMockNativeAdapter({ sessions, kind: 'bridge' });
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: native } });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: native } });
   try {
     const { cluster, members } = await app.hub.createCluster('handoff', [
       { harness: 'mock', mode: 'native', sessionId: 'off', name: 'OFF' },

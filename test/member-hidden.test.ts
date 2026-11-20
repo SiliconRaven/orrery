@@ -11,7 +11,7 @@ import { HIDDEN_DELIVERY_REASON } from '../src/core/hub.ts';
 import { saveCoordinator, coordinatorSnapshot } from '../src/plugins/coordinator/store.ts';
 import { idleTaskCandidates } from '../src/plugins/tasks/idle-candidates.ts';
 import type { Task } from '../src/core/collaboration-types.ts';
-import { freePort, startTestHub, tempDir, waitFor } from './helpers.ts';
+import { startTestHub, tempDir, waitFor } from './helpers.ts';
 
 type App = Awaited<ReturnType<typeof startTestHub>>;
 type Schema = { type?: string; enum?: unknown[]; items?: Schema; minItems?: number; properties?: Record<string, Schema>; required?: string[]; anyOf?: Schema[] };
@@ -50,7 +50,7 @@ async function fixture(options: Parameters<typeof startTestHub>[0] = {}) {
     onDeliver: async (sessionId, text) => { delivered.push({ sessionId, text }); return 'completed'; },
   });
   native.isOnline = () => true;
-  const app = await startTestHub({ dir, port: await freePort(), nativeAdapters: { mock: native }, ...options });
+  const app = await startTestHub({ dir, nativeAdapters: { mock: native }, ...options });
   const { cluster, members: [alice, hidey, cleo] } = await app.hub.createCluster('hide', [
     { harness: 'mock', mode: 'native', sessionId: 'sa', name: 'Alice' },
     { harness: 'mock', mode: 'native', sessionId: 'sb', name: 'Hidey' },

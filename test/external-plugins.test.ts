@@ -15,7 +15,7 @@ import { REPO_ROOT } from '../src/main.ts';
 import { Store } from '../src/core/store.ts';
 import type { HubEvent } from '../src/core/types.ts';
 import { findBrowser, launchBrowser } from './browser.ts';
-import { freePort, rawFetch, startTestHub, tempDir, TEST_TOKEN, waitFor } from './helpers.ts';
+import { rawFetch, startTestHub, tempDir, TEST_TOKEN, waitFor } from './helpers.ts';
 
 /** The six types API v1 started with; they keep their names and fields (docs/external-plugins.md). */
 const EXTERNAL_EVENTS = ['message.created', 'task.submitted', 'task.approved', 'task.rejected', 'task.merged', 'member.status'];
@@ -331,7 +331,7 @@ test('a response that cannot be serialized answers an error instead of hanging',
   for (let i = 0; i < 200_000; i++) deep = { next: deep };   // JSON.stringify overflows the stack on this
   const route: OfficialPlugin = { id: 'deep-response', version: '1.0.0',
     routes: [{ method: 'GET', pattern: /^\/api\/deep-response$/, handle: () => deep }] };
-  const app = await startTestHub({ port: await freePort(), plugins: [route] });
+  const app = await startTestHub({ plugins: [route] });
   try {
     const answer = await fetch(app.url + '/api/deep-response');
     assert.equal(answer.status, 400, 'the handler answers instead of leaving the response open');
@@ -658,7 +658,7 @@ test('standalone review reminder writes once for a pending review in its authori
     clusterIds: ['one', 'read-only'], writeClusterIds: ['one'],
   }] }));
 
-  const app = await startTestHub({ dir, port: await freePort() });
+  const app = await startTestHub({ dir });
   try {
     const row = (await app.api('GET', '/api/plugins')).installed.find((item: any) => item.id === 'review-reminder');
     assert.equal(row.runtime.state, 'ready');

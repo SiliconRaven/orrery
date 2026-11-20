@@ -4,10 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { CoordinatorPolicy } from '../src/core/collaboration-types.ts';
 import { coordinatorSnapshot, saveCoordinator } from '../src/plugins/coordinator/store.ts';
-import { freePort, startTestHub, waitFor } from './helpers.ts';
+import { startTestHub, waitFor } from './helpers.ts';
 
 async function fixture(options: Parameters<typeof startTestHub>[0] = {}) {
-  const app = await startTestHub({ ...options, port: await freePort() });
+  const app = await startTestHub({ ...options });
   const { cluster, members: [a, b] } = await app.hub.createCluster('routing', [
     { harness: 'mock', mode: 'native', sessionId: 's1', name: 'A' },
     { harness: 'mock', mode: 'native', sessionId: 's2', name: 'B' },
@@ -79,7 +79,7 @@ test('paused unaddressed deliveries stay with the old coordinator across restart
   assert.deepEqual(deliveries(newer.id).map((d) => [d.memberId, d.state]), [[b.id, 'queued']]);
   await app.close();
 
-  const restarted = await startTestHub({ dir: app.dir, port: await freePort() });
+  const restarted = await startTestHub({ dir: app.dir });
   try {
     restarted.hub.collaboration.command({ kind: 'user' }, cluster.id, { action: 'cluster.pause', operationId: 'resume-routing', paused: false });
     await waitFor(() => restarted.native.delivered.length >= 2, 'queued deliveries after restart');

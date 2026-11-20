@@ -9,7 +9,7 @@ import { signBridgeRequest } from '../src/bridge-protocol.ts';
 import { ZCODE_WAIT } from '../src/core/types.ts';
 import { registeredHubOnPort } from '../src/hub-registry.ts';
 import { ticketFor } from '../src/mcp/wait-core.ts';
-import { freePort, hubSecret, startTestHub, tempDir, TEST_HUB_ID, TEST_TOKEN, waitFor } from './helpers.ts';
+import { hubSecret, startTestHub, tempDir, TEST_HUB_ID, TEST_TOKEN, waitFor, withFreePort } from './helpers.ts';
 
 const whoami = '/bridge/whoami';
 const keyA = '1'.repeat(64);
@@ -194,17 +194,18 @@ test('claim refresh, explicit key reveal and persistent legacy compatibility set
 
 test('registering does not block the event loop: while the Windows ACL checks run, the Hub answers 503 "hub is starting"',
   { skip: process.platform !== 'win32' && 'the ACL checks (PowerShell) run on Windows only' }, async () => {
-    const port = await freePort();
-    let ready = false;
-    const starting = startTestHub({ port }).finally(() => { ready = true; });
-    const answers: number[] = [];
-    // Same process as the Hub: with a synchronous ACL check this loop could not run until registration ended.
-    while (!ready) {
-      try { answers.push((await fetch(`http://127.0.0.1:${port}/api/health`)).status); } catch { /* not listening yet */ }
-      await new Promise((ok) => setTimeout(ok, 20));
-    }
-    const app = await starting;
-    try {
-      assert.ok(answers.filter((s) => s === 503).length >= 2, `503 answers while registering: ${answers.join(',')}`);
-    } finally { await app.close(); }
+    await withFreePort(async (port) => {
+      let ready = false;
+      const starting = startTestHub({ port }).finally(() => { ready = true; });
+      const answers: number[] = [];
+      // Same process as the Hub: with a synchronous ACL check this loop could not run until registration ended.
+      while (!ready) {
+        try { answers.push((await fetch(`http://127.0.0.1:${port}/api/health`)).status); } catch { /* not listening yet */ }
+        await new Promise((ok) => setTimeout(ok, 20));
+      }
+      const app = await starting;
+      try {
+        assert.ok(answers.filter((s) => s === 503).length >= 2, `503 answers while registering: ${answers.join(',')}`);
+      } finally { await app.close(); }
+    });
   });
