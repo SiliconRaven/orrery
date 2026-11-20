@@ -40,8 +40,8 @@ export function checkBoundaries(sources: Source[]): string[] {
           // loadPluginSlots validates id against enabled official registry entries before invoking this loader.
           || (path === 'web/public/plugin-slots.js' && spec === '`./official-plugins/${id}.js`')
           // ...and against the Hub's list of full-trust plugins whose page module may load this start (`trustedFrontend`),
-          // which the Hub serves only for those; nothing else in the page may import a computed or absolute address.
-          || (path === 'web/public/plugin-slots.js' && spec === '`/plugin-web/${id}/`');
+          // which the Hub serves only for those, or the signed package entry validated against its id and digest.
+          || (path === 'web/public/plugin-slots.js' && ['`/plugin-web/${id}/`', 'officialEntry'].includes(spec));
       } else if (area === 'main.ts') ok = true;
       else if (area === 'config.ts') ok = false;                  // node built-ins only
       else if (area === 'launcher.ts') ok = target === 'config.ts' || target === 'hub-registry.ts'; // local discovery and HTTP only
@@ -50,6 +50,12 @@ export function checkBoundaries(sources: Source[]): string[] {
       else if (area === 'update-check.ts') ok = false;
       else if (area === 'plugin-install.ts') ok = target === 'plugin-install-archive.ts' || Boolean(target?.startsWith('core/'));
       else if (area === 'plugin-install-archive.ts') ok = ['tar', 'yauzl'].includes(spec);
+      else if (area === 'official-plugin-package.ts') ok = target === 'plugin-install-archive.ts' || target === 'update-check.ts';
+      else if (area === 'official-plugin-selection.ts') ok = target === 'update-check.ts';
+      else if (area === 'official-plugin-updates.ts') ok = spec === 'zod' || [
+        'core/native-transcript.ts', 'core/plugin.ts', 'plugin-install-archive.ts',
+        'official-plugin-package.ts', 'official-plugin-selection.ts', 'update-check.ts',
+      ].includes(target ?? '');
       else if (area === 'core') ok = target !== null && target.startsWith('core/')
         || (path === 'core/app-extensions.ts' && spec === 'smol-toml');   // data-only parsing of the app's TOML config
       else if (area === 'adapters') {
@@ -66,6 +72,7 @@ export function checkBoundaries(sources: Source[]): string[] {
         ok = target === null || target === '../plugins/shared/hub-discovery.mjs';
       } else if (area === 'mcp' || area === 'web') {
         ok = target === null || target.startsWith('core/') || target.startsWith(`${area}/`)
+          || (path === 'web/server.ts' && target === 'official-plugin-updates.ts')
           || (area === 'mcp' && target === 'bridge-protocol.ts');
       } else if (area === 'plugins') {
         // plugins/<id>/* may import core, its own folder and npm packages; only the registry (plugins/index.ts) imports
@@ -105,6 +112,7 @@ test('browser dependency rules reject Node, backend, desktop and computed import
     { path: 'web/public/official-plugins/bookmarks.js', code: "import { Hub } from '../../../core/hub.ts';" },
     { path: 'web/public/app.js', code: "export * from '../../core/system-kinds.js';" },
     { path: 'web/public/app.js', code: 'import(target);' },
+    { path: 'web/public/app.js', code: 'import(officialEntry);' },
     { path: 'web/public/app.js', code: "import('./' + target);" },
     { path: 'web/public/plugin-slots.js', code: 'import(`./${target}.js`);' },
     { path: 'web/public/app.js', code: "require('node:fs');" },
@@ -121,6 +129,7 @@ test('browser dependency rules reject Node, backend, desktop and computed import
     { path: 'web/public/system-kinds.js', code: "export * from '../../core/system-kinds.js';" },
     { path: 'web/public/plugin-slots.js', code: 'const load = (id) => import(`./official-plugins/${id}.js`);' },
     { path: 'web/public/plugin-slots.js', code: 'const loadTrusted = (id) => import(`/plugin-web/${id}/`);' },
+    { path: 'web/public/plugin-slots.js', code: 'const loadOfficial = (officialEntry) => import(officialEntry);' },
   ]), []);
 });
 

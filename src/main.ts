@@ -32,6 +32,7 @@ import { handleMcp, toolLists } from './mcp/server.ts';
 import { cacheToolFingerprints, fingerprintsOf } from './mcp/tool-fingerprint.ts';
 import { handleWeb, type WebControl } from './web/server.ts';
 import { PluginInstaller } from './plugin-install.ts';
+import { OfficialPluginUpdates, type OfficialUpdateOptions } from './official-plugin-updates.ts';
 import { UpdateChecker } from './update-check.ts';
 
 export { REPO_ROOT };
@@ -77,6 +78,7 @@ export interface StartOptions {
   updateChecker?: UpdateChecker;
   enableUpdateChecks?: boolean;
   pluginInstaller?: WebControl['pluginInstaller'];
+  officialUpdates?: OfficialUpdateOptions;
   /** How long a full-trust entry may take to import and answer its default export; tests shorten LOAD_TIMEOUT_MS. */
   trustedLoadTimeoutMs?: number;
   /** Third-party plugin lifecycle timings (backoff, window, debounce, grace, watch); tests shorten them. Absent: the defaults. */
@@ -277,10 +279,10 @@ export async function startHub(opts: StartOptions) {
     registration = await registerHub(registryDir, { home, url, name: opts.name ?? 'Orrery', secondary: opts.secondary });
     const { secret, record, keyPath } = registration;
     const apiToken = opts.apiToken ?? loadSecret(join(home, 'api-token'), API_TOKEN_RE, () => randomBytes(32).toString('base64url'));
-    const base = opts.plugins ?? officialPlugins;
-    const builtInIds = base.map((p) => p.id);
-    updates = opts.updateChecker ?? new UpdateChecker({ home,
-      currentVersion: JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version });
+    const builtins = opts.plugins ?? officialPlugins;
+    const builtInIds = builtins.map((p) => p.id);
+    const currentVersion: string = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
+    updates = opts.updateChecker ?? new UpdateChecker({ home, currentVersion });
     const npmCli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
     const pluginInstaller = opts.pluginInstaller ?? new PluginInstaller({ home, knownPluginIds: builtInIds,
       ...(existsSync(npmCli) ? { npmCli } : {}) });
@@ -290,6 +292,11 @@ export async function startHub(opts: StartOptions) {
     const envDisabled = opts.disabledPlugins ?? [];
     const pluginsFile = readPluginsFile(home);
     const fileDisabled = pluginsFile.disabled;
+    const officialUpdates = new OfficialPluginUpdates({
+      home, dbPath: opts.dbPath === ':memory:' ? ':memory:' : dbPath, hubVersion: currentVersion, builtins,
+      switches: () => readPluginsFile(home), envDisabled, ...opts.officialUpdates,
+    });
+    const base = await officialUpdates.boot();
     // Full-trust plugins (docs/external-plugins.md「完全信任的插件」): which may run is decided from data alone (safe
     // mode, the confirmation in plugins.json for the entry's real path, the registration) before anything is imported;
     // only those are imported, and each that fails to load or to fit is left out with its dependents.
@@ -323,11 +330,12 @@ export async function startHub(opts: StartOptions) {
     // even if it does not have a migration record yet.
     const keptOut = external.failures.some((failure) => failure.trust === 'full')
       || trusted.ids().some((id) => !loadedTrusted.some((p) => p.id === id));
+    let upgradeReady = false;
     store = new Store(opts.dbPath, pluginHost, opts.dbMode, undefined, { backup: () => {
       const made = upgrade.backup();
       console.log(`database backed up before the schema upgrade: ${made}`);
       return made;
-    }, done: () => { if (!keptOut) upgrade.done(); } });
+    }, done: () => { upgradeReady = !keptOut; } });
     if (store.journalWarning) console.error(store.journalWarning);
     // Attachments live in <home>/files; native members attach only what they put in <home>/outbox, never orrery's
     // own files under any name (docs/files.md).
@@ -386,9 +394,12 @@ export async function startHub(opts: StartOptions) {
       avatarDir: opts.avatarDir,
       updates,
       pluginInstaller,
+      officialUpdates,
       trusted,
       extensions: new AppExtensions({ home: opts.appHome, env: opts.appEnv, sharedDir: opts.skillsDir }),
     };
+    officialUpdates.commitBoot();
+    if (upgradeReady) upgrade.done();
     opened = { hub, store, secret, control, authenticate: createBridgeAuthenticator(secret, record, () => allowLegacy) };
     await writeDiscovery(home, { url, secret, pid: process.pid, hubId: record.hubId });
     discoveryWritten = true;

@@ -20,7 +20,7 @@ import { createPluginConfig } from './plugin-config.js';
 import { initSettings } from './settings.js';
 import { mountPluginInstall } from './plugin-install.js';
 import { mountUpdates } from './updates.js';
-import { detachPluginSlots, loadPluginSlots, trustedChange, trustNoticeText } from './plugin-slots.js';
+import { detachPluginSlots, loadPluginSlots, staleOfficialPackages, trustedChange, trustNoticeText } from './plugin-slots.js';
 import { createViewHost } from './plugin-view.js';
 import { formDialog } from './workbench-form.js';
 import { createPluginUi, themeSnapshot } from './plugin-ui.js';
@@ -879,6 +879,7 @@ async function checkHub() {
       pluginsStart = start;
       legacyPluginsPid = start === null ? health.pid : null;
       trustedPluginsChanged(now);
+      detachPluginSlots(pluginSlots, staleOfficialPackages(pluginSlots, now));
     }
     hubCheckPending = false;
     const content = unsaved();

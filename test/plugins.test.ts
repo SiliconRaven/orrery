@@ -347,7 +347,8 @@ test('api: GET lists what is installed; PUT only changes the next start, which t
   try {
     const before = await first.api('GET', '/api/plugins');
     assert.deepEqual(before.installed, [{ id: 'bookmarks', version: '0.10.0-beta.2', requires: [], name: '收藏', description: onlyBookmarks[0].description,
-      details: onlyBookmarks[0].details, iconUrl: '/official-plugins/bookmarks.svg', enabled: true, disabledByEnv: false, pendingEnabled: true }]);
+      details: onlyBookmarks[0].details, iconUrl: '/official-plugins/bookmarks.svg', enabled: true, disabledByEnv: false, pendingEnabled: true,
+      officialUpdate: { source: 'bundled' } }]);
     const after = await first.api('PUT', '/api/plugins/bookmarks', { enabled: false });
     assert.deepEqual(after.plugins, [{ id: 'bookmarks', version: '0.10.0-beta.2' }], 'still running until the Hub restarts');
     assert.equal(after.installed[0].enabled, true);

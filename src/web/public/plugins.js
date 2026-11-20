@@ -1,4 +1,4 @@
-import { onLanguageChange, t } from './i18n.js';
+import { language, onLanguageChange, t } from './i18n.js';
 // The 插件 section of the settings dialog (docs/plugins.md): one card per plugin, official and third-party in two groups.
 // Everything a plugin's manifest says (name, description, details, commands) reaches the page only as text nodes, and
 // its icon only as an <img src> the Hub serves; nothing from a plugin is ever parsed as HTML.
@@ -11,6 +11,14 @@ const RATES = [
 ];
 const canMention = (plugin) => plugin.permissions.includes('messages.mention');
 const pluginText = (plugin, text) => plugin.origin === 'external' || plugin.origin === 'trusted' ? text : t(text);
+const official = (plugin) => plugin.origin !== 'external' && plugin.origin !== 'trusted';
+const pluginField = (plugin, field) => {
+  const update = official(plugin) && plugin.officialUpdate;
+  const english = update?.english?.[field];
+  if (language() === 'en' && typeof english === 'string') return english;
+  return update?.source === 'package' ? plugin[field] : pluginText(plugin, plugin[field]);
+};
+const OFFICIAL_UPDATES = '/api/plugins/official-updates';
 const WAKE_WARNING = '开启后，插件点名可能唤醒成员并消耗模型用量。';
 const GATE_NOTE = '发言检查（messages.gate）：可以在群员发言前拒绝这条发言（不能修改内容），只在上面的群里生效。每次拒绝都在群聊里留一条记录；插件没有及时回答时，发言照常放行。';
 // Only the two places the Hub serves icons from (GET /api/plugins builds them); anything else gets the default icon.
@@ -409,24 +417,41 @@ function toolsChip(plugin) {
     : h('span', { 'data-plugin-tools-chip': plugin.id, hidden: true });
 }
 
+function officialUpdateView(plugin, candidate, busy, review) {
+  const update = plugin.officialUpdate;
+  if (!official(plugin) || !update) return null;
+  if (update.source !== 'package' && !update.pendingVersion && !update.error && !candidate) return null;
+  return h('div', { class: 'plugin-chips' },
+    update.source === 'package' ? chip(t('独立安装包')) : null,
+    update.pendingVersion ? chip(t('待重启版本 {version}', { version: update.pendingVersion }), 'pending') : null,
+    update.error ? h('p', { class: 'plugin-error' }, t('最近更新失败：{reason}', { reason: update.error.message })) : null,
+    candidate && !update.pendingVersion
+      ? (candidate.compatible
+        ? h('button', { type: 'button', class: 'small', 'data-plugin-update': plugin.id, 'aria-haspopup': 'dialog',
+          disabled: busy, onclick: () => review(plugin, candidate) }, t('审阅更新 {version}', { version: candidate.version }))
+        : chip(t('版本 {version} 与当前 Hub 不兼容', { version: candidate.version })))
+      : null);
+}
+
 /**
  * One card for a row of GET /api/plugins' `installed`. The switch shows what the next start will do. A third-party
  * card's live part (pluginRuntimeView) calls `act(plugin, action)` with 'start', 'stop', 'restart' or a switch change
  * `{autoRestart}` / `{devReload}`. `grant` is the last snapshot read for the details and tool count; editable controls use `plugin`.
  */
-export function pluginRow(plugin, installed, busy, toggle, saveWrite, expanded = new Set(), act = () => {}, configure, grant = plugin, setTrust) {
+export function pluginRow(plugin, installed, busy, toggle, saveWrite, expanded = new Set(), act = () => {}, configure, grant = plugin, setTrust, updateView) {
   const nameOf = (id) => {
     const dependency = installed.find((p) => p.id === id);
-    return dependency ? pluginText(dependency, dependency.name) : id;
+    return dependency ? pluginField(dependency, 'name') : id;
   };
   const note = (text, cls = 'limit-source muted') => h('p', { class: cls }, text);
   const external = plugin.origin === 'external';
-  const users = installed.filter((p) => p.requires?.includes(plugin.id)).map((p) => p.name ? pluginText(p, p.name) : p.id);
+  const users = installed.filter((p) => p.requires?.includes(plugin.id)).map((p) => p.name ? pluginField(p, 'name') : p.id);
   const state = pluginState(plugin);
   const detailsId = `plugin-details-${plugin.id}`;
   const open = expanded.has(plugin.id);
+  const name = pluginField(plugin, 'name');
   const panel = h('div', { id: detailsId, class: 'plugin-details', hidden: !open },
-    plugin.details ? detailsView(pluginText(plugin, plugin.details)) : note(t("这个插件没有写详细说明。")),
+    plugin.details ? detailsView(pluginField(plugin, 'details')) : note(t("这个插件没有写详细说明。")),
     plugin.detailsTruncated ? note(t("说明超过 4000 字，后面的部分没有显示。")) : null,
     external ? pluginGrantView(grant) : null,
     plugin.writeSettings ? pluginWriteForm(plugin, busy, saveWrite) : null);
@@ -437,17 +462,17 @@ export function pluginRow(plugin, installed, busy, toggle, saveWrite, expanded =
       disclosure.setAttribute('aria-expanded', String(now));
       panel.hidden = !now;
     } }, h('span', {}, t("详情")));
-  return h('article', { class: `plugin-card ${state.tone}`, 'aria-label': pluginText(plugin, plugin.name) },
+  return h('article', { class: `plugin-card ${state.tone}`, 'aria-label': name },
     h('div', { class: 'plugin-card-head' },
       pluginIcon(plugin),
       h('div', { class: 'plugin-title' },
-        h('p', {}, h('b', { class: 'limit-label' }, pluginText(plugin, plugin.name)), ' ', h('span', { class: 'muted' }, plugin.version),
+        h('p', {}, h('b', { class: 'limit-label' }, name), ' ', h('span', { class: 'muted' }, plugin.version),
           external ? h('span', { class: 'plugin-chip third-party' }, t("第三方")) : null,
           plugin.trust ? h('span', { class: 'plugin-chip third-party full-trust', 'data-full-trust': plugin.id }, t('完全信任')) : null),
-        plugin.description ? h('p', { class: 'muted' }, pluginText(plugin, plugin.description)) : null),
+        plugin.description ? h('p', { class: 'muted' }, pluginField(plugin, 'description')) : null),
       h('label', { class: 'plugin-switch' },
         h('input', {
-          type: 'checkbox', role: 'switch', 'aria-label': t("启用{name}", { name: pluginText(plugin, plugin.name) }), 'aria-describedby': 'plugin-restart-note', 'data-plugin': plugin.id,
+          type: 'checkbox', role: 'switch', 'aria-label': t("启用{name}", { name }), 'aria-describedby': 'plugin-restart-note', 'data-plugin': plugin.id,
           checked: plugin.pendingEnabled, disabled: busy || plugin.disabledByEnv || plugin.unavailable,
           onchange: (event) => toggle(plugin, event.target.checked),
         }), h('span', {}, t("启用")))),
@@ -460,6 +485,7 @@ export function pluginRow(plugin, installed, busy, toggle, saveWrite, expanded =
         'data-plugin-config': plugin.id, 'aria-haspopup': 'dialog', disabled: busy,
         onclick: (event) => configure(plugin, event.currentTarget) }, t('配置')) : null,
       disclosure),
+    updateView,
     external ? pluginRuntimeView(plugin, busy, act) : null,
     pluginTrustView(plugin, busy, setTrust),
     plugin.trustConflict ? note(t('另一个完全信任插件的登记用了同样的 ID，没有加载：{conflict}', { conflict: plugin.trustConflict }), 'plugin-error') : null,
@@ -470,9 +496,10 @@ export function pluginRow(plugin, installed, busy, toggle, saveWrite, expanded =
     panel);
 }
 
-function pluginGroup(title, hint, cards, empty) {
+function pluginGroup(title, hint, cards, empty, actions) {
   return h('section', { class: 'plugin-group', 'aria-label': title },
     h('div', { class: 'plugin-group-head' }, h('h4', {}, title), h('p', { class: 'muted' }, hint)),
+    actions,
     cards.length ? cards : emptyState(empty, { compact: true }));
 }
 
@@ -494,6 +521,8 @@ export function createPluginSettings(api, list, configure) {
   let installed = [];
   let skippedRegistrations = [];
   let busy = false;
+  let instance = null;
+  let candidates = null;
   const expanded = new Set();   // ids whose details are open; kept across redraws
   const cards = new Map();      // id → its card as drawn last
   const early = new Map();      // id → newest frame and last transition to ready before the first list
@@ -502,16 +531,24 @@ export function createPluginSettings(api, list, configure) {
   const draw = (isBusy) => {
     busy = isBusy;
     cards.clear();
+    const officialRows = installed.filter(official);
+    const updatePending = officialRows.some((plugin) => plugin.officialUpdate?.pendingVersion);
     const card = (plugin) => {
       const grant = grants.get(plugin.id)?.row;
-      const el = pluginRow(plugin, installed, busy, toggle, saveWrite, expanded, act, configure, grant, setTrust);
+      const choices = candidates?.filter(({ id }) => id === plugin.id) ?? [];
+      const update = officialUpdateView(plugin, choices.find((row) => row.compatible) ?? choices[0], busy || updatePending, reviewUpdate);
+      const el = pluginRow(plugin, installed, busy, toggle, saveWrite, expanded, act, configure, grant, setTrust, update);
       cards.set(plugin.id, el);
       return el;
     };
+    const updateAction = officialRows.some((plugin) => plugin.officialUpdate) ? h('div', { class: 'plugin-chips' },
+      h('button', { type: 'button', class: 'small', 'data-official-update-check': '', disabled: busy, onclick: checkUpdates },
+        t('检查官方插件更新')),
+      candidates?.length === 0 ? h('span', { class: 'muted', role: 'status' }, t('没有发现官方插件更新')) : null) : null;
     list.replaceChildren(
-      pluginGroup(t('官方插件'), t('随 orrery 提供，在 Hub 进程里运行。'), installed.filter((p) => p.origin !== 'external' && p.origin !== 'trusted').map(card), t('没有官方插件。')),
+      pluginGroup(t('官方插件'), t('由 orrery 发布，在 Hub 进程里运行。'), officialRows.map(card), t('没有官方插件。'), updateAction),
       pluginGroup(t('第三方插件'), t('你在 external-plugins.json 里登记的插件：受限插件是独立进程，按授权工作；标着“完全信任”的在 Hub 进程里运行，和 orrery 权限相同。只运行你信任的代码。'),
-        [...installed.filter((p) => p.origin === 'external' || p.origin === 'trusted').map(card), ...skippedRegistrations.map(skippedRegistrationCard)],
+        [...installed.filter((p) => !official(p)).map(card), ...skippedRegistrations.map(skippedRegistrationCard)],
         t('还没有第三方插件。可以在下方安装。')));
   };
 
@@ -555,6 +592,8 @@ export function createPluginSettings(api, list, configure) {
       return;
     }
     if (answer) {
+      if (snapshot.instance !== instance) candidates = null;
+      instance = snapshot.instance;
       skippedRegistrations = snapshot.skippedRegistrations ?? [];
       installed = mergeInstalled(installed, answer);
       const ids = new Set(answer.map((row) => row.id));
@@ -570,6 +609,7 @@ export function createPluginSettings(api, list, configure) {
       }
       early.clear();
     }
+    if (snapshot?.officialCandidates) candidates = snapshot.officialCandidates;
     draw(false);
     // The first selector that still matches: a button that went away with the new state hands focus to its neighbour.
     for (const selector of [focusSelector ?? []].flat()) {
@@ -652,6 +692,34 @@ export function createPluginSettings(api, list, configure) {
 
   function toggle(plugin, enabled) {
     return run(() => api('PUT', `/api/plugins/${encodeURIComponent(plugin.id)}`, { enabled }), t("操作插件失败"), `[data-plugin="${plugin.id}"]`);
+  }
+
+  function checkUpdates() {
+    if (busy) return;
+    return run(async () => ({ officialCandidates: (await api('POST', OFFICIAL_UPDATES + '/check', {})).candidates }),
+      t('检查官方插件更新失败'), '[data-official-update-check]');
+  }
+
+  function reviewUpdate(plugin, { version }) {
+    if (busy) return;
+    return run(async () => {
+      const prepared = await api('POST', OFFICIAL_UPDATES + '/prepare', { id: plugin.id, version });
+      const agreed = await confirmDialog(liveAsk(() => ({
+        title: t('确认更新官方插件？'),
+        message: t('{name} 将从 {current} 更新到 {version}。包已通过校验，共声明 {steps} 个迁移步骤，重启 Hub 后生效。', {
+          name: pluginField(plugin, 'name'), current: plugin.version, version: prepared.version, steps: prepared.migrationVersion,
+        }),
+        confirmText: t('确认更新'),
+      })));
+      if (!agreed) {
+        await api('DELETE', OFFICIAL_UPDATES + '/prepared/' + encodeURIComponent(prepared.prepareId));
+        return;
+      }
+      const result = await api('POST', OFFICIAL_UPDATES + '/confirm', { prepareId: prepared.prepareId });
+      installed = installed.map((row) => row.id === result.id
+        ? { ...row, officialUpdate: { ...row.officialUpdate, pendingVersion: result.version } } : row);
+      return api('GET', '/api/plugins');
+    }, t('更新官方插件失败'), [`[data-plugin-update="${plugin.id}"]`, '[data-official-update-check]']);
   }
 
   async function saveWrite(plugin, { body, confirm }) {

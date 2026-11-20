@@ -83,6 +83,10 @@ globalThis.addEventListener?.('storage', (event) => {
 export function t(msgid, params = {}) {
   const source = String(msgid);
   const text = language() === 'en' && Object.hasOwn(english, source) ? english[source] : source;
+  return interpolate(text, params);
+}
+
+export function interpolate(text, params = {}) {
   return text.replace(/{([A-Za-z_]\w*)}/g, (match, name) => Object.hasOwn(params, name) ? String(params[name]) : match);
 }
 

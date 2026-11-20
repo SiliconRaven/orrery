@@ -31,6 +31,7 @@ tmp/
 secrets/
 external-plugins.json
 plugin-packages/
+/official-plugins/
 updates.json
 bridge-secret
 hub-id

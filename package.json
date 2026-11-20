@@ -14,6 +14,7 @@
     "shortcut": "node src/launcher.ts --create-shortcut",
     "backup": "node src/backup.ts",
     "plugin:inspect": "node scripts/plugin-inspect.ts",
+    "plugin:pack-official": "node scripts/pack-official-plugin.ts",
     "ship": "node scripts/ship.ts",
     "check:health": "knip --no-progress --dependencies --files --cycles",
     "bench:collaboration": "node scripts/bench-collaboration.ts",

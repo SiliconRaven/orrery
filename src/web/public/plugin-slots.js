@@ -1,18 +1,18 @@
-// Browser entries: local assets named by the Hub's enabled first-party registry, and the page modules of the enabled
-// full-trust plugins that loaded this start, which the Hub serves read-only from their folder (/plugin-web/<id>/).
-// A full-trust plugin is one unit in the page: everything it gets through its host (slots, cleanup functions, dialogs)
-// is released together (release), when its registration fails or when its trust ends while the page is open
-// (detachPluginSlots). Its code itself stays in the page until the page reloads (docs/external-plugins.md「网页模块」).
+// Enabled modules come from the bundled directory, a selected official package, or a full-trust plugin's folder.
+// An independently loaded module's slots and host handles are released together when it stops being the current
+// selection. Its code stays in the page until reload.
+import { interpolate, language, onLanguageChange } from './i18n.js';
+import { lt } from './ui.js';
 
 const ID = /^[a-z][a-z0-9-]*$/;
-/** How long a full-trust page module may take to import before the page starts without it. */
+/** How long an independently loaded module may take to import before the page starts without it. */
 const IMPORT_TIMEOUT_MS = 5000;
-/** Full-trust plugins released in this page (detached, or failed): never called again, never attached again. */
+/** Plugins released in this page (detached, or failed): never called again, never attached again. */
 const released = new Set();
 const pendingRelease = new Set();
 /** Whether a full-trust plugin is released, or about to be, in this page (its callbacks are no longer called). */
 export const isInactive = (id) => released.has(id) || pendingRelease.has(id);
-/** Each full-trust plugin's own cleanup functions (host.onDispose), run once when it is released. */
+/** Each detachable plugin's own cleanup functions (host.onDispose), run once when it is released. */
 const disposers = new Map();
 
 const warnOf = (label) => (error) => { console.warn(`plugin UI failed in ${label}`, error); };
@@ -220,7 +220,7 @@ function keepTypedInput(fields) {
 }
 
 /**
- * Releases one full-trust plugin, at once and for good: its slots leave `slots`, every element it rendered through a
+ * Releases one detachable plugin, at once and for good: its slots leave `slots`, every element it rendered through a
  * slot or its host's dialogs is removed (what the user typed into them is kept in the host's own notice), its cleanup
  * functions run once, and its host handles refuse from now on. `slots.onRelease` lets the page follow (workbench tabs,
  * a redraw). Used for a registration that failed and for a detach. Its open full-page view, if any, is closed in between
@@ -230,6 +230,7 @@ function release(slots, id, root = globalThis.document) {
   if (released.has(id)) return;
   released.add(id);
   pendingRelease.delete(id);
+  slots.officialPackages?.delete(id);
   for (const name of SLOTS) {
     const list = slots[name] ?? [];
     for (let i = list.length - 1; i >= 0; i--) if (list[i].pluginId === id) list.splice(i, 1);
@@ -249,12 +250,12 @@ function release(slots, id, root = globalThis.document) {
 }
 
 /**
- * The host a full-trust page module's register gets: the shared page helpers (`ui`), `api`, `nameOf`, `command` and
+ * The host a detachable page module's register gets: the shared page helpers (`ui`), `api`, `nameOf`, `command` and
  * `onDispose(fn)` for its own cleanup (timers, listeners). Once the plugin is released, `api`, `command` and the dialog
  * helpers refuse; the dialogs it opened are removed with the rest of what it rendered, and its notice or confirm
  * dialogs still waiting in the page's dialog queue are dropped (`skip`) instead of opening.
  */
-function trustedHost(id, host) {
+function detachableHost(id, host) {
   const refusal = () => new Error(`plugin ${id} was detached from this page; reload the page`);
   const live = (fn) => (...args) => (isInactive(id) ? Promise.reject(refusal()) : fn(...args));
   const ui = host.ui ?? {};
@@ -285,11 +286,11 @@ function trustedHost(id, host) {
 }
 
 /**
- * Adds one module's slots; every entry carries its plugin's id (`pluginId`) so release can take it out. `fail` (full-
- * trust only): a factory the host calls later that hands back a promise or a value of the wrong shape releases the whole
+ * Adds one module's slots; every entry carries its plugin's id (`pluginId`) so release can take it out. `fail` is used
+ * for a detachable module whose factory hands back a promise or a value of the wrong shape; it releases the whole
  * plugin (after the current call, so the host's own loop over the slots is not disturbed).
  */
-function addSlots(slots, id, hooks, own, fail = null, hasIcon = spriteHas) {
+function addSlots(slots, id, hooks, own, fail = null, hasIcon = spriteHas, trusted = own !== null) {
   const mark = (entry) => Object.assign(entry, { pluginId: id });
   const view = hooks.view;
   if (isThenable(view)) catchThenable(view, `${id}.view`);   // refused below; its later rejection is only logged
@@ -309,7 +310,7 @@ function addSlots(slots, id, hooks, own, fail = null, hasIcon = spriteHas) {
     slots[name].push(mark(protect(`${id}.${name}`, factory, own, true)));
   }
   // The view host (plugin-view.js) calls mount and unmount itself, each in its own guard, and unmount once per opening.
-  if (view) slots.view.push(mark({ icon: view.icon, trusted: own !== null,
+  if (view) slots.view.push(mark({ icon: view.icon, trusted,
     title() {
       if (typeof view.title === 'string') return view.title;
       try {
@@ -340,20 +341,74 @@ const withTimeout = (promise, what) => {
     .finally(() => clearTimeout(timer));
 };
 
+// Bind the address to an official id and a package digest, with no URL-normalized path segments.
+function officialAssetRoot(path, id) {
+  if (typeof path !== 'string' || !/^\/official-plugin-web\/[a-z][a-z0-9-]*\/[a-f0-9]{64}\/[A-Za-z0-9_.~%/-]+$/.test(path)) return null;
+  const [, , owner, digest, ...segments] = path.split('/');
+  if (owner !== id || !segments.every((segment) => {
+    try {
+      const name = decodeURIComponent(segment);
+      return name && name !== '.' && name !== '..' && !/[\\/#?%\u0000-\u001f\u007f]/.test(name);
+    } catch { return false; }
+  })) return null;
+  return `/official-plugin-web/${owner}/${digest}/`;
+}
+
+function officialEntries(result, running) {
+  const entries = new Map();
+  for (const row of Array.isArray(result?.officialFrontend) ? result.officialFrontend : []) {
+    const id = row?.id;
+    if (typeof id !== 'string' || !running.has(id) || !ID.test(id) || entries.has(id)) continue;
+    const root = officialAssetRoot(row.entry, id);
+    if (!root || !/\.(?:js|mjs)$/.test(row.entry) || (row.english !== undefined
+      && (officialAssetRoot(row.english, id) !== root || !row.english.endsWith('.json')))) continue;
+    entries.set(id, { id, entry: row.entry, english: row.english });
+  }
+  return entries;
+}
+
+async function readEnglish(path) {
+  const response = await fetch(path, { mode: 'same-origin', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(IMPORT_TIMEOUT_MS) });
+  if (!response.ok) throw new Error('could not load official plugin translations');
+  return response.json();
+}
+
+function packageI18n(english, onDispose) {
+  if (!english || typeof english !== 'object' || Array.isArray(english) || Object.values(english).some((value) => typeof value !== 'string')) {
+    throw new Error('official plugin translations must be an object of strings');
+  }
+  const t = (msgid, params) => {
+    const source = String(msgid);
+    return interpolate(language() === 'en' && Object.hasOwn(english, source) ? english[source] : source, params);
+  };
+  return Object.freeze({
+    t,
+    lt: (msgid, params) => lt(() => t(msgid, params)),
+    onLanguageChange(fn) {
+      const unsubscribe = onLanguageChange(fn);
+      onDispose(unsubscribe);
+      return unsubscribe;
+    },
+  });
+}
+
 /**
  * Loads each listed module and collects its slots. `result` is GET /api/plugins: `frontend` names official modules,
- * `trustedFrontend` the full-trust plugins whose page module may load; either must also be running (`plugins`). A
- * module exports `register(host)` and returns the slots message, composer, workbench, settings and view (checked: SLOTS,
- * MESSAGE, TAB, checkView; `hasIcon` tells the page's icons). A full-trust module that fails to load, register or fit is
- * released as a whole (release). For a later comparison: `tried`, the full-trust plugins this page tried to load, and
+ * `officialFrontend` names selected signed package entries, and `trustedFrontend` names full-trust plugins.
+ * Each must also be running (`plugins`). A module exports `register(host)` and returns the slots message, composer,
+ * workbench, settings and view (checked: SLOTS, MESSAGE, TAB, checkView; `hasIcon` tells the page's icons). A detachable
+ * module that fails is released as a whole. For a later comparison: `tried`, the full-trust plugins this page tried to load, and
  * `trusted`, those attached (registered their slots and not failed since).
  */
 export async function loadPluginSlots(result, host, load = (id) => import(`./official-plugins/${id}.js`),
-  loadTrusted = (id) => import(`/plugin-web/${id}/`), hasIcon = spriteHas) {
-  const slots = { message: [], composer: [], workbench: [], settings: [], view: [], trusted: [], tried: [], onRelease: null, closeView: null };
-  const running = new Set(result?.plugins.map((plugin) => plugin.id));
+  loadTrusted = (id) => import(`/plugin-web/${id}/`), hasIcon = spriteHas,
+  { loadOfficial = (officialEntry) => import(officialEntry), loadEnglish = readEnglish } = {}) {
+  const slots = { message: [], composer: [], workbench: [], settings: [], view: [], trusted: [], tried: [],
+    officialPackages: new Map(), onRelease: null, closeView: null };
+  const running = new Set(result?.plugins?.map((plugin) => plugin.id));
+  const packages = officialEntries(result, running);
   for (const id of new Set(result?.frontend)) {
-    if (typeof id !== 'string' || !ID.test(id) || !running.has(id)) continue;
+    if (typeof id !== 'string' || !ID.test(id) || !running.has(id) || packages.has(id)) continue;
     try {
       const { register } = await load(id);
       addSlots(slots, id, register(host), null, null, hasIcon);
@@ -362,11 +417,16 @@ export async function loadPluginSlots(result, host, load = (id) => import(`./off
     }
   }
   const trusted = [...new Set(Array.isArray(result?.trustedFrontend) ? result.trustedFrontend : [])]
-    .filter((id) => typeof id === 'string' && ID.test(id) && running.has(id));
+    .filter((id) => typeof id === 'string' && ID.test(id) && running.has(id) && !packages.has(id));
+  const entries = [...packages.values(), ...trusted.map((id) => ({ id, entry: undefined, english: undefined }))];
   // Imported side by side, each within its time limit, so a module that never finishes cannot hold up the page.
-  const modules = await Promise.allSettled(trusted.map((id) => withTimeout(Promise.resolve().then(() => loadTrusted(id)), `importing plugin ${id}'s page module`)));
-  for (const [i, id] of trusted.entries()) {
-    slots.tried.push(id);
+  const modules = await Promise.allSettled(entries.map(({ id, entry, english }) => withTimeout(
+    Promise.resolve().then(() => entry
+      ? Promise.all([loadOfficial(entry), english ? loadEnglish(english) : {}])
+      : Promise.all([loadTrusted(id), {}])), `importing plugin ${id}'s page module`)));
+  for (const [i, record] of entries.entries()) {
+    const { id, entry } = record;
+    if (!entry) slots.tried.push(id);
     // A factory found wrong later: no longer attached (no notice, nothing to offer), released after the host's call.
     const fail = (error) => {
       if (isInactive(id)) return;
@@ -378,11 +438,14 @@ export async function loadPluginSlots(result, host, load = (id) => import(`./off
     };
     try {
       if (modules[i].status === 'rejected') throw modules[i].reason;
-      const hooks = modules[i].value.register(trustedHost(id, host));
+      const [module, dictionary] = modules[i].value;
+      const own = detachableHost(id, host);
+      const hooks = module.register(entry ? Object.freeze({ ...own, i18n: packageI18n(dictionary, own.onDispose) }) : own);
       if (isThenable(hooks)) catchThenable(hooks, `${id}.register`);
       checkHooks(hooks);
-      addSlots(slots, id, hooks, id, fail, hasIcon);
-      slots.trusted.push(id);
+      addSlots(slots, id, hooks, id, fail, hasIcon, !entry);
+      if (entry) slots.officialPackages.set(id, record);
+      else slots.trusted.push(id);
     } catch (error) {
       console.warn(`plugin UI failed to load: ${id}`, error);
       release(slots, id);   // whatever it took during register: cleanup functions, dialogs, host handles
@@ -398,6 +461,13 @@ export async function loadPluginSlots(result, host, load = (id) => import(`./off
  */
 export function detachPluginSlots(slots, ids, root = globalThis.document) {
   for (const id of ids) release(slots, id, root);
+}
+
+/** Old package code leaves the slots at restart. The host reload path preserves drafts before loading another version. */
+export function staleOfficialPackages({ officialPackages = new Map() }, now) {
+  const current = officialEntries(now, new Set(now?.plugins?.map((plugin) => plugin.id)));
+  return [...officialPackages].filter(([id, old]) => current.get(id)?.entry !== old.entry || current.get(id)?.english !== old.english)
+    .map(([id]) => id);
 }
 
 /** Whether a full-trust plugin was released in this page. */

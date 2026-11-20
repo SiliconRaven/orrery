@@ -18,6 +18,7 @@ import { isNotifySetting, NOTIFY_SETTINGS } from '../core/notify-settings.ts';
 import type { PluginSettings } from '../core/plugin-settings.ts';
 import { TrustRefusal, type TrustedPlugins } from '../core/trusted-plugins.ts';
 import type { HubEvent, ToolFingerprints } from '../core/types.ts';
+import type { OfficialPluginUpdates } from '../official-plugin-updates.ts';
 import { searchClusterMessages } from './message-search.ts';
 
 const PUBLIC_DIR = join(import.meta.dirname, 'public');
@@ -65,6 +66,7 @@ export interface WebControl {
     confirm(id: string, grants: { permissions: string[]; events: string[]; clusterIds: string[]; writeClusterIds: string[]; tools?: string[]; ui?: string[] }): Promise<unknown>;
     cancel(id: string): Promise<void>;
   };
+  officialUpdates?: OfficialPluginUpdates;
   /** Full-trust plugins (docs/external-plugins.md「完全信任的插件」): their cards, the trust confirmation, their page modules. */
   trusted?: TrustedPlugins;
   /** The 技能与 MCP page (absent: its routes answer 404). Only here, behind the user's API token: no MCP tool or plugin reaches it. */
@@ -112,6 +114,11 @@ async function readJson(req: IncomingMessage): Promise<any> {
   return data;
 }
 
+function only(body: unknown, keys: string): Record<string, unknown> {
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).sort().join(',') !== keys) throw new Error('body must be {' + keys + '}');
+  return body as Record<string, unknown>;
+}
+
 /** "attachment" or "inline" with the name in both forms (RFC 6266): an ASCII fallback and the UTF-8 original. */
 function disposition(kind: 'inline' | 'attachment', name: string): string {
   const ascii = name.replace(/[^\x20-\x7e]|["\\%]/g, '_');
@@ -152,7 +159,7 @@ async function serveFile(hub: Hub, id: string, download: boolean, res: ServerRes
  */
 function servePluginIcon(control: WebControl, id: string, res: ServerResponse): void {
   // A restricted plugin's or a full-trust plugin's: the same manifest field, checks and answer for both.
-  const icon = control.externalPlugins?.icon(id) ?? control.trusted?.icon(id);
+  const icon = control.officialUpdates?.icon(id) ?? control.externalPlugins?.icon(id) ?? control.trusted?.icon(id);
   if (!icon || 'error' in icon) return json(res, 404, { error: icon ? icon.error : 'no icon' });
   res.writeHead(200, {
     'content-type': icon.type,
@@ -277,6 +284,18 @@ function servePluginWeb(hub: Hub, control: WebControl, req: IncomingMessage, pat
   res.end(file.data);
 }
 
+/** Only the current enabled signed version can serve its own same-origin web assets. */
+function serveOfficialPluginWeb(hub: Hub, control: WebControl, method: string, path: string, res: ServerResponse): void {
+  const m = /^\/official-plugin-web\/([a-z][a-z0-9-]{0,63})\/([0-9a-f]{64})\/(.+)$/.exec(path);
+  const enabled = m && method === 'GET' && hub.store.plugins.enabled.some((p) => p.id === m[1]);
+  const file = m && enabled ? control.officialUpdates?.webFile(m[1], m[2], m[3]) : null;
+  if (!file) return json(res, 404, { error: 'not found' });
+  res.writeHead(200, { 'content-type': file.type, 'content-length': file.data.length, 'x-content-type-options': 'nosniff',
+    'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    'cross-origin-resource-policy': 'same-origin' });
+  res.end(file.data);
+}
+
 /** A full-trust plugin's card row when it is not running this start (unconfirmed, revoked, failed, safe mode). */
 function idleTrustedRow(control: WebControl, id: string) {
   const manifest = control.trusted!.manifests().find((m) => m.id === id)!;
@@ -296,7 +315,8 @@ function pluginsOf(hub: Hub, control: WebControl) {
     ...control.plugins.list().map((p) => {
       const faults = hub.pluginFaults(p.id);
       const trust = trusted?.isLoaded(p.id) ? trusted.info(p.id) : undefined;
-      return { ...p, ...external?.info(p.id), ...(trust ? { origin: 'trusted', trust, ...trusted!.iconInfo(p.id) } : {}), ...(faults.length ? { faults } : {}) };
+      return { ...p, ...control.officialUpdates?.card(p.id), ...external?.info(p.id),
+        ...(trust ? { origin: 'trusted', trust, ...trusted!.iconInfo(p.id) } : {}), ...(faults.length ? { faults } : {}) };
     }),
     ...(registration?.failed ?? []),
   ];
@@ -317,6 +337,10 @@ function pluginsOf(hub: Hub, control: WebControl) {
     plugins: hub.store.plugins.installed.filter((p) => (external?.has(p.id) ? external.stateOf(p.id) === 'ready' : hub.store.plugins.enabled.includes(p)))
       .map(({ id, version }) => ({ id, version: external?.manifestOf(id)?.version ?? version })),
     frontend: hub.store.plugins.enabled.flatMap(({ id, webModule }) => webModule && !external?.has(id) ? [webModule] : []),
+    officialFrontend: hub.store.plugins.enabled.flatMap(({ id }) => {
+      const entry = control.officialUpdates?.frontend(id);
+      return entry ? [entry] : [];
+    }),
     // The enabled full-trust plugins that loaded this start and have a page module: the page imports /plugin-web/<id>/.
     trustedFrontend: hub.store.plugins.enabled.flatMap(({ id }) => (trusted?.hasWeb(id) ? [id] : [])),
     safeMode: trusted?.safeMode ?? false,
@@ -468,6 +492,7 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
   try {
     if (path.startsWith('/plugin-ui/')) return servePluginUi(control, req, path, res);
     if (path.startsWith('/plugin-web/')) return servePluginWeb(hub, control, req, path, res);
+    if (path.startsWith('/official-plugin-web/')) return serveOfficialPluginWeb(hub, control, method, path, res);
     if (path.startsWith('/api/')) {
       // The page's login: the token from its #token= fragment becomes a session cookie (HttpOnly: page scripts and
       // the URL never hold it after this). The only /api/* route without the token.
@@ -516,6 +541,28 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
         const data = await readJson(req);
         if (Object.keys(data).some((key) => key !== 'autoCheck')) throw new Error('Unsupported update setting.');
         return json(res, 200, updates.setAutoCheck(data.autoCheck));
+      }
+      return json(res, 404, { error: 'not found' });
+    }
+    if (path.startsWith('/api/plugins/official-updates/')) {
+      const official = control.officialUpdates;
+      if (official && method === 'POST') {
+        if (path === '/api/plugins/official-updates/check') {
+          await readJson(req);
+          return json(res, 200, await official.check(), { 'cache-control': 'no-store' });
+        }
+        if (path === '/api/plugins/official-updates/prepare') {
+          const { id, version } = only(await readJson(req), 'id,version');
+          return json(res, 200, await official.prepare(id, version), { 'cache-control': 'no-store' });
+        }
+        if (path === '/api/plugins/official-updates/confirm') {
+          const { prepareId } = only(await readJson(req), 'prepareId');
+          return json(res, 200, await official.confirm(prepareId), { 'cache-control': 'no-store' });
+        }
+      }
+      if (official && method === 'DELETE' && (m = route(/^\/api\/plugins\/official-updates\/prepared\/([^/]+)$/))) {
+        await official.cancel(m[0]);
+        return json(res, 200, { cancelled: true });
       }
       return json(res, 404, { error: 'not found' });
     }
@@ -692,10 +739,6 @@ export async function handleWeb(hub: Hub, req: IncomingMessage, res: ServerRespo
     }
     if (path === '/api/cluster-groups') {
       // The sidebar's group list; names travel in the body, so a group may hold any character a category may.
-      const only = (body: unknown, keys: string): Record<string, unknown> => {
-        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).sort().join(',') !== keys) throw new Error(`body must be {${keys}}`);
-        return body as Record<string, unknown>;
-      };
       if (method === 'GET') return json(res, 200, { groups: hub.clusterGroups() });
       if (method === 'POST') return json(res, 200, { groups: hub.createClusterGroup(only(await readJson(req), 'name').name) });
       if (method === 'PATCH') {

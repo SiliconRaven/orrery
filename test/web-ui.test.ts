@@ -668,7 +668,10 @@ test('web ui: only enabled first-party module names are imported and register sl
     return { register(given: unknown) { assert.equal(given, host); return hooks; } };
   };
   const disabled = await loadPluginSlots({ frontend: [], plugins: [{ id: 'external' }] }, host, load);
-  assert.deepEqual(disabled, { message: [], composer: [], workbench: [], settings: [], view: [], trusted: [], tried: [], onRelease: null, closeView: null });
+  assert.deepEqual(disabled, {
+    message: [], composer: [], workbench: [], settings: [], view: [], trusted: [], tried: [],
+    officialPackages: new Map(), onRelease: null, closeView: null,
+  });
   const enabled = await loadPluginSlots({
     frontend: ['bookmarks', 'bookmarks', 'disabled', '../app', '/app.js', 'https://external.invalid/a.js'],
     plugins: [{ id: 'bookmarks' }, { id: 'external' }, { id: '../app' }, { id: '/app.js' }, { id: 'https://external.invalid/a.js' }],
