@@ -330,7 +330,7 @@ test('post-takeover submit sends infoOnly notice for product code changes and sk
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, windowsHide: true, stdio: 'pipe', encoding: 'utf8' }).trim();
   const commit = (cwd: string, msg: string) => {
-    git(cwd, '-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-m', msg);
+    git(cwd, 'commit', '-m', msg);
     return git(cwd, 'rev-parse', 'HEAD');
   };
   try {
@@ -339,6 +339,8 @@ test('post-takeover submit sends infoOnly notice for product code changes and sk
     mkdirSync(join(repo, 'src'), { recursive: true });
     mkdirSync(join(repo, 'test'), { recursive: true });
     git(repo, 'init', '-b', 'develop');
+    git(repo, 'config', '--local', 'user.name', 'T');
+    git(repo, 'config', '--local', 'user.email', 't@example.invalid');
     writeFileSync(join(repo, 'src', 'app.ts'), 'export const x = 1;\n');
     git(repo, 'add', '.');
     commit(repo, 'init');
