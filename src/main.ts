@@ -477,7 +477,7 @@ if (import.meta.main) {
     home: config.home,
     registryDir: config.registryDir,
     secondary: process.env.ORRERY_SECONDARY === '1',
-    name: pathKey(config.home) === pathKey(packagedHome) ? 'Orrery Beta' : 'Orrery',
+    name: pathKey(config.home) === pathKey(packagedHome) ? 'orrery' : 'Orrery',
     apiToken: config.apiToken,
     withMock: process.env.ORRERY_MOCK === '1',
     enableUpdateChecks: updateChecksOf(process.env),

@@ -430,3 +430,46 @@ test('activeClusterRows and searchSky activity sorting surface bursting clusters
   const dm = data.applySkyEvent(state, frame(21, 'message', { message: { ...msg('dm1', 'user', 'c3'), privateTo: 'm1' }, deliveries: [] }));
   assert.equal(dm, null);
 });
+
+test('planetFace follows avatarEl priority: uploaded image, preset, emoji, real app icon for all harnesses, initial fallback', () => {
+  const png = 'data:image/png;base64,iVBORw0KGgo=';
+  assert.deepEqual(
+    data.planetFace({ name: 'glm', harness: 'zcode', avatar: png }),
+    { kind: 'image', src: png, fallbackSrc: '/app-icons/zcode.png', initial: 'G' },
+  );
+  // Reject non-raster data URLs (such as SVG) and invalid preset traversal names.
+  assert.deepEqual(
+    data.planetFace({ name: 'sec', harness: 'codex', avatar: 'data:image/svg+xml;base64,PHN2Zz4=' }),
+    { kind: 'app', src: '/app-icons/codex.png', initial: 'S' },
+  );
+  assert.deepEqual(
+    data.planetFace({ name: 'kimi', harness: 'zcode', avatar: 'preset:kimi' }),
+    { kind: 'preset', src: '/avatars/kimi.png', fallbackSrc: '/app-icons/zcode.png', initial: 'K' },
+  );
+  assert.deepEqual(
+    data.planetFace({ name: 'bad', harness: 'zcode', avatar: 'preset:../etc' }),
+    { kind: 'app', src: '/app-icons/zcode.png', initial: 'B' },
+  );
+  assert.deepEqual(
+    data.planetFace({ name: 'bot', harness: 'workbuddy', avatar: '🦊' }),
+    { kind: 'emoji', text: '🦊', initial: 'B' },
+  );
+  // Every supported native harness resolves to its real /app-icons/* asset (including zcode and workbuddy).
+  for (const [harness, iconPath] of [
+    ['claude', '/app-icons/claude.ico'],
+    ['codex', '/app-icons/codex.png'],
+    ['deepseek', '/app-icons/deepseek.png'],
+    ['kimi', '/app-icons/kimi-code.png'],
+    ['zcode', '/app-icons/zcode.png'],
+    ['antigravity', '/app-icons/antigravity.png'],
+    ['qoder', '/app-icons/qoder.png'],
+    ['workbuddy', '/app-icons/workbuddy.png'],
+    ['cursor', '/app-icons/cursor.ico'],
+  ]) {
+    assert.deepEqual(data.planetFace({ name: harness, harness, avatar: null }), { kind: 'app', src: iconPath, initial: harness[0].toUpperCase() });
+  }
+  assert.deepEqual(
+    data.planetFace({ name: '自定义', harness: 'unknown-plugin', avatar: null }),
+    { kind: 'initial', text: '自' },
+  );
+});

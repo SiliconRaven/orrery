@@ -599,9 +599,9 @@ test('desktop C: only win32.mjs loads koffi, and only writer.mjs calls the Win32
       assert.ok(!code.includes(bad), `${bad} appears in ${path}`);
     }
     if (!path.startsWith('test/')) assert.doesNotMatch(code, /openExternal|showItemInFolder/, `${path} hands something to the system`);
-    // The one exception, shell.mjs launchApp starting a supported app through lib/launch.mjs startApp, is pinned down
-    // in the "desktop launch" tests.
-    if (!path.startsWith('test/') && path !== 'shell.mjs' && path !== 'lib/launch.mjs') assert.doesNotMatch(code, /openPath/, `${path} hands something to the system`);
+    // The only exceptions are the supported-app launch and the verified update installer, pinned down in the
+    // desktop launch and update tests.
+    if (!path.startsWith('test/') && !['shell.mjs', 'lib/launch.mjs', 'main.mjs'].includes(path)) assert.doesNotMatch(code, /openPath/, `${path} hands something to the system`);
   }
   const writer = readFileSync(join(DESKTOP, 'lib', 'writer.mjs'), 'utf8');
   assert.doesNotMatch(writer, /SWP_FRAMECHANGED|SWP_HIDEWINDOW|SWP_SHOWWINDOW|HWND_TOPMOST|HWND_NOTOPMOST|SW_HIDE\b/);
@@ -622,10 +622,12 @@ test('desktop: the pure modules import nothing but each other; Hub and shell dep
     const specs = [...readFileSync(join(DESKTOP, 'lib', f), 'utf8').matchAll(IMPORT)].map((m) => m[1] ?? m[2]);
     for (const s of specs) assert.ok(s === '../../shared/i18n/index.js' || /^\.\/(apps|windows|geometry|dock|writer|navigation|locate)\.mjs$/.test(s), `lib/${f} imports ${s}`);
   }
-  // Window bindings and the packaged runtime's file/HTTP I/O are the two non-pure modules.
-  const runtimeImports = [...readFileSync(join(DESKTOP, 'lib', 'runtime.mjs'), 'utf8').matchAll(IMPORT)].map((m) => m[1] ?? m[2]);
-  assert.ok(runtimeImports.every((s) => s.startsWith('node:')), 'packaged runtime uses Node I/O, not app or Win32 capabilities');
-  assert.deepEqual(readdirSync(join(DESKTOP, 'lib')).filter((f) => f.endsWith('.mjs') && !['win32.mjs', 'runtime.mjs'].includes(f)).sort(),
+  const ioModules = ['runtime.mjs', 'desktop-update.mjs'];
+  for (const name of ioModules) {
+    const imports = [...readFileSync(join(DESKTOP, 'lib', name), 'utf8').matchAll(IMPORT)].map((m) => m[1] ?? m[2]);
+    assert.ok(imports.every((s) => s.startsWith('node:')), `${name} uses Node I/O independent of Electron and Win32`);
+  }
+  assert.deepEqual(readdirSync(join(DESKTOP, 'lib')).filter((f) => f.endsWith('.mjs') && f !== 'win32.mjs' && !ioModules.includes(f)).sort(),
     ['app-paths.mjs', 'apps.mjs', 'dock.mjs', 'geometry.mjs', 'launch.mjs', 'locate.mjs', 'navigation.mjs', 'peicon.mjs', 'startup.mjs', 'strip.mjs', 'windows.mjs', 'writer.mjs']);
   for (const { path, code } of desktopSources()) {
     const specs = [...code.matchAll(IMPORT)].map((m) => m[1] ?? m[2]);
@@ -1080,10 +1082,11 @@ function ipcSenders(shell: string) {
   const block = (name: string) => {
     const m = new RegExp(`^ {2}const ${name} = \\{\\n([\\s\\S]*?)^ {2}\\};$`, 'm').exec(shell);
     assert.ok(m, name);
-    return [...m[1].matchAll(/^ {4}'([a-z]+:[a-z]+)':/gm)].map((x) => x[1]);
+    return [...m[1].matchAll(/^ {4}'([a-z]+:[a-z-]+)':/gm)].map((x) => x[1]);
   };
   assert.deepEqual(block('stripHandlers'), ['strip:pick', 'strip:close']);
-  assert.deepEqual(block('settingsHandlers'), ['settings:detect', 'settings:use', 'settings:pick', 'settings:clear', 'settings:language', 'settings:close']);
+  assert.deepEqual(block('settingsHandlers'), ['settings:detect', 'settings:use', 'settings:pick', 'settings:clear', 'settings:language', 'settings:close',
+    'settings:update-check', 'settings:update-download', 'settings:update-install']);
   const tabChannels = block('handlers');
   assert.ok(tabChannels.length >= 8 && tabChannels.every((c) => !c.startsWith('strip:') && !c.startsWith('settings:')), tabChannels.join());
 }
@@ -1477,19 +1480,19 @@ test('desktop launch rule 3: the target never comes from the state file, the col
   assert.match(shell, /const lookup = \(\) => \(\{ \.\.\.sources\(\), saved: \(\) => readAppPaths\(apps\) \}\);/, 'the system sources and app-paths.json, nothing else');
   // main.mjs never replaces the lookup (only the checks inject one, to start nothing real).
   const main = readFileSync(join(DESKTOP, 'main.mjs'), 'utf8');
-  assert.match(main, /startShell\(\{ ffi, ensure: \(\) => runEnsure\(runtime\) \}\)/);
+  assert.match(main, /startShell\(\{ ffi, ensure: \(\) => runEnsure\(runtime\), makeUpdater \}\)/);
   assert.match(main, /runtimeConfig\(\{ packaged: app\.isPackaged, resourcesPath: process\.resourcesPath/);
-  assert.doesNotMatch(main, /launchTarget|openPath|\bsources\b/);
+  assert.doesNotMatch(main, /launchTarget|\bsources\b/);
 });
 
 test('desktop launch rules 1, 4, 5: one launch function, one call site, reached only from the tab bar\'s strip:pick; no arguments', () => {
   const sources = desktopSources().filter((f) => !f.path.startsWith('test/') && !f.path.startsWith('scripts/'));
   for (const f of sources) assert.doesNotMatch(f.code, /(?:from\s+|import\s*\()['"][^'"]*scripts\//, 'build scripts stay outside the app runtime');
-  // Rule 5: exactly one place hands a program to the system, in launchApp, which is called once, from pickApp, which
-  // is called once, from the strip:pick IPC handler.
+  // Rule 5: launchApp is the only place that starts a native app. The shell's own installer uses its separate
+  // verified handoff in main.mjs and requires the trusted settings action and native confirmation.
   const shellSrc = readFileSync(join(DESKTOP, 'shell.mjs'), 'utf8');
   const calls = sources.flatMap((f) => [...f.code.matchAll(/\.openPath\(/g)].map(() => f.path));
-  assert.deepEqual(calls, ['shell.mjs'], 'one openPath call in all desktop sources');
+  assert.deepEqual(calls.sort(), ['main.mjs', 'shell.mjs'], 'only the update installer and the supported-app openPath call');
   assert.ok(!sources.some((f) => /openExternal|showItemInFolder/.test(f.code)), 'nothing else is handed to the system');
   const launchBody = fnBody(shellSrc, 'launchApp');
   assert.match(launchBody, /^ {4}startApp\(target, \{ spawn, openPath: \(path\) => shell\.openPath\(path\), systemRoot: process\.env\.SystemRoot \}\)\.then\(/m,
@@ -1527,13 +1530,15 @@ test('desktop launch rules 1, 4, 5: one launch function, one call site, reached 
       assert.doesNotMatch(code, /child_process|\bexecFile\b|\bexec\(|\bfork\(|launchApp|pickApp/, f.path);
       continue;
     }
-    if (f.path !== 'shell.mjs' && f.path !== 'shortcut.mjs') assert.doesNotMatch(code, /launchApp|pickApp|startApp|child_process|openPath/, `${f.path} has no launch path`);
+    const outsideInstaller = f.path === 'main.mjs' ? code.replace('openInstaller: (file) => electronShell.openPath(file),', '') : code;
+    if (f.path !== 'shell.mjs' && f.path !== 'shortcut.mjs') assert.doesNotMatch(outsideInstaller, /launchApp|pickApp|startApp|child_process|openPath/, `${f.path} has no other launch path`);
     assert.doesNotMatch(f.code, /shell:AppsFolder|explorer\.exe|\bexecFile\b|\bexec\(|\bfork\(/i, `${f.path}: no other way to start a program`);
   }
   // Start-up, restoring tabs, an app going away, Hub or page events, second-instance activation, re-selecting a tab:
   // none of these reaches pickApp (its one call is the strip:pick handler above). main.mjs's second instance only
   // brings the shell to the front; the reducer and the writer know nothing about starting.
   const main = readFileSync(join(DESKTOP, 'main.mjs'), 'utf8');
+  assert.match(main, /openInstaller: \(file\) => electronShell\.openPath\(file\),/);
   assert.match(main, /app\.on\('second-instance', \(\) => shell\.focus\(\)\);/);
   for (const f of ['lib/dock.mjs', 'lib/writer.mjs', 'lib/windows.mjs', 'lib/navigation.mjs']) {
     assert.doesNotMatch(readFileSync(join(DESKTOP, f), 'utf8'), /launchApp|openPath|locateApp|createWatch|launch\.mjs/, f);

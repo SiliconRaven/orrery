@@ -14,6 +14,7 @@ let current = null;
 let opened = -1;
 let confirming = null;   // the app id whose 清除 waits for its confirmation
 let confirmingPath = null;   // the saved path it was asked for: if that changes, the question is dropped
+let update = null;
 
 function make(tag, props = {}, text) {
   const el = Object.assign(document.createElement(tag), props);
@@ -106,11 +107,73 @@ function draw() {
   if (focused) list.querySelector(`[data-focus="${CSS.escape(focused)}"]`)?.focus();
 }
 
+const UPDATE_ERRORS = {
+  network: '连不上更新服务器。',
+  'invalid-response': '服务器返回的更新信息无法识别。',
+  'unsafe-redirect': '更新下载地址不受信任。',
+  'size-mismatch': '下载大小和发布记录不一致。',
+  'checksum-unavailable': '没有可用的安装包校验值。',
+  'checksum-mismatch': '安装包校验失败。',
+  'download-failed': '安装包下载失败。',
+  'install-failed': '没能启动更新安装程序。',
+};
+const UPDATE_STATUS = {
+  checking: '正在检查更新…',
+  'no-release': '暂未找到适用的 Windows x64 安装包。',
+  current: '桌面已是最新版本。',
+  available: '有新版本 {version}。',
+  downloading: '正在下载更新…',
+  ready: '版本 {version} 已下载，可以安装。',
+  installing: '正在启动更新安装程序…',
+};
+const UPDATE_ACTIONS = {
+  idle: ['checkUpdate', '检查更新'],
+  current: ['checkUpdate', '检查更新'],
+  'no-release': ['checkUpdate', '检查更新'],
+  available: ['downloadUpdate', '下载更新'],
+  ready: ['installUpdate', '安装更新'],
+  error: ['checkUpdate', '检查更新'],
+};
+
+function drawUpdate() {
+  const section = $('desktop-update');
+  section.hidden = !update;
+  if (!update) return;
+  const { currentVersion, status, latestVersion, percent, error } = update;
+  section.dataset.status = status;
+  $('update-version').textContent = t('当前版本 {version}', { version: currentVersion });
+  const label = error || status === 'error' ? t(UPDATE_ERRORS[error] ?? '更新操作失败。') : t(UPDATE_STATUS[status] ?? '', { version: latestVersion });
+  const summary = $('update-status');
+  if (summary.textContent !== label) summary.textContent = label;
+  $('update-progress').hidden = status !== 'downloading';
+  const bar = $('update-progress-bar');
+  if (Number.isFinite(percent) && percent >= 0 && percent <= 100) {
+    bar.value = percent;
+    $('update-percent').textContent = Math.floor(percent) + '%';
+  } else {
+    bar.removeAttribute('value');
+    $('update-percent').textContent = '';
+  }
+  const action = UPDATE_ACTIONS[status];
+  const control = $('update-action');
+  control.hidden = !action;
+  control.disabled = !!current?.busy || !action;
+  control.textContent = action ? t(action[1]) : '';
+}
+
+api.onUpdateState((snapshot) => { update = snapshot; drawUpdate(); });
+$('update-action').addEventListener('click', () => {
+  const action = UPDATE_ACTIONS[update?.status];
+  if (action && !current?.busy) api[action[0]]();
+});
+
 api.onState((s) => {
   translateDesktopPage(s.language);
   $('language').value = s.language ?? 'zh';
   $('language').disabled = !!s.busy;
   current = s;
+  update = s.update ?? null;
+  drawUpdate();
   if (s.opened !== opened) { opened = s.opened; confirming = null; draw(); list.scrollTop = 0; $('view').focus(); return; }
   if (confirming && !s.rows.some((r) => r.id === confirming && r.saved?.path === confirmingPath)) confirming = null;
   draw();

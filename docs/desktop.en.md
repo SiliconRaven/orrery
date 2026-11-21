@@ -1,8 +1,8 @@
-# Electron Desktop Shell (`desktop/`, `v0.10.0-beta.3`)
+# orrery Desktop App
 
 Language: [中文](desktop.md) | **English**
 
-> **Beta Notice**: `desktop/` is part of **v0.10.0-beta.3 (Beta pre-release)**, not a stable release; window docking and layout interfaces may change.
+> **Beta Notice**: Window docking and layout interfaces may change.
 
 `desktop/` is an optional Electron wrapper around the orrery collaboration UI (using the character-free orbital project icon) built on **top-level window docking** without embedding or reparenting third-party applications.
 
@@ -41,7 +41,7 @@ The shell is the only part of orrery that ever starts a user's app, and only on 
 
 ## Installation & Startup
 
-The Windows x64 NSIS installer includes Node and all runtime dependencies. Launch **Orrery Beta** from its shortcut. Data is stored in `%APPDATA%/Orrery Beta/hub`; closing the window leaves Hub running. The installer stops only its own Hub before upgrade or removal, and retains the database.
+The Windows x64 NSIS installer includes Node and all runtime dependencies. Launch **orrery** from its shortcut. Closing the window leaves the Hub running. The installer stops its own Hub before upgrade or removal and retains the database under `%APPDATA%/Orrery Beta/hub`.
 
 For native bridges and plugins, use `<installation>/resources/node/node.exe`, files under `<installation>/resources/hub/plugins` or `resources/hub/src/bridge`. Bridges and plugins find the installed Hub through the account's Hub registry (default `%USERPROFILE%/.orrery/registry`), so the host's MCP configuration no longer needs `ORRERY_HOME`. Use expanded absolute paths in MCP JSON. The installer does not edit host settings.
 
@@ -55,9 +55,13 @@ npm start --prefix desktop
 - Accessibility is off by default; set `ORRERY_DESKTOP_ACCESSIBILITY=1` before launching `desktop/` if needed.
 - **Verified use**: Window docking, tab switching, and restoring managed windows on normal exit have passed real-desktop checks. Coverage of mixed-DPI monitors and combinations of app minimum window sizes is more limited.
 
+### Desktop updates
+
+Open the gear menu in the installed desktop app and use **Software update** to check and download. After verification, select **Install update** and confirm. Reopen the app from the **orrery** shortcut after installation. The desktop app downloads the Windows x64 installer from the official release and checks its SHA-256 before launching it.
+
 ### Restart the Hub After an Official Plugin Update
 
-Open **Settings → Plugins** on the collaboration page to [manually check for and confirm an official plugin update](plugins.en.md#update-official-plugins). When the card shows the **version after restart**, return to the collaboration page and select **Quit Orrery** in the sidebar. Confirm and wait for the Hub to stop. Close the desktop window and reopen **Orrery Beta** from its shortcut. The pending plugin version takes effect on startup.
+Open **Settings → Plugins** on the collaboration page to [manually check for and confirm an official plugin update](plugins.en.md#update-official-plugins). When the card shows the **version after restart**, return to the collaboration page and select **Quit Orrery** in the sidebar. Confirm and wait for the Hub to stop. Close the desktop window and reopen **orrery** from its shortcut. The pending plugin version takes effect on startup.
 
 ## Build the Installer
 
@@ -69,7 +73,7 @@ npm ci --prefix desktop
 npm run dist --prefix desktop
 ```
 
-The build verifies the pinned official Node 24.19.0 archive and includes its license. Output: `desktop/dist/Orrery-0.10.0-beta.3-Setup-x64.exe`. Build files and caches are ignored by Git.
+The build verifies the pinned official Node 24.19.0 archive and includes its license. The installer is saved as `desktop/dist/Orrery-<version>-Setup-x64.exe`. Build files and caches are ignored by Git.
 
 ## Interface language
 

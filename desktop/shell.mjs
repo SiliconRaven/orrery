@@ -171,9 +171,10 @@ function denyPermissions(s) {
  * installs); main.mjs leaves both: the read-only system sources, and as the launch target a valid saved path, else
  * those sources (lib/locate.mjs startTarget).
  * @param {{ ffi: object, ensure: () => Promise<{ origin: string, page?: string } | { error: string }>, apps?: object[],
- *   sources?: typeof systemSources, launchTarget?: (app: object) => import('./lib/locate.mjs').Location }} opts
+ *   sources?: typeof systemSources, launchTarget?: (app: object) => import('./lib/locate.mjs').Location,
+ *   makeUpdater?: ((onChange: () => void) => ReturnType<typeof import('./lib/desktop-update.mjs').createDesktopUpdater>) | null }} opts
  */
-export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, launchTarget = null }) {
+export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, launchTarget = null, makeUpdater = null }) {
   /** What an app is looked up in, read afresh at each call: the read-only system sources and the saved paths. */
   const lookup = () => ({ ...sources(), saved: () => readAppPaths(apps) });
   launchTarget ??= (a, io = lookup()) => startTarget(a, io);
@@ -262,6 +263,9 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
   settingsWin.removeMenu();
   win.on('closed', () => { if (!settingsWin.isDestroyed()) settingsWin.destroy(); });
   const settingsPage = settingsWin.webContents;
+  const updater = makeUpdater?.(() => {
+    if (!closing && settings && !settingsPage.isDestroyed()) settingsPage.send('settings:update-state', updateState());
+  });
   const collab = new WebContentsView({
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, partition: HUB_PARTITION, spellcheck: false },
   });
@@ -422,7 +426,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     }
     if (settings && !settingsPage.isDestroyed()) {
       settingsPage.send('settings:state', { rows: settings.map((r) => ({ ...r, message: messages[r.id] ?? null })), icons: iconsOf(settings),
-        opened: settingsOpened, busy: dialogOpen, language: uiLanguage });
+        opened: settingsOpened, busy: dialogOpen, language: uiLanguage, update: updateState() });
     }
   }
 
@@ -464,6 +468,7 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     if (problems.length && !win.isDestroyed()) {
       dialog.showMessageBoxSync(win, { type: 'warning', title: 'orrery', message: t('有应用窗口没能还原到原来的位置'), detail: problems.join('\n'), buttons: [t('确定')] });
     }
+    void updater?.dispose().catch(() => {});   // the shell can close even if temporary-file cleanup is still running
     if (!panel.isDestroyed()) panel.destroy();
     if (!settingsWin.isDestroyed()) settingsWin.destroy();
     if (!win.isDestroyed()) win.destroy();
@@ -559,6 +564,32 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
       settingsWin.hide();
     }
     render();
+  }
+
+  // Leave local paths and release URLs in the update service. The renderer only needs the current state.
+  function updateState() {
+    if (!updater) return null;
+    const { currentVersion, status, latestVersion, percent, error } = updater.snapshot();
+    return { currentVersion, status, latestVersion, percent, error };
+  }
+
+  async function installUpdate() {
+    if (!settings || dialogOpen || closing || !updater || updater.snapshot().status !== 'ready') return;
+    dialogOpen = true;
+    render();
+    try {
+      const { response } = await dialog.showMessageBox(settingsWin, {
+        type: 'warning', title: t('安装 orrery 更新'), message: t('现在安装 orrery 更新？'),
+        detail: t('请先保存草稿并确认当前工作可以暂停。安装会关闭 orrery 桌面，安装程序会停止 Hub。'),
+        buttons: [t('取消'), t('安装更新')], defaultId: 0, cancelId: 0,
+      });
+      if (response === 1 && !closing && await updater.install()) quit('quit');
+    } catch {
+      if (!closing) dialog.showErrorBox(t('安装 orrery 更新'), t('没能启动更新安装程序。'));
+    } finally {
+      dialogOpen = false;
+      if (!closing) render();
+    }
   }
   settingsWin.on('blur', () => setTimeout(() => settingsEvent('focus'), 0));
   win.on('blur', () => setTimeout(() => settingsEvent('focus'), 0));
@@ -772,6 +803,9 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     'settings:clear': oneAppId,
     'settings:language': (...args) => args.length === 1 && isDesktopLanguage(args[0]),
     'settings:close': (...args) => args.length === 0,
+    'settings:update-check': (...args) => args.length === 0,
+    'settings:update-download': (...args) => args.length === 0,
+    'settings:update-install': (...args) => args.length === 0,
     // A press in the tab bar anywhere but on "+": nothing else.
     'tabs:press': (...args) => args.length === 0,
     'strip:close': (...args) => args.length === 0,
@@ -816,6 +850,9 @@ export function startShell({ ffi, ensure, apps = APPS, sources = systemSources, 
     'settings:clear': (id) => { if (settings) clearPath(appOf(id)); },
     'settings:language': (value) => { if (settings && !dialogOpen) switchLanguage(value, { tellPage: true }); },
     'settings:close': () => closeSettings(),
+    'settings:update-check': () => { if (settings && !dialogOpen && !closing) void updater?.check(); },
+    'settings:update-download': () => { if (settings && !dialogOpen && !closing) void updater?.download(); },
+    'settings:update-install': () => { void installUpdate(); },
   };
   function listen(table, from) {
     for (const [channel, handler] of Object.entries(table)) {

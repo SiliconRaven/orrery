@@ -29,6 +29,24 @@ shell.openPath = async (...args) => { launched.push(args); return ''; };   // ne
 const dialogs = [];
 let dialogAnswer = { canceled: true, filePaths: [] };
 dialog.showOpenDialog = async (...args) => { dialogs.push(args); return dialogAnswer; };   // never shows a dialog
+const updateDialogs = [];
+let updateAnswer = 0;
+dialog.showMessageBox = async (_window, options) => { updateDialogs.push(options); return { response: updateAnswer }; };
+let updateSnapshot = { currentVersion: '0.10.0-beta.4', status: 'idle', latestVersion: null, percent: null, error: null };
+let updateChanged;
+let installCalls = 0;
+let updateDisposed = false;
+const setUpdate = (patch) => { updateSnapshot = { ...updateSnapshot, ...patch }; updateChanged(); };
+const makeUpdater = (onChange) => {
+  updateChanged = onChange;
+  return {
+    snapshot: () => ({ ...updateSnapshot, installerPath: 'not-for-the-renderer.exe' }),
+    check: async () => setUpdate({ status: 'available', latestVersion: '0.10.0-beta.5' }),
+    download: async () => setUpdate({ status: 'downloading', percent: 42 }),
+    install: async () => { installCalls++; return true; },
+    dispose: async () => { updateDisposed = true; },
+  };
+};
 
 /** Fake programs: empty files under this check's temporary folder. */
 const program = (...parts) => {
@@ -79,7 +97,7 @@ app.whenReady().then(async () => {
     held.set(page, () => realLoad.call(this, url, ...rest));
     return Promise.resolve();
   };
-  const h = startShell({ ffi, ensure: async () => ({ origin: `http://127.0.0.1:${server.address().port}` }), sources });
+  const h = startShell({ ffi, ensure: async () => ({ origin: `http://127.0.0.1:${server.address().port}` }), sources, makeUpdater });
   BrowserWindow.prototype.loadURL = realLoad;
   // Which window has the focus, as Windows would have it: 'shell', 'panel', 'settings' or null (another app, a docked window).
   let focus = null;
@@ -204,6 +222,7 @@ app.whenReady().then(async () => {
       'refused: tabs:add with anything but one finite number, tabs:press with an argument or from another page', `${h.ipc.rejected - before.rejected} of ${reject.length}`);
 
     await settingsView({ h, ffi, center, down, up, settle, open, openPanel, moveFocus });
+    await updateView(h);
     check(BrowserWindow.getAllWindows().every((w) => !w.isVisible()) && uncaught.length === 0, 'no window was shown; nothing thrown');
     check(launched.length === 0, 'nothing was started', JSON.stringify(launched));
   } catch (e) {
@@ -231,7 +250,8 @@ async function settingsView({ h, ffi, center, down, up, settle, open, openPanel,
   const clickGear = async () => { down(h.tabs, gear); moveFocus('shell'); up(h.tabs, gear); await settle(); if (shown()) moveFocus('settings'); };
   await until(() => !h.settingsPage.isLoading());
   const probe = await js('({ require: typeof require, process: typeof process, api: Object.keys(window.orrery ?? {}).join() })');
-  check(probe.require === 'undefined' && probe.process === 'undefined' && probe.api === 'onState,detect,use,pick,clear,language,close',
+  check(probe.require === 'undefined' && probe.process === 'undefined'
+    && probe.api === 'onState,onUpdateState,detect,use,pick,clear,language,close,checkUpdate,downloadUpdate,installUpdate',
     'its page: sandboxed, no node; its preload exposes onState, detect, use, pick, clear, language and close only', JSON.stringify(probe));
   check(await openPanel(), 'the + panel open first');
   await clickGear();
@@ -392,4 +412,50 @@ async function settingsView({ h, ffi, center, down, up, settle, open, openPanel,
   await settle();
   check(!shown() && !h.settingsWin.isDestroyed(), 'its own close only closes it');
   check(launched.length === 0, 'none of this started anything');
+}
+
+async function updateView(h) {
+  console.log('\n[desktop update] only trusted settings may check, download and confirm an install');
+  const from = (wc) => ({ sender: wc, senderFrame: wc.mainFrame });
+  ipcMain.emit('tabs:settings', from(h.tabs), 120);
+  const emit = (action, page, ...args) => ipcMain.emit('settings:update-' + action, page, ...args);
+  const settings = from(h.settingsPage);
+  const subframe = { sender: h.settingsPage, senderFrame: { parent: h.settingsPage.mainFrame, url: h.settingsPage.getURL() } };
+  const rejected = h.ipc.rejected;
+  for (const action of ['check', 'download', 'install']) {
+    emit(action, from(h.tabs));
+    emit(action, from(h.strips));
+    emit(action, from(h.collab));
+    emit(action, subframe);
+    emit(action, settings, { path: 'some-installer.exe' });
+  }
+  check(h.ipc.rejected === rejected + 15 && updateSnapshot.status === 'idle' && !updateDialogs.length,
+    'non-settings pages, subframes and extra arguments cannot touch the updater');
+  const js = (source) => h.settingsPage.executeJavaScript(source);
+  const dom = async (condition) => {
+    const end = Date.now() + 3000;
+    while (Date.now() < end) {
+      if (await js(condition)) return true;
+      await sleep(20);
+    }
+    return false;
+  };
+  await js("orrery.onUpdateState((snapshot) => { window.lastUpdateState = snapshot; }); true");
+  check(await dom("document.querySelector('#update-version').textContent.includes('0.10.0-beta.4')"), 'trusted settings receives the running version');
+  const click = () => js("document.querySelector('#update-action').click(); true");
+  await click();
+  check(await dom("document.querySelector('#update-status').textContent.includes('0.10.0-beta.5')"), 'manual check shows the offered version');
+  await click();
+  check(await dom("document.querySelector('#update-percent').textContent === '42%' && !document.querySelector('#update-progress').hidden"), 'download progress is visible');
+  check(await js("!Object.hasOwn(window.lastUpdateState, 'installerPath')"), 'update event strips installer paths');
+  setUpdate({ status: 'ready' });
+  check(await dom("document.querySelector('#update-action').textContent === '安装更新'"), 'install action appears only when ready');
+  await click();
+  await until(() => updateDialogs.length === 1);
+  check(updateDialogs[0]?.cancelId === 0 && updateDialogs[0]?.defaultId === 0 && installCalls === 0,
+    'native confirmation defaults to cancel, which leaves the installer untouched');
+  check(await dom("!document.querySelector('#update-action').disabled"), 'cancel returns to the ready state');
+  updateAnswer = 1;
+  await click();
+  check(await until(() => h.win.isDestroyed()) && installCalls === 1 && updateDisposed, 'a confirmed handoff launches once and uses the desktop quit path');
 }

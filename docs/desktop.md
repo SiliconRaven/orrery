@@ -1,8 +1,8 @@
-# Electron 桌面外壳（`desktop/`，`v0.10.0-beta.3`）
+# orrery 桌面版
 
 语言：**中文** | [English](desktop.en.md)
 
-> **Beta 提示**：桌面外壳处于 **`v0.10.0-beta.3` Beta 测试版**，非正式稳定版，窗口控制与布局细节仍可能调整。
+> **Beta 提示**：窗口控制与布局细节仍可能调整。
 
 `desktop/` 是围绕 orrery 协作页打造的可选 Electron 桌面壳（使用无角色的轨道项目图标），采用**顶层窗口跟随停靠（Window Docking）**方案，不把第三方桌面端嵌入或改写到同一个容器内。
 
@@ -41,7 +41,7 @@
 
 ## 安装与启动
 
-Windows x64 NSIS 安装包内置 Node 和运行依赖，安装后通过 **Orrery Beta** 快捷方式启动。数据位于 `%APPDATA%/Orrery Beta/hub`；关闭窗口后 Hub 继续运行，升级或卸载会先退出该安装实例的 Hub，保留数据库。
+Windows x64 NSIS 安装包内置 Node 和运行依赖，安装后通过 **orrery** 快捷方式启动。关闭窗口后 Hub 继续运行。升级或卸载会先退出该安装实例的 Hub，保留 `%APPDATA%/Orrery Beta/hub` 下的数据库。
 
 配置原生桥和插件时，Node 使用 `<安装目录>/resources/node/node.exe`，插件文件位于 `<安装目录>/resources/hub/plugins` 或 `resources/hub/src/bridge`。桥和插件读同一账户的 Hub 登记处（默认 `%USERPROFILE%/.orrery/registry`）找到安装版的 Hub，宿主 MCP 配置不再需要 `ORRERY_HOME`。MCP JSON 中请填写展开后的实际绝对路径。安装器不会修改宿主设置。
 
@@ -55,9 +55,13 @@ npm start --prefix desktop
 - 无障碍支持默认禁用；需要时设置 `ORRERY_DESKTOP_ACCESSIBILITY=1` 再启动桌面壳。
 - **使用状态**：窗口停靠、标签切换和正常退出还原已通过真实桌面验证。多屏混合 DPI 与不同应用最小窗口尺寸组合的覆盖较少。
 
+### 桌面更新
+
+在安装版窗口顶栏点齿轮，在 **软件更新** 中检查和下载。校验通过后，点 **安装更新** 并确认。完成安装后从 **orrery** 快捷方式重新打开。桌面版只下载官方 Release 的 Windows x64 安装包，并在启动安装器前检查 SHA-256。
+
 ### 官方插件更新后重启 Hub
 
-从协作页的 **设置 → 插件** [手动检查并确认官方插件更新](plugins.md#更新官方插件)。看到卡片标注**待重启版本**后，回到协作页，在左侧点 **退出 orrery** 并确认。等 Hub 停止后关闭桌面窗口，再从 **Orrery Beta** 快捷方式重新打开。待重启的插件版本会在这次启动时生效。
+从协作页的 **设置 → 插件** [手动检查并确认官方插件更新](plugins.md#更新官方插件)。看到卡片标注**待重启版本**后，回到协作页，在左侧点 **退出 orrery** 并确认。等 Hub 停止后关闭桌面窗口，再从 **orrery** 快捷方式重新打开。待重启的插件版本会在这次启动时生效。
 
 ## 构建安装包
 
@@ -69,7 +73,7 @@ npm ci --prefix desktop
 npm run dist --prefix desktop
 ```
 
-构建会校验固定版本 Node 24.19.0 官方压缩包并附带许可证，产物为 `desktop/dist/Orrery-0.10.0-beta.3-Setup-x64.exe`。构建目录与缓存不进入 Git。
+构建会校验固定版本 Node 24.19.0 官方压缩包并附带许可证，产物为 `desktop/dist/Orrery-<版本>-Setup-x64.exe`。构建目录与缓存不进入 Git。
 
 ## 界面语言
 

@@ -8,7 +8,7 @@ import { fmtTime, h, icon, noticeDialog, openTrash } from '/plugin-host/v1.js';
 import { lt, onLanguageChange, t } from './words.js';
 import {
   activeClusterRows, applySkyEvent, clusterActivity, createActivityTracker, createSkyState, dismissedStore,
-  harnessInfo, hashStr, keyAction, layoutSky, loadSnapshot, nextActivityExpiry, orbitFractions, pruneActivity,
+  harnessInfo, hashStr, keyAction, layoutSky, loadSnapshot, nextActivityExpiry, orbitFractions, planetFace, pruneActivity,
   recordClusterActivity, rng, SAT_ICON, SATELLITE_COLOR, seedClusterActivity, setMessages, skyKey, skyModel,
 } from './data.js';
 import { createFinder } from './finder.js';
@@ -40,17 +40,6 @@ const RESET_ICON = [['path', { d: 'M3.2 6.2A5 5 0 1 1 3 9.6', fill: 'none', stro
   ['path', { d: 'M3 2.8v3.6h3.6', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.6, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }]];
 const satIcon = (level) => svgFrom(SAT_ICON[level], '0 0 16 16', `sm-k-${level}`);
 
-/** Harness glyphs printed on planets (static drawings, loaded as images; unknown harnesses get none). */
-const GLYPH = {
-  claude: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff6ec" stroke-width="2.6" stroke-linecap="round"><path d="M12 3.5v5M12 15.5v5M3.5 12h5M15.5 12h5M6 6l3.5 3.5M14.5 14.5 18 18M18 6l-3.5 3.5M9.5 14.5 6 18"/></svg>',
-  codex: '<svg viewBox="0 0 24 24" fill="none" stroke="#0b2a22" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7.5 10.5 12 6 16.5M13 17h5.5"/></svg>',
-  kimi: '<svg viewBox="0 0 24 24"><path d="M15 3.8a8.6 8.6 0 1 0 5.4 14.6A7 7 0 1 1 15 3.8z" fill="#fbf8ff"/></svg>',
-  deepseek: '<svg viewBox="0 0 24 24"><path d="M3.5 13c2.6-4.6 7.6-5.6 10.6-2.6 1.6 1.6 3.7 1.5 6.2-.6-.7 5-4.6 8.2-9.4 8.2-3.6 0-6-1.8-7.4-5z" fill="#f2f5ff"/><circle cx="9" cy="13.2" r="1.1" fill="#2a4bb8"/></svg>',
-  cursor: '<svg viewBox="0 0 24 24" fill="none" stroke="#252a36" stroke-width="1.9" stroke-linejoin="round"><path d="M12 3.5 19.5 7.8v8.4L12 20.5 4.5 16.2V7.8z"/><path d="M4.5 7.8 12 12l7.5-4.2M12 12v8.5"/></svg>',
-  qoder: '<svg viewBox="0 0 24 24" fill="none" stroke="#f3f5f7" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="5.6"/><path d="M15.2 15.2 19 19"/></svg>',
-  antigravity: '<svg viewBox="0 0 24 24" fill="none" stroke="#3a2a06" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 18.5 12 5.5l7 13"/><path d="M8.6 13.5h6.8"/></svg>',
-};
-
 const STAR_VS = `uniform float uTime, uDpr, uAmp, uFreq, uGain; attribute float aSize; attribute float aPh; attribute vec3 aColor; varying vec3 vC;
 void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv;
   float tw = 1.0 - uAmp + uAmp * sin(uTime * uFreq * (0.15 + fract(aPh * 7.13) * 0.35) + aPh);
@@ -77,7 +66,7 @@ const LEVEL_DEPTH = { universe: 0, galaxy: 1, system: 2 };
 const LEVELS = ['universe', 'galaxy', 'system'];
 const LIMITS = { universe: [0.25, 1.3], galaxy: [0.2, 1.28], system: [0.35, 1.4] };
 const PRIORITY = { sat: 3, planet: 2, sun: 1, msys: 1, galaxy: 1, bh: 1 };
-const PHASE0 = [0.5, 2.4, 4.2, 5.5, 1.3, 3.3];
+const GOLDEN_ANGLE = 2.399963229728653;
 const O = { R: 10, sunR: 1.12, pr: 0.62 };
 const TOP_SAFE = 52;
 const MAX_SPARKS = 30;   // lights in the black hole's disk; more clusters in the bin only change the count
@@ -637,19 +626,27 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
   const TILT = new THREE.Euler(0.12, 0, -0.07);
   const UNIT_SPHERE = new THREE.SphereGeometry(1, 40, 20);
   shared.add(UNIT_SPHERE);
-  const glyphImages = new Map();
-  function glyphImage(harness) {
-    if (!GLYPH[harness]) return null;
-    if (!glyphImages.has(harness)) {
+  const faceImages = new Map();
+  function loadFaceImage(src, onOk, onErr) {
+    if (!src) { onErr(); return; }
+    const cacheable = src.startsWith('/');
+    let entry = cacheable ? faceImages.get(src) : null;
+    if (!entry) {
       const img = new Image();
-      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(GLYPH[harness].replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" '));
-      glyphImages.set(harness, img);
+      entry = { img, state: 'loading' };
+      if (cacheable) faceImages.set(src, entry);
+      img.addEventListener('load', () => { entry.state = img.naturalWidth ? 'ok' : 'error'; }, { once: true });
+      img.addEventListener('error', () => { entry.state = 'error'; }, { once: true });
+      img.src = src;
     }
-    return glyphImages.get(harness);
+    if (entry.state === 'ok' || (entry.img.complete && entry.img.naturalWidth > 0)) { entry.state = 'ok'; onOk(entry.img); return; }
+    if (entry.state === 'error' || (entry.img.complete && entry.img.naturalWidth === 0)) { entry.state = 'error'; onErr(); return; }
+    entry.img.addEventListener('load', () => (entry.img.naturalWidth ? onOk(entry.img) : onErr()), { once: true });
+    entry.img.addEventListener('error', onErr, { once: true });
   }
-  /** The member's colour (muted by the theme) with soft bands, its harness glyph where the sphere faces +Z; and a grey copy. */
+  /** The member's colour (muted by the theme) with soft bands, its avatar or real app icon where the sphere faces +Z; and a grey copy. */
   function planetTextures(member) {
-    const w = 512, hgt = 256;
+    const w = 512, hgt = 256, cx = w * 0.25, cy = hgt * 0.5, rad = 54;
     const colCv = document.createElement('canvas'), grayCv = document.createElement('canvas');
     colCv.width = grayCv.width = w; colCv.height = grayCv.height = hgt;
     const g = colCv.getContext('2d');
@@ -670,20 +667,68 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
         const d = g.getImageData(0, 0, w, hgt), a = d.data;
         for (let i = 0; i < a.length; i += 4) { const l = (a[i] * 0.3 + a[i + 1] * 0.59 + a[i + 2] * 0.11) * 0.5; a[i] = a[i + 1] = a[i + 2] = l; }
         gg.putImageData(d, 0, 0);
-      } catch {   // a browser that taints canvases with SVG images: let the canvas filter do it
+      } catch {   // a browser that taints canvases with images: let the canvas filter do it
         gg.filter = 'grayscale(1) brightness(.5)'; gg.clearRect(0, 0, w, hgt); gg.drawImage(colCv, 0, 0);
       }
       gray.needsUpdate = true;
     };
-    const img = glyphImage(member.harness);
-    const drawGlyph = () => {
+    const commit = () => { if (!closed) { col.needsUpdate = true; makeGray(); requestRender(); } };
+    const drawInitial = (ch) => {
       if (closed) return;
-      g.globalAlpha = 0.95; g.drawImage(img, w * 0.25 - 56, hgt * 0.5 - 56, 112, 112); g.globalAlpha = 1;
-      col.needsUpdate = true; makeGray(); requestRender();
+      g.save();
+      g.font = '700 62px system-ui, -apple-system, "Segoe UI", sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.shadowColor = 'rgba(0,0,0,0.45)'; g.shadowBlur = 8;
+      g.fillStyle = '#ffffff';
+      g.fillText(ch, cx, cy + 3);
+      g.restore();
+      commit();
     };
+    const drawEmoji = (text) => {
+      if (closed) return;
+      g.save();
+      g.beginPath(); g.arc(cx, cy, rad, 0, Math.PI * 2); g.fillStyle = 'rgba(12, 18, 32, 0.36)'; g.fill();
+      g.lineWidth = 2; g.strokeStyle = 'rgba(255,255,255,0.22)'; g.stroke();
+      g.font = '56px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(text, cx, cy + 4);
+      g.restore();
+      commit();
+    };
+    const drawImageFace = (img, mode) => {
+      if (closed) return;
+      const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+      if (!iw || !ih) return;
+      g.save();
+      g.beginPath(); g.arc(cx, cy, rad + 1.5, 0, Math.PI * 2);
+      g.fillStyle = 'rgba(0,0,0,0.24)'; g.fill();
+      g.beginPath(); g.arc(cx, cy, rad, 0, Math.PI * 2); g.clip();
+      if (mode === 'app') {
+        g.fillStyle = '#ffffff'; g.fillRect(cx - rad, cy - rad, rad * 2, rad * 2);
+        const box = Math.round(rad * 2 * 0.68);
+        const scale = Math.min(box / iw, box / ih);
+        const dw = iw * scale, dh = ih * scale;
+        g.drawImage(img, cx - dw / 2, cy - dh / 2, dw, dh);
+      } else {
+        const side = Math.min(iw, ih);
+        g.drawImage(img, (iw - side) / 2, (ih - side) / 2, side, side, cx - rad, cy - rad, rad * 2, rad * 2);
+      }
+      g.restore();
+      g.save();
+      g.beginPath(); g.arc(cx, cy, rad, 0, Math.PI * 2);
+      g.lineWidth = 2; g.strokeStyle = mode === 'app' ? 'rgba(0,0,0,0.14)' : 'rgba(255,255,255,0.24)'; g.stroke();
+      g.restore();
+      commit();
+    };
+    const face = planetFace(member);
     makeGray();
-    if (img?.complete && img.naturalWidth) drawGlyph();
-    else img?.addEventListener('load', drawGlyph, { once: true });
+    if (face.kind === 'initial') drawInitial(face.text);
+    else if (face.kind === 'emoji') drawEmoji(face.text);
+    else if (face.kind === 'app') loadFaceImage(face.src, (img) => drawImageFace(img, 'app'), () => drawInitial(face.initial));
+    else loadFaceImage(face.src, (img) => drawImageFace(img, 'cover'), () => {
+      if (face.fallbackSrc) loadFaceImage(face.fallbackSrc, (img) => drawImageFace(img, 'app'), () => drawInitial(face.initial));
+      else drawInitial(face.initial);
+    });
     return { col, gray };
   }
   const v2 = ([x, y]) => new THREE.Vector2(x, y);
@@ -765,7 +810,7 @@ export async function createScene({ THREE, OrbitControls, el, ctx, windowsModule
       holder.add(prox);
       const track = circleLine(r, off || pl.hidden, T.orbit.color, off ? T.orbit.off : T.orbit.on);
       plane.add(track);
-      const p = { pl, m, i, ang: angles.get(m.id) ?? PHASE0[i % PHASE0.length] + i * 0.4, speed: 1, hover: false, frozen: 0, x: 0, y: 0, r: 0, depth: 0,
+      const p = { pl, m, i, ang: angles.get(m.id) ?? 0.45 + i * GOLDEN_ANGLE, speed: 1, hover: false, frozen: 0, x: 0, y: 0, r: 0, depth: 0,
         pivot, holder, ball, mat, tex, glow, halo, ring, track, world: new V3(), prox };
       const cls = `sm-lb-pl${off ? ' sm-off' : ''}${pl.hidden ? ' sm-ghost' : ''}`;
       p.lab = addLabel({ el: mkLabel(cls, prox.userData.pick, m.name), level: 'system', at: () => p.world, dy: (u) => O.pr * bodyScale() * u + 4,

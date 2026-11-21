@@ -9,10 +9,14 @@ const id = (v) => (typeof v === 'string' ? v : '');
 
 contextBridge.exposeInMainWorld('orrery', {
   onState: (callback) => ipcRenderer.on('settings:state', (_event, state) => callback(state)),
+  onUpdateState: (callback) => ipcRenderer.on('settings:update-state', (_event, state) => callback(state)),
   detect: (app) => ipcRenderer.send('settings:detect', id(app)),
   use: (app, token) => ipcRenderer.send('settings:use', { app: id(app), token: id(token) }),
   pick: (app) => ipcRenderer.send('settings:pick', id(app)),
   clear: (app) => ipcRenderer.send('settings:clear', id(app)),
   language: (value) => { if (value === 'zh' || value === 'en') ipcRenderer.send('settings:language', value); },
   close: () => ipcRenderer.send('settings:close'),
+  checkUpdate: () => ipcRenderer.send('settings:update-check'),
+  downloadUpdate: () => ipcRenderer.send('settings:update-download'),
+  installUpdate: () => ipcRenderer.send('settings:update-install'),
 });

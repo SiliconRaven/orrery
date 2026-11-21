@@ -31,7 +31,7 @@
   },
   "build": {
     "appId": "dev.orrery.beta",
-    "productName": "Orrery Beta",
+    "productName": "orrery",
     "directories": {
       "output": "dist",
       "buildResources": "installer"
@@ -91,6 +91,7 @@
           ]
         }
       ],
+      "executableName": "Orrery Beta",
       "icon": "assets/orrery-icon.ico",
       "artifactName": "Orrery-${version}-Setup-${arch}.${ext}"
     },
@@ -101,11 +102,11 @@
       "allowToChangeInstallationDirectory": true,
       "runAfterFinish": false,
       "deleteAppDataOnUninstall": false,
-      "shortcutName": "Orrery Beta",
+      "shortcutName": "orrery",
       "include": "installer/hooks.nsh"
     },
     "npmRebuild": false
   },
-  "productName": "Orrery Beta",
+  "productName": "orrery",
   "author": "Orrery contributors"
 }

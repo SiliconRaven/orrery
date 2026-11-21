@@ -132,3 +132,18 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .language-row select { font: inherit; color: var(--ink); background: var(--row); border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; }
 .language-row span { color: var(--muted); font-size: 12px; }
 .language-row select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.update-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.update-row h2, .update-row p { margin: 0; }
+.update-row p { color: var(--muted); font-size: 12px; }
+.update-row[data-status="error"] #update-status { color: var(--warn); }
+.update-progress { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.update-progress progress { width: 100%; accent-color: var(--accent); }
+.update-row[hidden], .update-progress[hidden] { display: none; }

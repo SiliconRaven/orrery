@@ -73,6 +73,10 @@ In apps without a trusted marker (deliveries show up in a wait command's result,
 - **WorkBuddy**: Reads only `<workbuddyHome>/projects/<proj>/<sessionId>.jsonl` (skipping `subagents/`, checking `session-meta.sessionId`, rejecting links and hardlinks, never touching `workbuddy.db`); `reasoning` emits redacted placeholders; delivery candidates come only from `TaskOutput` or wait-command shell results carrying this session's wait ticket, while direct and `DeferExecuteTool` `send_message` calls pair by `callId` to verify `orrery_post`.
 - **Antigravity**: Reads only `transcript_full.jsonl` under `<geminiHome>/antigravity/brain/<uuid>/.system_generated/logs/` (falling back to `transcript.jsonl` only when absent; links and hardlinks fail closed without fallback; never reads `.pb` or `conversations/*.db`); `thinking` is redacted and `orreryCaller` HMAC signatures are stripped/redacted from `tool_call` text; only `SYSTEM_MESSAGE` (`sender=system`, `MESSAGE_PRIORITY_HIGH`) submits delivery candidates (`USER_INPUT` never promotes), while successful `call_mcp_tool` results verify `orrery_post` by positional `callId`.
 
+## Desktop updates
+
+The desktop process downloads the Windows x64 installer from the official GitHub release, restricts download hosts, and checks the file size. It verifies SHA-256 after downloading and again before launch. The installer starts only after the user confirms in trusted desktop settings.
+
 ## Restricted Third-Party Plugins
 
 Restricted plugins ([Third-party plugins](external-plugins.en.md)) run as separate OS processes and talk to the Hub over stdio. Permissions, event grants, `clusterIds`, `writeClusterIds`, tool grants and UI position grants only limit what they can do **through the orrery protocol**:

@@ -1,4 +1,4 @@
-# orrery (`v0.10.0-beta.4` Beta 测试版)
+# orrery
 
 语言：**中文** | [English](README.en.md)
 
@@ -58,11 +58,11 @@ Hub 仅监听本机回环 `127.0.0.1`，全部消息、任务与附件元数据�
 
 前往项目 [GitHub Releases](https://github.com/SiliconRaven/orrery/releases) 下载最新 Windows x64 安装包（内置 Node 与运行依赖，无需本机预装 Node）：
 
-1. 运行安装器，安装完成后从 **Orrery Beta** 快捷方式启动；
+1. 运行安装器，安装完成后从 **orrery** 快捷方式启动；
 2. 数据保存在 `%APPDATA%/Orrery Beta/hub`，升级和卸载均自动保留；
 3. 测试版安装包尚未签名，Windows SmartScreen 可能提示“未知发布者”，下载后请核对发布页附带的校验值（SHA-256）。
 
-软件会在后台检查新版本，也可在设置里手动检查，但**绝不会静默下载或执行安装器**。
+新版安装版可以在顶栏齿轮的「软件更新」里下载并确认安装。[桌面更新](docs/desktop.md#桌面更新)
 
 ### 方式二：从源码运行
 

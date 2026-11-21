@@ -2,7 +2,7 @@
 // sky, which system notices are satellites, the local "知道了" record, the cluster list search and the live state kept
 // from /api/state and the event stream. No DOM and no three.js: test/starmap-scene.test.ts runs all of it in node, and
 // the chat windows import satellitesOf from here so a chat line and its satellite agree.
-import { clusterUnread, isSystemMessage, memberStatus, systemMark } from '/plugin-host/v1.js';
+import { clusterUnread, harnessApp, isSystemMessage, memberStatus, systemMark } from '/plugin-host/v1.js';
 
 // ---- groups, clusters and members as the sky ----
 
@@ -38,6 +38,27 @@ export function harnessInfo(harness) {
   if (Object.hasOwn(HARNESS, harness)) return HARNESS[harness];
   const hue = hashStr(harness) % 360;
   return { label: String(harness), color: hslHex(hue, 0.45, 0.68) };
+}
+
+const AVATAR_DATA_URL_RE = /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/;
+const AVATAR_PRESET_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * What is painted on the front of a member's planet, matching ui.js avatarEl priority:
+ * uploaded raster image → shipped preset avatar → emoji → real host app icon (`/app-icons/*`) → name initial.
+ */
+export function planetFace(member) {
+  const a = member?.avatar;
+  const initial = ([...String(member?.name ?? '')][0] ?? '?').toUpperCase();
+  const appIcon = harnessApp(member?.harness).icon ?? null;
+  if (typeof a === 'string' && AVATAR_DATA_URL_RE.test(a)) return { kind: 'image', src: a, fallbackSrc: appIcon, initial };
+  if (typeof a === 'string' && a.startsWith('preset:')) {
+    const preset = a.slice('preset:'.length);
+    if (AVATAR_PRESET_RE.test(preset)) return { kind: 'preset', src: `/avatars/${preset}.png`, fallbackSrc: appIcon, initial };
+  }
+  if (typeof a === 'string' && a && !a.startsWith('data:') && !a.startsWith('preset:') && a.length <= 16) return { kind: 'emoji', text: a, initial };
+  if (appIcon) return { kind: 'app', src: appIcon, initial };
+  return { kind: 'initial', text: initial };
 }
 
 function hslHex(hue, s, l) {

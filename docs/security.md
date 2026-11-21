@@ -73,6 +73,10 @@ Orrery 私聊记录供用户和发送时绑定的收件人会话读取，群聊�
 - **WorkBuddy**：只读取 `<workbuddyHome>/projects/<proj>/<sessionId>.jsonl`（排除 `subagents/`，核对 `session-meta.sessionId` 并拒绝链接与硬链接，不打开 `workbuddy.db`）；`reasoning` 仅输出占位；仅匹配本会话等待票据的 `TaskOutput`/等待命令结果提交投递候选，无关工具与用户输入不被误认，直接与 `DeferExecuteTool` 的 `send_message` 经 `callId` 核对后对回发言。
 - **Antigravity**：只读取 `<geminiHome>/antigravity/brain/<uuid>/.system_generated/logs/` 内 `transcript_full.jsonl`（仅缺省时回退 `transcript.jsonl`，拒绝链接与硬链接且不回退；不读 `.pb` 与 `conversations/*.db`）；`thinking` 仅占位并剥离脱敏 `orreryCaller` 签名；仅 `SYSTEM_MESSAGE`（`sender=system`、`MESSAGE_PRIORITY_HIGH`）提交投递候选，`USER_INPUT` 永不晋升，`call_mcp_tool` 成功结果按位置 `callId` 核对发言。
 
+## 桌面版自更新
+
+桌面进程从官方 GitHub Release 获取 Windows x64 安装包，限制下载来源并检查文件大小。下载后和启动安装器前都核对 SHA-256。只有用户在可信桌面设置中确认才启动安装器。
+
 ## 受限的第三方插件
 
 受限插件（[第三方插件](external-plugins.md)）运行在独立的系统进程里，经 stdio 协议和 Hub 通信。`permissions`、事件授权、`clusterIds`、`writeClusterIds`、工具和界面位置授权只约束它**经 orrery 协议**能做的事：

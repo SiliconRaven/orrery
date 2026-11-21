@@ -15,7 +15,7 @@ import { compareVersions } from './update-check.ts';
 
 const HOST_API = OFFICIAL_PLUGIN_HOST.hostApi;
 // The built-in public key authenticates official ZIPs. Local state cannot add a publisher.
-const RELEASE_KEYS: OfficialKeys = new Map([['orrery-official-1', {
+export const RELEASE_KEYS: OfficialKeys = new Map([['orrery-official-1', {
   publicKey: createPublicKey({
     key: Buffer.from('MCowBQYDK2VwAyEAtoxMDC2m+fUgWorXia7RJ7ipyHo2jJzgiGIcj+W+iOg=', 'base64'),
     format: 'der',

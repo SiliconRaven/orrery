@@ -1,0 +1,54 @@
+name: Official plugin release
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Initialize the channel or publish one plugin
+        type: choice
+        options: [initialize, publish]
+        default: initialize
+      plugin:
+        description: Official plugin to publish (ignored when initializing)
+        type: choice
+        options: [starmap, tasks, bookmarks, coordinator]
+        default: starmap
+      version:
+        description: Exact version already committed in the plugin's release.json
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: official-plugin-release
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  publish:
+    if: github.repository == 'SiliconRaven/orrery' && github.server_url == 'https://github.com' && github.ref == 'refs/heads/main' && !github.event.repository.private
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Initialize the plugin channel
+        if: inputs.operation == 'initialize'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/publish-official-plugin.ts initialize
+      - name: Sign and publish the plugin
+        if: inputs.operation == 'publish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORRERY_OFFICIAL_PLUGIN_SIGNING_KEY: ${{ secrets.ORRERY_OFFICIAL_PLUGIN_SIGNING_KEY }}
+          PLUGIN_ID: ${{ inputs.plugin }}
+          PLUGIN_VERSION: ${{ inputs.version }}
+        run: node scripts/publish-official-plugin.ts publish "$PLUGIN_ID" "$PLUGIN_VERSION"

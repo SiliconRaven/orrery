@@ -4,7 +4,7 @@
     ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" --orrery-quit-for-update' $0
     ${If} ${Errors}
     ${OrIf} $0 != 0
-      MessageBox MB_ICONSTOP|MB_OK "Orrery Beta could not stop its background Hub. Close the Hub from Orrery and retry. No other Node process was stopped." /SD IDOK
+      MessageBox MB_ICONSTOP|MB_OK "orrery could not stop its background Hub. Close the Hub from orrery and retry. No other Node process was stopped." /SD IDOK
       Abort
     ${EndIf}
   ${EndIf}

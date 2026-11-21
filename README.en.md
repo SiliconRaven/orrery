@@ -1,4 +1,4 @@
-# orrery (`v0.10.0-beta.4` Beta)
+# orrery
 
 Language: [中文](README.md) | **English**
 
@@ -58,11 +58,11 @@ Manage official plugin updates and third-party permissions in **Settings → Plu
 
 Download the latest Windows x64 installer from [GitHub Releases](https://github.com/SiliconRaven/orrery/releases) (bundles Node and runtime dependencies—no separate Node installation required):
 
-1. Run the installer and launch **Orrery Beta** from the created shortcut.
+1. Run the installer and launch **orrery** from the created shortcut.
 2. Data lives under `%APPDATA%/Orrery Beta/hub` and is preserved across upgrades and uninstalls.
 3. Beta installers are currently unsigned, so Windows SmartScreen may show an unknown-publisher prompt; verify the checksum published alongside the download.
 
-Update checks run in the background or on demand in Settings, and **never silently download or execute an installer**.
+Use **Software update** in the desktop gear menu to download and confirm installation. [Desktop updates](docs/desktop.en.md#desktop-updates)
 
 ### Option 2: Run from Source
 

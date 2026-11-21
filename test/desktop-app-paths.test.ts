@@ -256,8 +256,11 @@ test('desktop app paths: nothing is saved without the user\'s action in the sett
   assert.match(shell, /'tabs:settings': \(\.\.\.args\) => args\.length === 1 && Number\.isFinite\(args\[0\]\),/);
   const preload = read('settings-preload.cjs');
   assert.deepEqual([...preload.matchAll(/ipcRenderer\.(send|on|invoke|sendSync)\('([^']+)'/g)].map((m) => `${m[1]} ${m[2]}`),
-    ['on settings:state', 'send settings:detect', 'send settings:use', 'send settings:pick', 'send settings:clear', 'send settings:language', 'send settings:close']);
-  assert.deepEqual([...preload.matchAll(/^ {2}(\w+):/gm)].map((m) => m[1]), ['onState', 'detect', 'use', 'pick', 'clear', 'language', 'close'], 'all it exposes');
+    ['on settings:state', 'on settings:update-state', 'send settings:detect', 'send settings:use', 'send settings:pick', 'send settings:clear',
+      'send settings:language', 'send settings:close', 'send settings:update-check', 'send settings:update-download', 'send settings:update-install']);
+  assert.deepEqual([...preload.matchAll(/^ {2}(\w+):/gm)].map((m) => m[1]),
+    ['onState', 'onUpdateState', 'detect', 'use', 'pick', 'clear', 'language', 'close', 'checkUpdate', 'downloadUpdate', 'installUpdate'],
+    'all it exposes');
   assert.match(preload, /const id = \(v\) => \(typeof v === 'string' \? v : ''\);/);
   // The tab bar gains the gear's call only; the panel's preload is unchanged; the collaboration page has no preload.
   const tabsPreload = read('preload.cjs');
@@ -266,6 +269,29 @@ test('desktop app paths: nothing is saved without the user\'s action in the sett
   assert.doesNotMatch(read('strip-preload.cjs'), /settings/);
   const collab = /const collab = new WebContentsView\(\{([\s\S]*?)\}\);/.exec(shell)?.[1] ?? '';
   assert.ok(collab && !/preload/.test(collab), 'the collaboration page has no preload');
+});
+
+test('desktop update: trusted settings sends only actions and confirms through the native dialog', () => {
+  const shell = read('shell.mjs');
+  const main = read('main.mjs');
+  const preload = read('settings-preload.cjs');
+  for (const action of ['check', 'download', 'install']) {
+    assert.ok(shell.includes(`'settings:update-${action}': (...args) => args.length === 0,`), 'reject even one update IPC argument');
+    assert.ok(preload.includes(`() => ipcRenderer.send('settings:update-${action}')`), 'renderer action sends zero arguments');
+  }
+  const install = fnBody(shell, 'installUpdate');
+  assert.match(install, /!settings \|\| dialogOpen \|\| closing \|\| !updater/);
+  assert.match(install, /updater\.snapshot\(\)\.status !== 'ready'/);
+  assert.match(install, /dialog\.showMessageBox\(settingsWin, \{/);
+  assert.match(install, /defaultId: 0, cancelId: 0/);
+  assert.match(install, /response === 1 && !closing && await updater\.install\(\)\) quit\('quit'\);/);
+  assert.match(fnBody(shell, 'updateState'), /return \{ currentVersion, status, latestVersion, percent, error \};/);
+  assert.match(main, /else if \(app\.isPackaged && process\.platform === 'win32'\) \{\n  const previousData = join\(app\.getPath\('appData'\), 'Orrery Beta'\);\n  mkdirSync\(previousData, \{ recursive: true \}\);\n  app\.setPath\('userData', previousData\);/);
+  assert.match(main, /if \(userData\) app\.setPath\('userData', userData\);\nelse if/);
+  assert.ok(main.indexOf("app.setPath('userData', previousData)") < main.indexOf('runtimeConfig({'));
+  assert.ok(main.indexOf("app.setPath('userData', previousData)") < main.indexOf('app.requestSingleInstanceLock()'));
+  assert.match(main, /const makeUpdater = app\.isPackaged \? \(onChange\) => createDesktopUpdater\(\{/);
+  for (const file of ['ui/tabs.html', 'ui/strip.html', 'ui/settings.html']) assert.doesNotMatch(read(file), /<title[^>]*>[^<]*Beta/);
 });
 
 test('desktop app paths: the state file, the page, the Hub or a docked window never become a launch target', () => {
