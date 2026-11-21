@@ -2,7 +2,7 @@
 
 Language: [中文](external-plugins.md) | **English**
 
-orrery (`v0.10.0-beta.4` Beta pre-release) can run third-party Hub plugins that live outside the repository. There are two tiers:
+orrery (`v0.10.0-beta.5` Beta pre-release) can run third-party Hub plugins that live outside the repository. There are two tiers:
 
 | | Restricted plugin | Full-trust plugin |
 |---|---|---|

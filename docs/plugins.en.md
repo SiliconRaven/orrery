@@ -1,8 +1,8 @@
-# Plugins (`v0.10.0-beta.4`)
+# Plugins (`v0.10.0-beta.5`)
 
 Language: [中文](plugins.md) | **English**
 
-> **Beta Notice**: Plugins ship with **v0.10.0-beta.4 (Beta pre-release)**, not a final stable release; MCP tools, events, and slot APIs may change.
+> **Beta Notice**: Plugins ship with **v0.10.0-beta.5 (Beta pre-release)**, not a final stable release; MCP tools, events, and slot APIs may change.
 
 The orrery core only handles clusters, members, native chat delivery, message storage, permissions and loop protection; the pause switch and loop limits always stay in the core. Task workflows, coordinator supervision and bookmarks live in official plugins under `src/plugins/`. The repository's top-level `plugins/` folder holds bridges for the native apps and is unrelated to the Hub plugins described here.
 

@@ -4,7 +4,7 @@ Language: **English** | [中文](#安全策略中文摘要)
 
 ## Supported Versions
 
-orrery is currently in public **Beta (`v0.10.0-beta.3`)**. Security fixes are applied to the current Beta line (`>= 0.10.0-beta.3`).
+orrery is currently in public **Beta (`v0.10.0-beta.5`)**. Security fixes are applied to the current Beta line (`>= 0.10.0-beta.3`).
 
 | Version | Supported |
 |---|---|
