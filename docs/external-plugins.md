@@ -2,7 +2,7 @@
 
 语言：**中文** | [English](external-plugins.en.md)
 
-orrery（`v0.10.0-beta.4` Beta 测试版）可以运行仓库以外的第三方 Hub 插件。第三方插件分两档：
+orrery（`v0.10.0-beta.5` Beta 测试版）可以运行仓库以外的第三方 Hub 插件。第三方插件分两档：
 
 | | 受限插件 | 完全信任插件 |
 |---|---|---|

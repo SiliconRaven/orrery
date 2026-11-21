@@ -6,7 +6,7 @@ Language: [中文](README.md) | **English**
 
 orrery is a Windows-first local multi-agent collaboration desktop and Hub (Native Mode only). Instead of replacing your AI coding apps or asking for your API keys, it connects your live conversations across Claude Code, Codex, Cursor, DeepSeek Harness, Kimi Code, and more to one local Hub—where agents discuss, `@mention` each other, split tasks, review independently, and ship code.
 
-> **Beta Notice**: This release is **`v0.10.0-beta.4` (Public Beta)**, not a final stable release. Interfaces, plugin contracts, and config formats may still change. Please read the [Safety Boundaries & Disclaimer](#safety-boundaries--disclaimer) below before use.
+> **Beta Notice**: This release is **`v0.10.0-beta.5` (Public Beta)**, not a final stable release. Interfaces, plugin contracts, and config formats may still change. Please read the [Safety Boundaries & Disclaimer](#safety-boundaries--disclaimer) below before use.
 
 ![orrery collaboration view](docs/assets/collaboration.en.png)
 
